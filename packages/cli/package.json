@@ -1,0 +1,26 @@
+{
+	"name": "@ospreycode/cli",
+	"version": "0.1.0",
+	"description": "命令行界面：子命令、交互界面、非交互运行和对外的事件流",
+	"license": "Apache-2.0",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json"
+	},
+	"dependencies": {
+		"@ospreycode/agent-host": "0.1.0"
+	},
+	"engines": {
+		"node": "^24.15.0 || >=26.0.0"
+	}
+}

@@ -1,0 +1,44 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"ignoreUnknown": true,
+		"includes": [
+			"**",
+			"!package-lock.json"
+		]
+	},
+	"json": {
+		"formatter": {
+			"expand": "always"
+		}
+	},
+	"markdown": {
+		"formatter": {
+			"enabled": false
+		},
+		"linter": {
+			"enabled": false
+		}
+	},
+	"linter": {
+		"rules": {
+			"correctness": {
+				"noUndeclaredDependencies": {
+					"level": "error",
+					"options": {
+						"devDependencies": [
+							"**/test/**",
+							"**/scripts/**",
+							"**/vitest.config.ts"
+						]
+					}
+				}
+			}
+		}
+	}
+}

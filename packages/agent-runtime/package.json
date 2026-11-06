@@ -1,0 +1,26 @@
+{
+	"name": "@ospreycode/agent-runtime",
+	"version": "0.1.0",
+	"description": "在沙盒里调用模型和工具把任务做完：loop、工具、扩展的接入，以及它和 Host 之间的通道接口",
+	"license": "Apache-2.0",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json"
+	},
+	"dependencies": {
+		"@ospreycode/api": "0.1.0"
+	},
+	"engines": {
+		"node": "^24.15.0 || >=26.0.0"
+	}
+}

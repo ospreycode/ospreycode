@@ -1,0 +1,31 @@
+{
+	"name": "@ospreycode/evaluation",
+	"version": "0.1.0",
+	"description": "检查各部分单独和组合起来是否真的有效",
+	"license": "Apache-2.0",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json"
+	},
+	"dependencies": {
+		"@ospreycode/agent-host": "0.1.0",
+		"@ospreycode/agent-plugins": "0.1.0",
+		"@ospreycode/agent-runtime": "0.1.0",
+		"@ospreycode/api": "0.1.0",
+		"@ospreycode/mcp": "0.1.0",
+		"@ospreycode/memory": "0.1.0",
+		"@ospreycode/sandbox": "0.1.0",
+		"@ospreycode/session-store": "0.1.0",
+		"@ospreycode/skills": "0.1.0"
+	},
+	"engines": {
+		"node": "^24.15.0 || >=26.0.0"
+	}
+}

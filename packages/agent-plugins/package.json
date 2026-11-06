@@ -1,0 +1,27 @@
+{
+	"name": "@ospreycode/agent-plugins",
+	"version": "0.1.0",
+	"description": "按 Agent Plugins 1.0.0 读取和校验插件目录，找出其中的 skills 和 MCP server，解析 mcp.json",
+	"license": "Apache-2.0",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json"
+	},
+	"dependencies": {
+		"@ospreycode/mcp": "0.1.0",
+		"@ospreycode/skills": "0.1.0"
+	},
+	"engines": {
+		"node": "^24.15.0 || >=26.0.0"
+	}
+}

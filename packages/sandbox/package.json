@@ -1,0 +1,23 @@
+{
+	"name": "@ospreycode/sandbox",
+	"version": "0.1.0",
+	"description": "判断 agent 能不能做某件事，并由操作系统限制它实际能做的事",
+	"license": "Apache-2.0",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json"
+	},
+	"engines": {
+		"node": "^24.15.0 || >=26.0.0"
+	}
+}

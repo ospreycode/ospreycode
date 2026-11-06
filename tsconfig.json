@@ -1,0 +1,46 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"paths": {
+			"@ospreycode/sandbox": [
+				"./packages/sandbox/src/index.ts"
+			],
+			"@ospreycode/session-store": [
+				"./packages/session-store/src/index.ts"
+			],
+			"@ospreycode/memory": [
+				"./packages/memory/src/index.ts"
+			],
+			"@ospreycode/api": [
+				"./packages/api/src/index.ts"
+			],
+			"@ospreycode/skills": [
+				"./packages/skills/src/index.ts"
+			],
+			"@ospreycode/mcp": [
+				"./packages/mcp/src/index.ts"
+			],
+			"@ospreycode/agent-plugins": [
+				"./packages/agent-plugins/src/index.ts"
+			],
+			"@ospreycode/agent-runtime": [
+				"./packages/agent-runtime/src/index.ts"
+			],
+			"@ospreycode/agent-host": [
+				"./packages/agent-host/src/index.ts"
+			],
+			"@ospreycode/cli": [
+				"./packages/cli/src/index.ts"
+			],
+			"@ospreycode/evaluation": [
+				"./packages/evaluation/src/index.ts"
+			]
+		}
+	},
+	"include": [
+		"packages/*/src",
+		"packages/*/test",
+		"vitest.config.ts"
+	]
+}

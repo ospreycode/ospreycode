@@ -1,0 +1,23 @@
+{
+	"name": "@ospreycode/skills",
+	"version": "0.1.0",
+	"description": "按 Agent Skills 规范解析、校验和查找 skills",
+	"license": "Apache-2.0",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json"
+	},
+	"engines": {
+		"node": "^24.15.0 || >=26.0.0"
+	}
+}

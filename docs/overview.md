@@ -204,7 +204,7 @@ coding-agent/
 - 每个包有自己的 `package.json`、`src/`、`test/`、`README.md` 和 `CHANGELOG.md`；设计文档列出的模块是该包 `src/` 下的目录。
 - 公开接口只由 `package.json` 的 `exports` 声明，其他包只能经这些入口引用。包之间的依赖写在各自的 `package.json` 里，检查脚本确认每个包只引用声明过的依赖，[依赖方向](#依赖方向)由此自动检查。
 - 所有发布的包用同一个版本号，一起升级、一起发布，包之间的依赖固定到这个确切版本。
-- 根目录的 `npm run check` 做格式、lint、类型检查和依赖检查，`npm test` 运行各包的测试。
+- 根目录的 `npm run check` 做格式、lint、类型检查和依赖检查，`npm test` 运行各包的测试，`npm run check:pack` 做打包后在 monorepo 之外的安装检查，`npm run version:set -- <版本>` 同步所有包的版本。
 - 每个包单独维护 CHANGELOG，未发布的改动记在 `## [Unreleased]` 下。
 
 ### SDK 标准
@@ -233,12 +233,13 @@ coding-agent/
 
 照 pi 的组织，几处按本项目的要求调整。
 
-- npm workspaces 加根目录的 `package-lock.json`；`.npmrc` 设 `save-exact=true` 和 `min-release-age=7`（只安装发布满 7 天的版本）；CI 用 `npm ci --ignore-scripts`，GitHub Actions 引用的 Action 固定到 commit SHA；不用 husky 这类需要 `prepare` 脚本的工具。
-- 各包用 TypeScript 7.0.2 的 `tsc` 编译，只发布 ESM，`exports` 只写 `types` 和 `import`。跨包类型检查用 `tsconfig.json` 的 `paths`，测试用 vitest 的 alias，发布的 `exports` 不指向没有发布的源码。
+- npm workspaces 加根目录的 `package-lock.json`；`.npmrc` 设 `save-exact=true`、`min-release-age=7`（只安装发布满 7 天的版本）和 `registry=https://registry.npmjs.org/`（lockfile 和发布都只走官方 registry，不受开发者本机镜像设置的影响）；CI 用 `npm ci --ignore-scripts`，GitHub Actions 引用的 Action 固定到 commit SHA；不用 husky 这类需要 `prepare` 脚本的工具。
+- 各包用 TypeScript 7.0.2 的 `tsc` 编译，它能为各包生成 `.d.ts`，跨包的类型引用在声明里写成包名；只发布 ESM，`exports` 只写 `types` 和 `import`。跨包类型检查用 `tsconfig.json` 的 `paths`，测试用 vitest 的 alias，发布的 `exports` 不指向没有发布的源码。
 - `cli` 包另用 esbuild 0.28.2 打包。
-- 测试用 vitest 5.1.0。
-- lint 和格式化用 Biome 2.6.5，开启 `noUndeclaredDependencies`，只允许测试和脚本使用 devDependencies；依赖声明的检查交给它，因为 TS 7 的编程接口还在 `typescript/unstable/*` 下。
-- 其余检查写成不依赖第三方库的 Node 脚本：直接依赖写确切版本，各包版本一致，包之间的引用符合[依赖方向](#依赖方向)，`npm sbom` 列出的许可证都在白名单内（见[许可证](#许可证)），打包后能在 monorepo 之外安装。
+- 测试用 vitest 5.0.5。
+- Node 的类型声明用 `@types/node` 24.13.6：它是不超过最低支持版本 24.15 的最新一版，类型里不会出现 24.15 没有的接口。
+- lint 和格式化用 Biome 2.6.4，开启 `noUndeclaredDependencies`，只允许测试和脚本使用 devDependencies；依赖声明的检查交给它，因为 TS 7 的编程接口还在 `typescript/unstable/*` 下。Biome 不处理 Markdown，文档由人排版。
+- 其余检查写成不依赖第三方库的 Node 脚本（用 TypeScript 写，由 Node 直接运行）：直接依赖写确切版本，各包版本一致，包之间的引用符合[依赖方向](#依赖方向)，`npm sbom` 列出的许可证都在白名单内（见[许可证](#许可证)），打包后能在 monorepo 之外安装。
 - 通道消息的 schema 用 `typebox`（见 agent-runtime 的[通道](packages/agent-runtime.md#通道)）。
 - 发布由 tag 触发，不用 changesets。CI 用 npm 的 trusted publishing（OIDC，自动生成 provenance）执行 `npm stage publish --ignore-scripts`，维护者用 2FA 批准后版本才公开；trusted publisher 只允许 `npm stage publish`，npm 上的包设为要求 2FA、禁止令牌发布。每个包第一次发布由维护者在本机用 `npm stage publish --access public` 完成，之后再为它配置 trusted publisher。Node 26 自带的 npm 11.20.0 满足 staged publishing 的要求（11.15.0 以上），CI 不另装 npm。
 
@@ -275,7 +276,7 @@ coding-agent/
 - 移植 Codex 的代码、权限规则、Seatbelt 配置或测试数据时，按 Apache-2.0 第 4 条保留原有的版权和归属声明，在改过的文件里注明修改，并把 Codex `NOTICE` 中的归属内容并入本项目的 `NOTICE`。
 - npm 只打包包目录里的 `LICENSE`，所以每个包目录各放一份，`package.json` 的 `license` 写 `"Apache-2.0"`。
 - `cli` 包打包后依赖自带的许可证文件不再随包发布，构建时根据 lockfile 生成第三方许可证文件放进 `cli` 包。
-- 每个依赖和评测数据集固定版本或升级时核对许可证。CI 用 `npm sbom` 列出全部运行时依赖的许可证，脚本按 SPDX 表达式检查是否都在白名单内；表达式含 `OR` 时记录选用的许可证，例如 node-forge 的 `(BSD-3-Clause OR GPL-2.0)` 选 BSD-3-Clause。
+- 每个依赖和评测数据集固定版本或升级时核对许可证。CI 用 `npm sbom` 列出全部运行时依赖的许可证，脚本按 SPDX 表达式检查是否都在白名单内（Apache-2.0、MIT、ISC、BSD-2-Clause、BSD-3-Clause、0BSD、BlueOak-1.0.0，都是宽松许可证）；表达式含 `OR` 时记录选用的许可证，例如 node-forge 的 `(BSD-3-Clause OR GPL-2.0)` 选 BSD-3-Clause。
 - sandbox-runtime 随包发布的 `vendor/seccomp/{x64,arm64}/apply-seccomp` 静态链接了 glibc（LGPL-2.1-or-later），`npm sbom` 看不到。`cli` 包附上 LGPL-2.1 的文本并写明 glibc 的来源版本；每次发布在同一个 GitHub Release 里附上对应 sandbox-runtime 版本的 `vendor/seccomp-src` 和 Ubuntu 24.04 的 glibc 源码包，满足 LGPL-2.1 第 6 条对静态链接的要求。升级 sandbox-runtime 时重新检查这些二进制。
 - 贡献用 DCO：每个提交带 `Signed-off-by`，CI 检查。不用 CLA：本项目没有收存协议的法律实体，Apache-2.0 第 5 条已规定贡献按本许可证授权。
 
@@ -310,7 +311,6 @@ P1 的两个沙盒后端都要经过真实沙盒的验证；其他平台逐个�
 
 ## 实施时核对
 
-- P0：确认 TypeScript 7 的原生 `tsc` 能为全部包生成 `.d.ts`。
 - P0：模型测试运行一个月后，按实际费用核对每个测试（0.05 美元、20 次、5 分钟）和每次运行（1 美元）的上限。
 - P1：在 Ubuntu 24.04 上实测 `apply-seccomp` 是否也需要允许 `bwrap` 使用 `userns` 的 AppArmor 配置，需要就写进安装说明。
 - P1：确认选中的 SWE-bench Pro V2 题目镜像满足 glibc 2.28 以上，缺 `libatomic1` 时由评测的安装步骤装上。

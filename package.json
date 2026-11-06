@@ -1,0 +1,36 @@
+{
+	"name": "ospreycode-monorepo",
+	"version": "0.1.0",
+	"private": true,
+	"license": "Apache-2.0",
+	"type": "module",
+	"workspaces": [
+		"packages/sandbox",
+		"packages/session-store",
+		"packages/memory",
+		"packages/api",
+		"packages/skills",
+		"packages/mcp",
+		"packages/agent-plugins",
+		"packages/agent-runtime",
+		"packages/agent-host",
+		"packages/cli",
+		"packages/evaluation"
+	],
+	"scripts": {
+		"build": "npm run build --workspaces",
+		"check": "biome check && tsc -p tsconfig.json && tsc -p scripts/tsconfig.json && node scripts/check-deps.ts",
+		"check:pack": "node scripts/check-pack.ts",
+		"test": "vitest run",
+		"version:set": "node scripts/set-version.ts"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.6.4",
+		"@types/node": "24.13.6",
+		"typescript": "7.0.2",
+		"vitest": "5.0.5"
+	},
+	"engines": {
+		"node": "^24.15.0 || >=26.0.0"
+	}
+}

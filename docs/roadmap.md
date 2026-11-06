@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 注册 npm 组织和 GitHub 组织 `ospreycode` | P0 | 已完成 | overview 的[名字](overview.md#名字) |
 | 注册域名 `ospreycode.dev` 和 `ospreycode.com` | P0 | 暂不使用 | overview 的[名字](overview.md#名字) |
-| monorepo 骨架、工具链、依赖检查、版本同步、打包后在 monorepo 之外的安装检查 | P0 | 未开始 | overview 的[代码组织](overview.md#代码组织)和[工具链](overview.md#工具链) |
+| monorepo 骨架、工具链、依赖检查、版本同步、打包后在 monorepo 之外的安装检查 | P0 | 已完成 | overview 的[代码组织](overview.md#代码组织)和[工具链](overview.md#工具链) |
 | CI：PR 检查、带密钥的模型测试、发布流程 | P0 | 未开始 | overview 的 [CI 和真实模型测试](overview.md#ci-和真实模型测试) |
 | 标识（含 `user_id`、`agent_id` 和子 agent 的父子字段）、内部协议、工具调用、事件、权限和检查点的格式 | P0 | 未开始 | 各包文档；agent-host 的[标识](packages/agent-host.md#标识) |
 | Host 和 agent 进程之间的通道（P0 的操作、消息格式、`initialize` 握手）、agent 进程的入口 | P0 | 未开始 | agent-runtime 的[通道](packages/agent-runtime.md#通道)；agent-host 的[进程形态和通信](packages/agent-host.md#进程形态和通信) |
