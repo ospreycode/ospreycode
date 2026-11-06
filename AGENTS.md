@@ -4,22 +4,22 @@
 
 ## 文件地图
 
-动手前按下表读相关的设计文档。改动涉及架构决定时，先更新对应的文档；新增、删除或重命名文档时，同步更新这张表。有待核对项的文档末尾有一节"实施时核对"，列出实施或验收时要做的检查，按阶段分组；做完一项就删掉它，结论写进正文。文档只写决定和一句话理由，不写同行做法的展开、不写"以后再调整"。术语以 overview 的[术语](docs/overview.md#术语)为准，其中"权限规则"指 `rules/*.toml`，"规则文件"指 `AGENTS.md` 这类给模型读的文件。
+动手前按下表读相关的设计文档。改动涉及架构决定时，先更新对应的文档；新增、删除或重命名文档时，同步更新这张表。有待核对项的文档末尾有一节"实施时核对"，列出实施或验收时要做的检查，按阶段分组；做完一项就删掉它，结论写进正文。文档只写决定和一句话理由，不写同行做法的展开、不写"以后再调整"；暂不做的功能和以后加入的条件写进 roadmap 的"不做的功能"。同一条规则只在一处写明，其他文档链接过去。术语以 overview 的[术语](docs/overview.md#术语)为准，其中"权限规则"指 `rules/*.toml`，"规则文件"指 `AGENTS.md` 这类给模型读的文件。
 
 | 文件 | 内容 | 什么时候读 |
 |---|---|---|
-| [docs/overview.md](docs/overview.md) | 目标、术语、十一个包、代码组织、SDK 标准、工程约定（语言和运行环境、工具链、支持的平台、名字、版本号、许可证、CI 和真实模型测试）、结构图、依赖方向、运行时的部署、一次任务的流程、所有包都遵守的规则、实施阶段 | 第一次了解项目；新增包、调整依赖或公开接口；改工具链、CI 或发布方式；安排工作和验收 |
+| [docs/overview.md](docs/overview.md) | 目标、术语、十一个包、依赖方向（含事件格式的归属）、运行时的部署、一次任务的流程、所有包都遵守的规则、工程约定（代码组织、SDK 标准、语言和运行环境、工具链、支持的平台、名字、版本号、许可证、CI 和真实模型测试）、实施阶段 | 第一次了解项目；新增包、调整依赖或公开接口；改工具链、CI 或发布方式；安排工作和验收 |
 | [docs/roadmap.md](docs/roadmap.md) | 各包的功能分别在哪个阶段交付；不做的功能、原因和以后加入的条件 | 安排工作；开始一个阶段前；新增功能或调整功能的阶段时同步更新 |
-| [docs/packages/sandbox.md](docs/packages/sandbox.md) | 防护范围、照搬 Codex 的权限分层（沙盒模式、审批策略、规则）、受保护的路径、构建工具的缓存、命令的执行（每条命令单独的沙盒）、越界申请、网络访问的审批、沙盒后端 | 改 `sandbox` 包，或改动涉及权限、沙盒和凭据 |
+| [docs/packages/sandbox.md](docs/packages/sandbox.md) | 防护范围、照搬 Codex 的权限分层（沙盒模式、命名权限配置、审批策略、权限规则）、受保护的路径、构建工具的缓存、命令的执行（每条命令单独的沙盒）、越界申请（本机服务和本地端口、文件改动）、网络访问的审批、沙盒后端（辅助进程、sandbox-runtime 的限制和处理） | 改 `sandbox` 包，或改动涉及权限、沙盒和凭据 |
 | [docs/packages/session-store.md](docs/packages/session-store.md) | session 记录的存储格式（SQLite）、保存期限、事件格式、会话树（回退和分叉）、分叉的存储、回退时的后台命令、检查点的保留、删除和按事件脱敏 | 改 `session-store` 包，或新增事件、修改存储格式 |
 | [docs/packages/memory.md](docs/packages/memory.md) | 长期记忆的两种范围、记录格式、写入和检索、和规则文件的关系、查看纠正和删除、存储、评测、可借鉴的项目 | 改 `memory` 包 |
 | [docs/packages/api.md](docs/packages/api.md) | 内部协议、模型清单、发请求的方式、各家模型协议（`openai.chat`、`openai.responses`、`anthropic.messages` 等）的转换规则、追加指令的来源、原样重放、拒绝和回退、前缀校验失败、token 计数、上下文压缩 | 改 `api` 包，或改动涉及模型请求、模型配置 |
 | [docs/packages/skills.md](docs/packages/skills.md) | SKILL.md 的解析和校验、查找、按需加载；不支持 MCP 提供的 skills 的原因 | 改 `skills` 包 |
-| [docs/packages/mcp.md](docs/packages/mcp.md) | MCP 客户端的模块、为什么只在 Host 一侧使用、传输和授权、协议版本、支持的功能、实现方式、本地 server 进程的生命周期 | 改 `mcp` 包，或改动涉及 MCP server 的连接 |
+| [docs/packages/mcp.md](docs/packages/mcp.md) | MCP 客户端的模块、为什么只在 Host 一侧使用、传输和请求、授权、协议版本、支持的功能、实现方式、本地 server 进程的生命周期 | 改 `mcp` 包，或改动涉及 MCP server 的连接 |
 | [docs/packages/agent-plugins.md](docs/packages/agent-plugins.md) | 插件格式、`mcp.json` 的解析、路径检查、本项目的命名空间 | 改 `agent-plugins` 包 |
-| [docs/packages/agent-runtime.md](docs/packages/agent-runtime.md) | 通道接口和消息格式、从 Host 得到的配置、工具执行、运行中的用户输入、后台命令、上下文、系统指令和规则文件、子 agent 和多 worker | 改 `agent-runtime` 包，或改动涉及通道 |
-| [docs/packages/agent-host.md](docs/packages/agent-host.md) | Host 的模块和职责、进程形态和通信（通道握手、异常退出、重启）、标识、项目身份、目录位置、配置的分层、凭据和登录、session 的打开和关闭（工作区锁、进程登记表）、预算、恢复、快照和撤销、扩展的管理和信任、hooks（`hooks.json` 的格式和输入输出）、CLI（子命令、退出码、对外的事件格式；`cli` 包的设计也在这里） | 改 `agent-host` 或 `cli` 包，或改动涉及标识、项目身份、目录、配置、凭据、锁、恢复、撤销、扩展的信任和 hooks |
-| [docs/packages/evaluation.md](docs/packages/evaluation.md) | 两类评测、各部分的评测要求、memory 实验、防止刷分、报告内容、首批 benchmark、评测时的权限配置、sandbox 专项评测的运行环境 | 写测试或评测，或判断改动是否有效 |
+| [docs/packages/agent-runtime.md](docs/packages/agent-runtime.md) | 通道的操作和消息格式、进程入口、从 Host 得到的配置、工具执行（工具表、shell、编辑、重试）、运行中的用户输入、后台命令、上下文、系统指令和规则文件、子 agent 和多 worker | 改 `agent-runtime` 包，或改动涉及通道 |
+| [docs/packages/agent-host.md](docs/packages/agent-host.md) | Host 的模块和职责、进程形态和通信（通道的连接、agent 进程的启动、异常退出和重启）、标识、项目身份、目录位置、配置的分层和配置项、凭据和登录、session 的打开和关闭（工作区锁、进程登记表）、task 的开始结束和取消、工具调用的处理、预算、恢复、快照和撤销、扩展的管理和信任、hooks（`hooks.json` 的格式和输入输出）、CLI（子命令、会话内命令、退出码、对外的事件格式；`cli` 包的设计也在这里） | 改 `agent-host` 或 `cli` 包，或改动涉及标识、项目身份、目录、配置、凭据、锁、恢复、撤销、扩展的信任和 hooks |
+| [docs/packages/evaluation.md](docs/packages/evaluation.md) | 两类评测、各部分的评测要求、memory 评测（对比组、统计方法、Mem0 对照组）、防止刷分、报告内容、首批 benchmark、评测时的权限配置、sandbox 专项评测的运行环境 | 写测试或评测，或判断改动是否有效 |
 
 ## 编码规则
 
