@@ -49,13 +49,18 @@ function main(): void {
 		["log", "--no-merges", "--format=%H%x00%ae%x00%B%x1e", range],
 		{ cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8" },
 	);
-	const unsigned = unsignedCommits(parseLog(log));
+	const commits = parseLog(log);
+	const unsigned = unsignedCommits(commits);
 	for (const { sha } of unsigned) {
 		console.error(
 			`${sha} 没有和作者邮箱一致的 Signed-off-by，用 git commit -s 签署`,
 		);
 	}
-	if (unsigned.length > 0) process.exitCode = 1;
+	if (unsigned.length > 0) {
+		process.exitCode = 1;
+	} else {
+		console.log(`${range} 里的 ${commits.length} 个提交都已签署`);
+	}
 }
 
 if (import.meta.main) main();
