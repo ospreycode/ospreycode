@@ -260,7 +260,7 @@ coding-agent/
 
 - 机器用的名字统一为 `ospreycode`：npm scope、CLI 命令名、GitHub 组织名、仓库里本项目的配置目录（`.ospreycode/`）、Host 的根目录（`~/.ospreycode/`）和域名（`ospreycode.dev`）。命令不用更短的 `osprey`：PyPI 上的 agent 框架 Osprey 已经用了它。
 - 发布的包命名为 `@ospreycode/<包目录名>`，如 `@ospreycode/sandbox`；CLI 的包是 `@ospreycode/cli`，命令名是 `ospreycode`，不另占无 scope 的包名。
-- P0 注册 npm 组织 `ospreycode`、GitHub 组织 `ospreycode` 和域名 `ospreycode.dev`，同时注册 `ospreycode.com` 防止被抢注。域名由项目负责人的账户持有，开启自动续费和注册商锁：Agent Plugins 的命名空间 `dev.ospreycode`（见 agent-plugins 的[命名空间](packages/agent-plugins.md#命名空间)）和 MCP 授权用的客户端元数据地址（见 mcp 的[授权](packages/mcp.md#授权)）都依赖这个域名，发布后不能再改。
+- npm 组织 `ospreycode` 和 GitHub 组织 `ospreycode` 已于 2026-11-07 注册。域名 `ospreycode.dev` 和防抢注的 `ospreycode.com` 要付费，暂不注册，最晚在 P2 用到之前注册。域名由项目负责人的账户持有，开启自动续费和注册商锁：Agent Plugins 的命名空间 `dev.ospreycode`（见 agent-plugins 的[命名空间](packages/agent-plugins.md#命名空间)）和 MCP 授权用的客户端元数据地址（见 mcp 的[授权](packages/mcp.md#授权)）都依赖这个域名，发布后不能再改。
 
 ### 版本号
 
