@@ -3,6 +3,11 @@
 	"version": "0.1.0",
 	"description": "按 Agent Plugins 1.0.0 读取和校验插件目录，找出其中的 skills 和 MCP server，解析 mcp.json",
 	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ospreycode/ospreycode.git",
+		"directory": "packages/agent-plugins"
+	},
 	"type": "module",
 	"exports": {
 		".": {

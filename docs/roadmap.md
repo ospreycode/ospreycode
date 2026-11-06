@@ -11,14 +11,14 @@
 | 注册 npm 组织和 GitHub 组织 `ospreycode` | P0 | 已完成 | overview 的[名字](overview.md#名字) |
 | 注册域名 `ospreycode.dev` 和 `ospreycode.com` | P0 | 暂不使用 | overview 的[名字](overview.md#名字) |
 | monorepo 骨架、工具链、依赖检查、版本同步、打包后在 monorepo 之外的安装检查 | P0 | 已完成 | overview 的[代码组织](overview.md#代码组织)和[工具链](overview.md#工具链) |
-| CI：PR 检查、带密钥的模型测试、发布流程 | P0 | 未开始 | overview 的 [CI 和真实模型测试](overview.md#ci-和真实模型测试) |
+| CI：PR 检查、发布流程；模型测试在维护者本机运行（`model` 标签、本机的密钥目录） | P0 | 进行中 | overview 的 [CI 和真实模型测试](overview.md#ci-和真实模型测试) |
 | 标识（含 `user_id`、`agent_id` 和子 agent 的父子字段）、内部协议、工具调用、事件、权限和检查点的格式 | P0 | 未开始 | 各包文档；agent-host 的[标识](packages/agent-host.md#标识) |
 | Host 和 agent 进程之间的通道（P0 的操作、消息格式、`initialize` 握手）、agent 进程的入口 | P0 | 未开始 | agent-runtime 的[通道](packages/agent-runtime.md#通道)；agent-host 的[进程形态和通信](packages/agent-host.md#进程形态和通信) |
 | Host 的模块骨架（sdk、config、credentials、redaction、project、sessions、channel、actions、model-proxy、processes） | P0 起，随各阶段补全 | 未开始 | agent-host 的[模块](packages/agent-host.md#模块) |
 | 对外的事件格式和退出码 | P0 | 未开始 | agent-host 的[对外的事件格式](packages/agent-host.md#对外的事件格式) |
 | 最小原型和最小评测入口 | P0 | 未开始 | overview 的[实施阶段](overview.md#实施阶段) |
 | 沙盒模式、命名权限配置、审批策略（含 `granular` 的七个类别）、权限规则（命令、域名、MCP 工具三种）、越界申请（含 `unix_sockets`、`local_binding`） | P1 | 未开始 | [sandbox](packages/sandbox.md) |
-| macOS（Seatbelt）和 Linux（bubblewrap，Ubuntu 24.04）两个沙盒后端，辅助进程（离线、命令、按需单独启动的） | P1 | 未开始 | sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)；overview 的[支持的平台](overview.md#支持的平台) |
+| macOS（Seatbelt）和 Linux（bubblewrap，Ubuntu 24.04）两个沙盒后端，辅助进程（离线、命令、按需单独启动的）；CI 上四个 runner 的真实沙盒测试 | P1 | 未开始 | sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)；overview 的[支持的平台](overview.md#支持的平台) |
 | 命令沙盒：每条命令由 Host 单独启动沙盒，macOS 上用收尾进程结束全部进程 | P1 | 未开始 | sandbox 的[命令的执行](packages/sandbox.md#命令的执行)和[macOS 上结束全部进程](packages/sandbox.md#macos-上结束全部进程) |
 | 沙盒的环境变量白名单 | P1 | 未开始 | sandbox 的[沙盒模式](packages/sandbox.md#沙盒模式) |
 | 受保护的路径和占位登记表、构建工具的缓存 | P1 | 未开始 | sandbox 的[受保护的路径](packages/sandbox.md#受保护的路径)和[构建工具的缓存](packages/sandbox.md#构建工具的缓存) |
@@ -26,6 +26,7 @@
 | agent 进程的重启：从 session 记录重建发给模型的历史（切换沙盒模式、取消超时、异常退出、Linux 上发现新仓库） | P1 | 未开始 | agent-host 的 [agent 进程的重启](packages/agent-host.md#agent-进程的重启) |
 | 三种模型协议的转换、模型清单、原样重放、拒绝和回退的作废事件、前缀校验失败的恢复 | P1 | 未开始 | [api](packages/api.md) |
 | token 估算（算 `max_tokens`、判断上下文超长） | P1 | 未开始 | api 的 [token 计数](packages/api.md#token-计数) |
+| 模型测试的每次运行费用账本、按 `api` 的错误类别重跑一次、不稳定测试的报告 | P1 | 未开始 | overview 的 [CI 和真实模型测试](overview.md#ci-和真实模型测试) |
 | loop，`read`、`edit`、`write`、`shell` 和 `request_permissions` 工具 | P1 | 未开始 | agent-runtime 的[工具执行](packages/agent-runtime.md#工具执行) |
 | 规则文件（`AGENTS.md` 等）的加载、系统指令和会话开始的上下文消息 | P1 | 未开始 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
 | Host；CLI 的交互和非交互模式，P1 的子命令和会话内命令 | P1 | 未开始 | agent-host 的 [CLI](packages/agent-host.md#cli) |

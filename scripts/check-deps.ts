@@ -64,6 +64,8 @@ const allowedLicenses = new Set([
 /** 许可证表达式含 OR 的依赖选用的许可证，键是包名。 */
 const chosenLicenses: Record<string, string> = {};
 
+const repositoryUrl = "git+https://github.com/ospreycode/ospreycode.git";
+
 /** `npm sbom --sbom-format spdx` 输出里的一个包。 */
 export interface SbomPackage {
 	name: string;
@@ -181,6 +183,24 @@ export function checkExports(
 	return problems;
 }
 
+export function checkRepository(workspace: Workspace): string[] {
+	const problems: string[] = [];
+	for (const { dir, manifest } of workspace.packages) {
+		if (manifest.private === true) continue;
+		const { repository } = manifest;
+		if (
+			repository?.type !== "git" ||
+			repository.url !== repositoryUrl ||
+			repository.directory !== dir
+		) {
+			problems.push(
+				`${manifest.name} 的 repository 要写成 {"type": "git", "url": "${repositoryUrl}", "directory": "${dir}"}，发布时 npm 用它核对 provenance`,
+			);
+		}
+	}
+	return problems;
+}
+
 function licenseProblem(
 	name: string,
 	expression: string,
@@ -248,6 +268,7 @@ function main(): void {
 		...checkVersions(workspace),
 		...checkDirection(workspace),
 		...checkExports(workspace, tsconfig.compilerOptions.paths),
+		...checkRepository(workspace),
 		...checkLicenses(sbom.packages),
 	];
 	for (const problem of problems) console.error(problem);

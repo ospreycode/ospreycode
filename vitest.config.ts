@@ -33,4 +33,11 @@ const alias = workspaces.flatMap((dir) => {
 	}));
 });
 
-export default defineConfig({ resolve: { alias } });
+export default defineConfig({
+	resolve: { alias },
+	test: {
+		// 模型测试的时限比一个 run 的时间上限（5 分钟）宽，让 Host 的上限先生效
+		tags: [{ name: "model", timeout: 6 * 60_000 }],
+		globalSetup: ["./scripts/model-keys.ts"],
+	},
+});

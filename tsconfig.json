@@ -41,6 +41,7 @@
 	"include": [
 		"packages/*/src",
 		"packages/*/test",
+		"scripts/model-keys.ts",
 		"vitest.config.ts"
 	]
 }

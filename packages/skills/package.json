@@ -3,6 +3,11 @@
 	"version": "0.1.0",
 	"description": "按 Agent Skills 规范解析、校验和查找 skills",
 	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ospreycode/ospreycode.git",
+		"directory": "packages/skills"
+	},
 	"type": "module",
 	"exports": {
 		".": {

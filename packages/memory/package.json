@@ -3,6 +3,11 @@
 	"version": "0.1.0",
 	"description": "从 session 记录里提炼长期记忆，按 project 和 user 两种范围检索、纠正和删除",
 	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ospreycode/ospreycode.git",
+		"directory": "packages/memory"
+	},
 	"type": "module",
 	"exports": {
 		".": {

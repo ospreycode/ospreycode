@@ -241,7 +241,7 @@ coding-agent/
 - lint 和格式化用 Biome 2.6.4，开启 `noUndeclaredDependencies`，只允许测试和脚本使用 devDependencies；依赖声明的检查交给它，因为 TS 7 的编程接口还在 `typescript/unstable/*` 下。Biome 不处理 Markdown，文档由人排版。
 - 其余检查写成不依赖第三方库的 Node 脚本（用 TypeScript 写，由 Node 直接运行）：直接依赖写确切版本，各包版本一致，包之间的引用符合[依赖方向](#依赖方向)，`npm sbom` 列出的许可证都在白名单内（见[许可证](#许可证)），打包后能在 monorepo 之外安装。
 - 通道消息的 schema 用 `typebox`（见 agent-runtime 的[通道](packages/agent-runtime.md#通道)）。
-- 发布由 tag 触发，不用 changesets。CI 用 npm 的 trusted publishing（OIDC，自动生成 provenance）执行 `npm stage publish --ignore-scripts`，维护者用 2FA 批准后版本才公开；trusted publisher 只允许 `npm stage publish`，npm 上的包设为要求 2FA、禁止令牌发布。每个包第一次发布由维护者在本机用 `npm stage publish --access public` 完成，之后再为它配置 trusted publisher。Node 26 自带的 npm 11.20.0 满足 staged publishing 的要求（11.15.0 以上），CI 不另装 npm。
+- 发布由 `v<版本>` 形式的 tag 触发，tag 和各包的版本不一致时停止，不用 changesets。CI 用 npm 的 trusted publishing（OIDC，自动生成 provenance）在每个公开包的目录里执行 `npm stage publish --ignore-scripts`（它不认识 workspaces），维护者用 2FA 批准后版本才公开；trusted publisher 用 `npm trust` 只开 `--allow-stage-publish`，npm 上的包设为要求 2FA、禁止令牌发布。每个包第一次发布由维护者在本机用 `npm publish --access public` 完成（`npm stage` 要求包已经存在），之后再为它配置 trusted publisher。Node 26 自带的 npm 11.20.0 满足 staged publishing 的要求（11.15.0 以上），CI 不另装 npm。
 
 ### 支持的平台
 
@@ -284,15 +284,15 @@ coding-agent/
 
 需要模型的测试用便宜的真实模型联网运行（见 AGENTS.md 的测试规则），不回放录制、不跳过。
 
-- CI 用 GitHub Actions，runner 固定版本。每个 PR（包括 fork 和 Dependabot 的）运行 `npm run check` 和不带 vitest `model` 标签的测试，不配置密钥：`sandbox` 包自己的测试在 `ubuntu-24.04`、`ubuntu-24.04-arm`、`macos-15`、`macos-26` 四个 runner 上用真实沙盒运行，其余包在 `ubuntu-24.04` 和 `macos-15` 上运行。
-- 需要模型的测试标上 `model`，只在合并队列（`merge_group`）、每日定时和手动触发时在 `ubuntu-24.04` 上运行。密钥放在只允许 `main` 和 `gh-readonly-queue/main/*` 使用的 environment 里，fork 的改动经维护者审查、进入合并队列后才和密钥一起运行。不用 `pull_request_target`：它在带密钥的上下文里运行 PR 的代码。
-- 选中了模型测试却缺少密钥时直接失败，不用 `skipIf`：PR 上排除 `model` 标签是命令显式选择的。
-- 密钥来自专用的 OpenAI 项目、Anthropic 工作区和 DeepSeek 账户，各设 100 美元的月度硬上限。由单独的步骤写入 0600 的文件，测试只拿到文件路径，并把这个文件列入沙盒的读取禁止名单：macOS 上沙盒内能读到同一用户其他进程的初始环境变量（见 sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)）。
+- CI 用 GitHub Actions，runner 固定版本，不配置任何密钥。每个 PR（包括 fork 和 Dependabot 的）和推到 `main` 的提交运行 `npm run check`、`npm run check:pack` 和不带 vitest `model` 标签的测试，并检查每个提交都有和作者邮箱一致的 `Signed-off-by`：`sandbox` 包自己的测试在 `ubuntu-24.04`、`ubuntu-24.04-arm`、`macos-15`、`macos-26` 四个 runner 上用真实沙盒运行，其余包在 `ubuntu-24.04` 和 `macos-15` 上运行。工作流不用 `pull_request_target`：它在有写权限的上下文里运行 PR 的代码。
+- 需要模型的测试标上 `model`，由维护者在本机用 `npm run test:model` 运行，CI 不运行：密钥只放在维护者本机，不交给 GitHub。合并 PR 和打 tag 发布之前，维护者在本机跑一遍。
+- 选中了模型测试却缺少密钥时直接失败，不用 `skipIf`：`npm test` 排除 `model` 标签是命令显式选择的。
+- 密钥来自专用的 OpenAI 项目、Anthropic 工作区和 DeepSeek 账户，各设 100 美元的月度硬上限。密钥放在仓库之外的一个目录里，每个服务一个只对当前用户可读写（0600）的文件，文件名是服务名（`openai`、`anthropic`、`deepseek`），由环境变量 `OSPREYCODE_TEST_KEYS` 给出目录的路径。测试只拿到文件路径，这个目录列入沙盒的读取禁止名单：macOS 上沙盒内能读到同一用户其他进程的初始环境变量（见 sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)）。
 - 测试从干净的环境变量和临时的 HOME 目录开始，只传入需要的设置。
 - 测试用的模型：`openai.responses` 和 `openai.chat` 用 `gpt-6-luna`（它在 Chat Completions 里只有 `reasoning_effort: none` 时才能调用工具）；`openai.chat` 的推理加工具调用用直连的 `deepseek-flash`（它要求带回 `reasoning_content`）；`anthropic.messages` 用 `claude-haiku-5-5`。DeepSeek 在工作日高峰时段价格加倍，模型清单的价格结构要能表达。
 - 每个测试显式给出 run 的上限（0.05 美元、20 次请求、5 分钟）；测试进程内的账本超过每次运行的上限（1 美元）后，其余模型测试失败。
 - 断言只检查结构化结果：停止原因、工具名和按 schema 校验的参数、文件结果和退出码、事件和 session 记录的完整性、用量和错误类别，不检查模型写的原文。
-- 只对 `api` 归为限流、服务过载、网络中断和超时的失败重跑一次（vitest 标签上的 `retry.condition`），断言失败不重跑；重跑后才通过的测试按 `diagnostic().flaky` 记为不稳定，写进 job summary。
+- 只对 `api` 归为限流、服务过载、网络中断和超时的失败重跑一次（vitest 标签上的 `retry.condition`），断言失败不重跑；重跑后才通过的测试按 `diagnostic().flaky` 记为不稳定，在运行结束时列出。
 
 ## 实施阶段
 
@@ -314,3 +314,4 @@ P1 的两个沙盒后端都要经过真实沙盒的验证；其他平台逐个�
 - P0：模型测试运行一个月后，按实际费用核对每个测试（0.05 美元、20 次、5 分钟）和每次运行（1 美元）的上限。
 - P1：在 Ubuntu 24.04 上实测 `apply-seccomp` 是否也需要允许 `bwrap` 使用 `userns` 的 AppArmor 配置，需要就写进安装说明。
 - P1：确认选中的 SWE-bench Pro V2 题目镜像满足 glibc 2.28 以上，缺 `libatomic1` 时由评测的安装步骤装上。
+- P1：第一次发布时实际走一遍 release 工作流：tag 和版本的核对、OIDC 下的 `npm stage publish` 和自动生成的 provenance。

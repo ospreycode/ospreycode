@@ -21,7 +21,8 @@
 		"build": "npm run build --workspaces",
 		"check": "biome check && tsc -p tsconfig.json && tsc -p scripts/tsconfig.json && node scripts/check-deps.ts",
 		"check:pack": "node scripts/check-pack.ts",
-		"test": "vitest run",
+		"test": "vitest run --tags-filter='!model'",
+		"test:model": "vitest run --tags-filter=model",
 		"version:set": "node scripts/set-version.ts"
 	},
 	"devDependencies": {

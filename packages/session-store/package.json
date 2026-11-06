@@ -3,6 +3,11 @@
 	"version": "0.1.0",
 	"description": "保存 session 记录：事件、会话树、检查点索引和按引用保存的大内容",
 	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ospreycode/ospreycode.git",
+		"directory": "packages/session-store"
+	},
 	"type": "module",
 	"exports": {
 		".": {

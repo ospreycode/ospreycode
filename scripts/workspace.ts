@@ -6,6 +6,7 @@ export interface Manifest {
 	name: string;
 	version?: string;
 	private?: boolean;
+	repository?: { type: string; url: string; directory?: string };
 	workspaces?: string[];
 	exports?: Record<string, Record<string, string>>;
 	dependencies?: Record<string, string>;

@@ -4,6 +4,7 @@ import {
 	checkExactVersions,
 	checkExports,
 	checkLicenses,
+	checkRepository,
 	checkVersions,
 } from "../check-deps.ts";
 import type { Manifest, Workspace } from "../workspace.ts";
@@ -190,6 +191,43 @@ describe("checkExports", () => {
 			true,
 		);
 		expect(problems.some((p) => p.includes("指向 ./src/index.ts"))).toBe(true);
+	});
+});
+
+describe("checkRepository", () => {
+	const repository = {
+		type: "git",
+		url: "git+https://github.com/ospreycode/ospreycode.git",
+		directory: "packages/api",
+	};
+
+	test("发布的包写明仓库和所在目录时没有问题", () => {
+		expect(
+			checkRepository(workspace(manifest("api", {}, { repository }))),
+		).toEqual([]);
+	});
+
+	test("报告缺少 repository 或目录不对的包", () => {
+		expect(checkRepository(workspace(manifest("api")))).toHaveLength(1);
+		expect(
+			checkRepository(
+				workspace(
+					manifest(
+						"api",
+						{},
+						{
+							repository: { ...repository, directory: "packages/skills" },
+						},
+					),
+				),
+			),
+		).toHaveLength(1);
+	});
+
+	test("不发布的包不需要 repository", () => {
+		expect(
+			checkRepository(workspace(manifest("evaluation", {}, { private: true }))),
+		).toEqual([]);
 	});
 });
 

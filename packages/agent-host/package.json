@@ -3,6 +3,11 @@
 	"version": "0.1.0",
 	"description": "本地后端：管理 session 和 task，持有凭据和配置，管理扩展，把其他包组装起来",
 	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ospreycode/ospreycode.git",
+		"directory": "packages/agent-host"
+	},
 	"type": "module",
 	"exports": {
 		".": {

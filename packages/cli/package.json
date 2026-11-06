@@ -3,6 +3,11 @@
 	"version": "0.1.0",
 	"description": "命令行界面：子命令、交互界面、非交互运行和对外的事件流",
 	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ospreycode/ospreycode.git",
+		"directory": "packages/cli"
+	},
 	"type": "module",
 	"exports": {
 		".": {
