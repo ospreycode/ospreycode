@@ -1,4 +1,5 @@
 import type {
+	AssistantContent,
 	ImageBlock,
 	Message,
 	ProtocolName,
@@ -134,23 +135,28 @@ function usageTokens(usage: Usage): number {
 	return usage.input + usage.output + usage.cache_read + usage.cache_write;
 }
 
+function blockTokens(block: AssistantContent): number {
+	switch (block.type) {
+		case "text":
+		case "reasoning":
+			return textTokens(block.text);
+		case "tool_call":
+			return textTokens(block.name + block.arguments);
+		case "fallback":
+			return 0;
+	}
+}
+
 /** 一条消息的估算；回复按它报告的输出 token 计（含推理），没有用量时按内容估算。 */
 function messageTokens(protocol: ProtocolName, message: Message): number {
 	if (message.role !== "assistant") {
 		return contentTokens(protocol, message.content);
 	}
 	if (message.usage.output > 0) return message.usage.output;
-	return message.content.reduce((total, block) => {
-		switch (block.type) {
-			case "text":
-			case "reasoning":
-				return total + textTokens(block.text);
-			case "tool_call":
-				return total + textTokens(block.name + block.arguments);
-			case "fallback":
-				return total;
-		}
-	}, 0);
+	return message.content.reduce(
+		(total, block) => total + blockTokens(block),
+		0,
+	);
 }
 
 /**
