@@ -289,7 +289,7 @@ coding-agent/
 - 选中了模型测试却缺少密钥时直接失败，不用 `skipIf`：`npm test` 排除 `model` 标签是命令显式选择的。
 - 模型测试经一个中转服务访问 OpenAI、Anthropic 和 Gemini 三家的模型，每家一个密钥，各设额度上限。密钥放在仓库之外的一个目录里，每家一个只对当前用户可读写（0600）的文件，文件名是服务名（`openai`、`anthropic`、`gemini`），另有一个 `base-url` 文件写三家共用的接口地址；由环境变量 `OSPREYCODE_TEST_KEYS` 给出目录的路径。测试只拿到密钥文件的路径和接口地址，这个目录列入沙盒的读取禁止名单：macOS 上沙盒内能读到同一用户其他进程的初始环境变量（见 sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)）。
 - 测试从干净的环境变量和临时的 HOME 目录开始，只传入需要的设置。
-- 测试用的模型：`openai.responses` 和 `openai.chat` 用 `gpt-6-luna`（它在 Chat Completions 里只有 `reasoning_effort: none` 时才能调用工具）；`openai.chat` 的推理加工具调用用直连的 `deepseek-flash`（它要求带回 `reasoning_content`）；`anthropic.messages` 用 `claude-haiku-5-5`。DeepSeek 在工作日高峰时段价格加倍，模型清单的价格结构要能表达。
+- 测试用的模型按中转服务上可用的选定：`anthropic.messages` 用 `claude-haiku-5-5`，P0 的验收场景也用它；`openai.responses` 和 `openai.chat` 用 `gpt-5.6-sol`（它在 Chat Completions 里只有 `reasoning_effort: none` 时才能调用工具），中转服务上它是 OpenAI 模型里最便宜的。中转服务返回的错误不带各家原来的错误码，错误归类的测试用 `api` 的脚本模型。模型清单的价格结构要能表达分时段的价格（如 DeepSeek 工作日高峰时段加倍）。
 - 每个测试显式给出 run 的上限（0.05 美元、20 次请求、5 分钟）；测试进程内的账本超过每次运行的上限（1 美元）后，其余模型测试失败。
 - 断言只检查结构化结果：停止原因、工具名和按 schema 校验的参数、文件结果和退出码、事件和 session 记录的完整性、用量和错误类别，不检查模型写的原文。
 - 只对 `api` 归为限流、服务过载、网络中断和超时的失败重跑一次（vitest 标签上的 `retry.condition`），断言失败不重跑；重跑后才通过的测试按 `diagnostic().flaky` 记为不稳定，在运行结束时列出。
@@ -312,7 +312,7 @@ P1 的两个沙盒后端都要经过真实沙盒的验证；其他平台逐个�
 ## 实施时核对
 
 - P0：模型测试运行一个月后，按实际费用核对每个测试（0.05 美元、20 次、5 分钟）和每次运行（1 美元）的上限。
-- P0：写第一个模型测试前，按中转服务上实际可用的模型重新选定测试模型：当前的密钥用不了 `gpt-6-luna`，`deepseek-flash` 换成了 Gemini，要确认 `openai.chat` 带推理内容调用工具的测试改用哪个模型。中转服务返回的错误不带各家原来的错误码，错误归类的测试改用 `api` 的脚本模型。
+- P1：写 `openai.chat` 带推理内容调用工具的测试前选定模型：它要在 Chat Completions 里返回 `reasoning_content` 一类的字段并要求带回。中转服务上现有的模型都不满足，`gemini-4-argon` 只在工具调用上附带中转服务自己的 `extra_content.google` 回放字段。
 - P1：在 Ubuntu 24.04 上实测 `apply-seccomp` 是否也需要允许 `bwrap` 使用 `userns` 的 AppArmor 配置，需要就写进安装说明。
 - P1：确认选中的 SWE-bench Pro V2 题目镜像满足 glibc 2.28 以上，缺 `libatomic1` 时由评测的安装步骤装上。
 - P1：第一次发布时实际走一遍 release 工作流：tag 和版本的核对、OIDC 下的 `npm stage publish` 和自动生成的 provenance。

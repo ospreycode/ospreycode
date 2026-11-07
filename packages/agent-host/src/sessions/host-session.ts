@@ -22,7 +22,7 @@ import type { StreamModel } from "@ospreycode/api";
 import type { UserContent } from "@ospreycode/api/protocol";
 import type { ApprovalAnswer } from "@ospreycode/sandbox";
 import { Approvals } from "../actions/approvals.js";
-import { type CommandLauncher, ToolCalls } from "../actions/tool-calls.js";
+import { ToolCalls } from "../actions/tool-calls.js";
 import { type ChannelHandlers, serveChannel } from "../channel/serve.js";
 import type { SessionConfig } from "../config/session-config.js";
 import { ModelProxy } from "../model-proxy/proxy.js";
@@ -32,7 +32,11 @@ import {
 	startAgentProcess,
 } from "../processes/agent-process.js";
 import { findBash, sandboxEnvironment } from "../processes/environment.js";
-import { createSessionDirectories } from "../project/workspace.js";
+import type { SessionSandbox } from "../processes/sandboxed.js";
+import {
+	createSessionDirectories,
+	type SessionDirectories,
+} from "../project/workspace.js";
 import { redact } from "../redaction/redact.js";
 import {
 	eventFormatVersion,
@@ -67,12 +71,17 @@ export interface HostSessionOptions {
 	hostEnv: Readonly<Record<string, string | undefined>>;
 	fetch: typeof globalThis.fetch;
 	streamModel: StreamModel;
-	/** 启动 agent 进程的命令和执行 shell 命令的方式，由沙盒模式决定。 */
-	launch: (bash: string) => {
-		agentArgv: readonly string[];
-		commands: CommandLauncher;
-	};
+	/** 按沙盒模式准备 agent 进程的启动命令和命令沙盒。 */
+	createSandbox: (context: SandboxContext) => Promise<SessionSandbox>;
 	onEvent: (event: HostEvent) => void;
+}
+
+/** 准备沙盒时已经确定的东西。 */
+export interface SandboxContext {
+	bash: string;
+	/** 沙盒里的进程的环境变量。 */
+	env: Record<string, string>;
+	directories: SessionDirectories;
 }
 
 function describeExit(exit: ProcessExit): string {
@@ -100,6 +109,7 @@ export class HostSession implements ChannelHandlers {
 	#modelProxy: ModelProxy;
 	#toolCalls!: ToolCalls;
 	#agent!: AgentProcess;
+	#sandbox!: SessionSandbox;
 	#tmpdir = "";
 	#run: Run | undefined;
 	#usage = emptyUsage();
@@ -142,11 +152,15 @@ export class HostSession implements ChannelHandlers {
 			workspace,
 			bash,
 		});
-		const { agentArgv, commands } = this.#options.launch(bash);
+		this.#sandbox = await this.#options.createSandbox({
+			bash,
+			env,
+			directories,
+		});
 		this.#toolCalls = new ToolCalls({
 			events: this.#events,
 			approvals: this.#approvals,
-			launcher: commands,
+			launcher: this.#sandbox.commands,
 			policy: {
 				sandboxMode: config.sandboxMode,
 				approvalPolicy: config.approvalPolicy,
@@ -158,7 +172,7 @@ export class HostSession implements ChannelHandlers {
 			tools: ["shell"],
 		});
 		this.#agent = startAgentProcess({
-			argv: agentArgv,
+			argv: this.#sandbox.agentArgv,
 			env,
 			cwd: workspace,
 			onChannelFailure: (error) => this.#onChannelFailure(error),
@@ -179,6 +193,7 @@ export class HostSession implements ChannelHandlers {
 		} catch (error) {
 			this.#state = "closed";
 			this.#agent.kill();
+			await this.#sandbox.stop();
 			throw error;
 		} finally {
 			clearTimeout(timer);
@@ -253,6 +268,7 @@ export class HostSession implements ChannelHandlers {
 			this.#finishTask(run, "cancelled");
 		}
 		await this.#agent.stop();
+		await this.#sandbox.stop();
 		this.#state = "closed";
 		this.#end("closed");
 	}
@@ -385,7 +401,8 @@ export class HostSession implements ChannelHandlers {
 				this.#options.apiKey,
 			]),
 		});
-		this.#end(this.#failure === undefined ? "agent_exited" : "error");
+		const ended = this.#failure === undefined ? "agent_exited" : "error";
+		void this.#sandbox.stop().then(() => this.#end(ended));
 	}
 
 	#end(reason: SessionEndReason): void {

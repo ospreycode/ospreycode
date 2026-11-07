@@ -36,6 +36,8 @@ const shellValidator = Compile(shellArgumentsSchema);
 
 /** 为一条命令生成完整的启动命令，并说明它在哪个沙盒里运行。 */
 export interface CommandLauncher {
+	/** 沙盒后端做不到的申请，返回交给模型的原因；在询问用户之前检查。 */
+	unsupported(request: CommandRequest): string | undefined;
 	argv(request: CommandRequest): Promise<readonly string[]>;
 	summary(request: CommandRequest): SandboxSummary;
 }
@@ -183,6 +185,8 @@ export class ToolCalls {
 				? {}
 				: { prefix_rule: args.prefix_rule }),
 		};
+		const unsupported = this.#options.launcher.unsupported(request);
+		if (unsupported !== undefined) return failure(unsupported);
 		const decision = decideCommand(request, this.#options.policy);
 		if (decision.action === "deny") {
 			return {
@@ -273,8 +277,21 @@ export class ToolCalls {
 	): Promise<ToolResult> {
 		const { events, launcher } = this.#options;
 		const outputFile = join(this.#options.outputDir, toolCallId);
+		let argv: readonly string[];
+		try {
+			argv = await launcher.argv(request);
+		} catch (error) {
+			// 单条命令的沙盒启动失败只让这次调用失败，不关闭 session
+			return {
+				status: "failed",
+				reason: "sandbox_launch",
+				content: text(
+					`The sandbox could not start this command: ${(error as Error).message}`,
+				),
+			};
+		}
 		const command = await runCommand({
-			argv: await launcher.argv(request),
+			argv,
 			cwd: request.workdir,
 			env: this.#options.env,
 			timeoutMs,

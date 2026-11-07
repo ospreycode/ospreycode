@@ -1,13 +1,18 @@
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type StreamModel, streamModel } from "@ospreycode/api";
 import type { ApprovalAnswer } from "@ospreycode/sandbox";
+import { checkSandboxSupport } from "@ospreycode/sandbox/backends";
 import {
 	ConfigError,
 	resolveSessionConfig,
 	type SessionOptions,
 } from "../config/session-config.js";
 import { readCredential } from "../credentials/sources.js";
-import { directLauncher } from "../processes/launchers.js";
+import {
+	sandboxedSession,
+	unsandboxedSession,
+} from "../processes/sandboxed.js";
 import {
 	checkSeparate,
 	prepareRoot,
@@ -28,6 +33,8 @@ export interface HostOptions {
 	streamModel?: StreamModel;
 	/** agent 进程的入口文件；不传时从 `@ospreycode/agent-runtime` 的 exports 找到，`cli` 打包后传入打包的文件。 */
 	agentEntry?: string;
+	/** 沙盒辅助进程的入口文件；不传时从 `@ospreycode/sandbox` 的 exports 找到。 */
+	sandboxHelperEntry?: string;
 }
 
 /** 打开 session 的选项。 */
@@ -55,36 +62,38 @@ export interface Session {
 export interface Host {
 	/**
 	 * 新建一个 session：检查配置和凭据，启动 agent 进程并完成握手。参数或配置有错时抛出
-	 * `ConfigError`、`CredentialError` 或 `WorkspaceError`，agent 进程没能启动时抛出 `AgentStartError`。
+	 * `ConfigError`、`CredentialError` 或 `WorkspaceError`；当前平台没有沙盒后端时抛出
+	 * `SandboxUnavailableError`；agent 进程没能启动时抛出 `AgentStartError`。
 	 */
 	openSession(options: OpenSessionOptions): Promise<Session>;
+}
+
+function resolveEntry(specifier: string): string {
+	return fileURLToPath(import.meta.resolve(specifier));
 }
 
 /** 创建 Host。 */
 export function createHost(options: HostOptions): Host {
 	const root = prepareRoot(options.root);
 	const agentEntry =
-		options.agentEntry ??
-		fileURLToPath(import.meta.resolve("@ospreycode/agent-runtime/agent"));
+		options.agentEntry ?? resolveEntry("@ospreycode/agent-runtime/agent");
+	const agentCommand = [process.execPath, agentEntry];
 	return {
 		async openSession(sessionOptions) {
 			const config = resolveSessionConfig(sessionOptions);
 			const workspace = resolveWorkspace(config.workspace);
 			checkSeparate(root, workspace);
-			if (config.sandboxMode !== "danger-full-access") {
-				throw new ConfigError(
-					`沙盒模式 ${config.sandboxMode} 需要的沙盒后端还没有接入，现在只能用 danger-full-access`,
-				);
-			}
-			const apiKey = readCredential(
-				config.credential.id,
-				config.credential.source,
-				{
-					workspace,
-					env: options.env,
-					platform: process.platform,
-				},
-			);
+			const { credential } = config;
+			const apiKey = readCredential(credential.id, credential.source, {
+				workspace,
+				env: options.env,
+				platform: process.platform,
+			});
+			const mode = config.sandboxMode;
+			if (mode !== "danger-full-access") checkSandboxSupport(process.platform);
+			const helperEntry =
+				options.sandboxHelperEntry ??
+				resolveEntry("@ospreycode/sandbox/helper");
 			const session = await HostSession.open({
 				root,
 				config,
@@ -93,10 +102,36 @@ export function createHost(options: HostOptions): Host {
 				hostEnv: options.env,
 				fetch: options.fetch ?? globalThis.fetch,
 				streamModel: options.streamModel ?? streamModel,
-				launch: (bash) => ({
-					agentArgv: [process.execPath, agentEntry],
-					commands: directLauncher(bash),
-				}),
+				createSandbox: async ({ bash, env, directories }) => {
+					if (mode === "danger-full-access") {
+						return unsandboxedSession(agentCommand, bash);
+					}
+					if (env.HOME === undefined) {
+						throw new ConfigError(
+							"Host 的环境变量里没有 HOME，找不到要禁止读取的密钥位置",
+						);
+					}
+					return sandboxedSession({
+						helperEntry,
+						policy: {
+							mode,
+							workspace,
+							tmpdir: directories.tmp,
+							readOnly: [directories.output],
+							denyRead: [
+								root,
+								...("file" in credential.source
+									? [realpathSync(credential.source.file)]
+									: []),
+								...config.denyRead,
+							],
+							home: env.HOME,
+						},
+						env,
+						bash,
+						agentCommand,
+					});
+				},
 				onEvent: sessionOptions.onEvent,
 			});
 			return {

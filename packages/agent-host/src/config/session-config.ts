@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { type ModelEntry, supportedProtocols } from "@ospreycode/api";
 import {
 	type ApprovalPolicy,
@@ -27,6 +28,8 @@ export interface SessionOptions {
 	approvalPolicy: ApprovalPolicy;
 	/** 审批策略为 `granular` 时各类别是否询问。 */
 	granular?: GranularApproval;
+	/** 额外禁止沙盒读取的绝对路径（配置的 `deny_read`），和默认的禁止名单取并集。 */
+	denyRead?: readonly string[];
 }
 
 /** 检查过的 session 配置。 */
@@ -37,6 +40,7 @@ export interface SessionConfig {
 	sandboxMode: BuiltinSandboxMode;
 	approvalPolicy: ApprovalPolicy;
 	granular?: GranularApproval;
+	denyRead: readonly string[];
 }
 
 /** 检查打开 session 的选项，不满足时抛出 `ConfigError`。 */
@@ -66,6 +70,11 @@ export function resolveSessionConfig(options: SessionOptions): SessionConfig {
 	if (options.approvalPolicy === "granular" && options.granular === undefined) {
 		throw new ConfigError("审批策略为 granular 时要写明各类别是否询问");
 	}
+	const denyRead = options.denyRead ?? [];
+	const relative = denyRead.find((path) => !isAbsolute(path));
+	if (relative !== undefined) {
+		throw new ConfigError(`禁止读取的路径要写绝对路径：${relative}`);
+	}
 	return {
 		workspace: options.workspace,
 		model,
@@ -73,5 +82,6 @@ export function resolveSessionConfig(options: SessionOptions): SessionConfig {
 		sandboxMode: mode,
 		approvalPolicy: options.approvalPolicy,
 		...(options.granular === undefined ? {} : { granular: options.granular }),
+		denyRead,
 	};
 }

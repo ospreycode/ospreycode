@@ -1,3 +1,4 @@
+export { SandboxUnavailableError } from "@ospreycode/sandbox/backends";
 export {
 	ConfigError,
 	type SessionConfig,

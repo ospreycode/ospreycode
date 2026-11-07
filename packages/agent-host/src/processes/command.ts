@@ -86,6 +86,11 @@ export async function runCommand(
 	});
 	const pid = child.pid;
 	if (pid === undefined) throw new Error(`启动命令失败：${command}`);
+	// 两个事件都要在这里就开始等：输出的管道先关闭时，close 紧跟着 exit 同步发出，等 exit 之后再等就错过了
+	const exited = once(child, "exit") as Promise<
+		[number | null, NodeJS.Signals | null]
+	>;
+	const closed = once(child, "close");
 	const collect = (chunk: Buffer) => {
 		file.write(chunk);
 		collector.add(chunk);
@@ -111,15 +116,12 @@ export async function runCommand(
 	options.signal.addEventListener("abort", onAbort, { once: true });
 	if (options.signal.aborted) onAbort();
 
-	const [exitCode, signal] = (await once(child, "exit")) as [
-		number | null,
-		NodeJS.Signals | null,
-	];
+	const [exitCode, signal] = await exited;
 	clearTimeout(timer);
 	options.signal.removeEventListener("abort", onAbort);
 	killGroup(pid);
 	// 输出的管道可能还有没读完的数据，等它们关闭
-	await once(child, "close");
+	await closed;
 	file.end();
 	await once(file, "finish");
 	await streaming;

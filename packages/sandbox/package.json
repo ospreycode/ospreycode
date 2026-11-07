@@ -13,6 +13,14 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
+		},
+		"./backends": {
+			"types": "./dist/backends/index.d.ts",
+			"import": "./dist/backends/index.js"
+		},
+		"./helper": {
+			"types": "./dist/backends/helper.d.ts",
+			"import": "./dist/backends/helper.js"
 		}
 	},
 	"files": [
@@ -24,6 +32,9 @@
 	},
 	"engines": {
 		"node": "^24.15.0 || >=26.0.0"
+	},
+	"dependencies": {
+		"@anthropic-ai/sandbox-runtime": "0.0.81"
 	},
 	"devDependencies": {
 		"vitest": "5.0.5"

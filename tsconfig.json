@@ -6,6 +6,12 @@
 			"@ospreycode/sandbox": [
 				"./packages/sandbox/src/index.ts"
 			],
+			"@ospreycode/sandbox/backends": [
+				"./packages/sandbox/src/backends/index.ts"
+			],
+			"@ospreycode/sandbox/helper": [
+				"./packages/sandbox/src/backends/helper.ts"
+			],
 			"@ospreycode/session-store": [
 				"./packages/session-store/src/index.ts"
 			],

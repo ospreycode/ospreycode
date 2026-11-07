@@ -62,7 +62,7 @@ export interface SessionDirectories {
 
 /**
  * 创建 session 的临时目录和输出目录。目录名取 session 标识的前 12 个字符：
- * Unix socket 的路径有长度上限（macOS 104 字节）。
+ * Unix socket 的路径有长度上限，沙盒后端的 socket 建在临时目录里。
  */
 export function createSessionDirectories(
 	root: string,

@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	AgentStartError,
@@ -5,7 +7,9 @@ import {
 	CredentialError,
 	createHost,
 	type HostOptions,
+	SandboxUnavailableError,
 	type Session,
+	type SessionOptions,
 	WorkspaceError,
 } from "@ospreycode/agent-host";
 import { type Script, scriptedModel } from "@ospreycode/api/testing";
@@ -37,14 +41,15 @@ afterEach(async () => {
 async function open(
 	log: EventLog,
 	host: Partial<HostOptions> & { script?: Script } = {},
+	options: Partial<SessionOptions> = {},
 ): Promise<Session> {
-	const { script, ...options } = host;
+	const { script, ...hostOptions } = host;
 	logs.push(log);
 	session = await createHost({
 		root: dirs.root,
 		env: dirs.env,
 		...(script === undefined ? {} : { streamModel: scriptedModel(script) }),
-		...options,
+		...hostOptions,
 	}).openSession({
 		workspace: dirs.workspace,
 		model: scriptedEntry.id,
@@ -52,9 +57,14 @@ async function open(
 		credentials: { test: { file: dirs.credentialFile } },
 		sandboxMode: "danger-full-access",
 		approvalPolicy: "never",
+		...options,
 		onEvent: log.push,
 	});
 	return session;
+}
+
+async function waitUntil(condition: () => boolean): Promise<void> {
+	while (!condition()) await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
 function fixture(name: string): string {
@@ -123,6 +133,34 @@ describe("在指定时刻取消（脚本模型）", () => {
 			result: { status: "cancelled" },
 		});
 		expect(Date.now() - started).toBeLessThan(10_000);
+	});
+});
+
+test("命令先关掉输出、过一会儿才退出：Host 照样拿到结果（脚本模型）", async () => {
+	const log = new EventLog();
+	const current = await open(log, {
+		script: (_request, call) =>
+			call === 0
+				? {
+						content: [
+							{
+								type: "tool_call",
+								call_id: "call_1",
+								name: "shell",
+								arguments: JSON.stringify({
+									command: "exec >&- 2>&-; sleep 0.2",
+								}),
+							},
+						],
+					}
+				: { content: [{ type: "text", text: "完成" }] },
+	});
+	await current.submit("运行命令");
+	expect(await log.waitFor("task.ended")).toMatchObject({
+		outcome: "completed",
+	});
+	expect(await log.waitFor("tool_call.completed")).toMatchObject({
+		result: { status: "succeeded" },
 	});
 });
 
@@ -205,5 +243,50 @@ describe("打开 session 之前的检查", () => {
 				onEvent: () => {},
 			}),
 		).rejects.toBeInstanceOf(WorkspaceError);
+	});
+});
+
+describe.runIf(process.platform === "darwin")(
+	"沙盒里的 session（macOS 真实沙盒）",
+	() => {
+		test("agent 进程在离线沙盒里完成握手；命令在命令沙盒里运行，写得了工作区、写不了主目录；运行中取消（脚本模型）", async () => {
+			const log = new EventLog();
+			const command = `echo hi > inside.txt; echo x > "$HOME/escape.txt"; sleep 30`;
+			const current = await open(
+				log,
+				{
+					script: () => ({
+						content: [
+							{
+								type: "tool_call",
+								call_id: "call_1",
+								name: "shell",
+								arguments: JSON.stringify({ command }),
+							},
+						],
+					}),
+				},
+				{ sandboxMode: "workspace-write", approvalPolicy: "on-request" },
+			);
+			expect(await log.waitFor("session.started")).toMatchObject({
+				sandbox_mode: "workspace-write",
+			});
+			await current.submit("写一个文件");
+			await log.waitFor("tool_call.started");
+			await waitUntil(() => existsSync(join(dirs.workspace, "inside.txt")));
+			await current.cancel();
+			expect(await log.waitFor("task.ended")).toMatchObject({
+				outcome: "cancelled",
+			});
+			expect(existsSync(join(dirs.home, "escape.txt"))).toBe(false);
+		});
+	},
+);
+
+describe.runIf(process.platform !== "darwin")("没有沙盒后端的平台", () => {
+	test("沙盒模式报告不支持，不降级运行", async () => {
+		await expect(
+			open(new EventLog(), {}, { sandboxMode: "workspace-write" }),
+		).rejects.toBeInstanceOf(SandboxUnavailableError);
 	});
 });

@@ -482,12 +482,12 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 
 ## 实施时核对
 
-- P0：用真实模型验证批准、取消、事件、模型代理和 MCP 工具调用。
-- P0：在 Linux（bwrap）上重复 fd 3 的继承检查，以及 `ptrace_scope` 为 0 和 1 时同一沙盒的进程能否用 `pidfd_getfd` 复制它。
+- P1：接入 bubblewrap 后端时在 Linux 上重复 fd 3 的继承检查（macOS 上已经确认经 sandbox-runtime 包装后 fd 3 仍在），以及 `ptrace_scope` 为 0 和 1 时同一沙盒的进程能否用 `pidfd_getfd` 复制它。
 - P1：在 Linux 上实测根目录的布局（tmpfs 加绑定回子目录，符号链接和硬链接读不到 `data/`）。
 - P1：用真实任务的请求次数和费用分布核对默认预算。
 - P1：检查 Terminal.app、iTerm2、Ghostty、VS Code 终端和 tmux 上 Enter 和 Alt+Enter 能否区分，中文输入法和宽字符是否正常。
 - P1：实测一次请求超过 20 张图片时的实际尺寸上限，以及大图解码的耗时和内存。
+- P2：用真实模型验证 MCP 工具调用的批准和取消（P0 已经用真实模型验证了 shell 的批准、拒绝、取消、事件和模型代理）。
 - P2：在 Linux 上实测插件版本目录和 `PLUGIN_DATA` 的读写范围（启动 server 之前建好目录）。
 - P2：用常见的本地 MCP server 实测密钥的 mask。
 - P2：实测 Linux 上每个 hook 单独进沙盒的延迟。

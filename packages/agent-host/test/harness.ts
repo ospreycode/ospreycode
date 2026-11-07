@@ -5,7 +5,6 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type HostEvent, isHostEvent } from "@ospreycode/agent-host";
 import type { ModelEntry } from "@ospreycode/api";
@@ -69,7 +68,8 @@ export interface TestDirectories {
 }
 
 export function testDirectories(): TestDirectories {
-	const base = realpathSync(mkdtempSync(join(tmpdir(), "osp-host-")));
+	// macOS 的 TMPDIR 很深，沙盒后端在 session 临时目录里建的 socket 会超出路径上限
+	const base = realpathSync(mkdtempSync("/tmp/osp-host-"));
 	const home = join(base, "home");
 	const workspace = join(base, "workspace");
 	const secrets = join(base, "secrets");

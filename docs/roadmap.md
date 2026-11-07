@@ -16,24 +16,24 @@
 | Host 和 agent 进程之间的通道（P0 的操作、消息格式、`initialize` 握手）、agent 进程的入口 | P0 | 已完成 | agent-runtime 的[通道](packages/agent-runtime.md#通道)；agent-host 的[进程形态和通信](packages/agent-host.md#进程形态和通信) |
 | Host 的模块骨架（sdk、config、credentials、redaction、project、sessions、channel、actions、model-proxy、processes） | P0 起，随各阶段补全 | 进行中 | agent-host 的[模块](packages/agent-host.md#模块) |
 | 对外的事件格式和退出码 | P0 | 已完成 | agent-host 的[对外的事件格式](packages/agent-host.md#对外的事件格式) |
-| 最小原型和最小评测入口 | P0 | 未开始 | overview 的[实施阶段](overview.md#实施阶段) |
-| 沙盒模式、命名权限配置、审批策略（含 `granular` 的七个类别）、权限规则（命令、域名、MCP 工具三种）、越界申请（含 `unix_sockets`、`local_binding`） | P1 | 未开始 | [sandbox](packages/sandbox.md) |
-| macOS（Seatbelt）和 Linux（bubblewrap，Ubuntu 24.04）两个沙盒后端，辅助进程（离线、命令、按需单独启动的）；CI 上四个 runner 的真实沙盒测试 | P1 | 未开始 | sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)；overview 的[支持的平台](overview.md#支持的平台) |
-| 命令沙盒：每条命令由 Host 单独启动沙盒，macOS 上用收尾进程结束全部进程 | P1 | 未开始 | sandbox 的[命令的执行](packages/sandbox.md#命令的执行)和[macOS 上结束全部进程](packages/sandbox.md#macos-上结束全部进程) |
-| 沙盒的环境变量白名单 | P1 | 未开始 | sandbox 的[沙盒模式](packages/sandbox.md#沙盒模式) |
+| 最小原型和最小评测入口 | P0 | 已完成 | overview 的[实施阶段](overview.md#实施阶段) |
+| 沙盒模式、命名权限配置、审批策略（含 `granular` 的七个类别）、权限规则（命令、域名、MCP 工具三种）、越界申请（含 `unix_sockets`、`local_binding`） | P1 | 进行中 | [sandbox](packages/sandbox.md) |
+| macOS（Seatbelt）和 Linux（bubblewrap，Ubuntu 24.04）两个沙盒后端，辅助进程（离线、命令、按需单独启动的）；CI 上四个 runner 的真实沙盒测试 | P1 | 进行中 | sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)；overview 的[支持的平台](overview.md#支持的平台) |
+| 命令沙盒：每条命令由 Host 单独启动沙盒，macOS 上用收尾进程结束全部进程 | P1 | 进行中 | sandbox 的[命令的执行](packages/sandbox.md#命令的执行)和[macOS 上结束全部进程](packages/sandbox.md#macos-上结束全部进程) |
+| 沙盒的环境变量白名单 | P1 | 进行中 | sandbox 的[沙盒模式](packages/sandbox.md#沙盒模式) |
 | 受保护的路径和占位登记表、构建工具的缓存 | P1 | 未开始 | sandbox 的[受保护的路径](packages/sandbox.md#受保护的路径)和[构建工具的缓存](packages/sandbox.md#构建工具的缓存) |
 | 网络访问的审批 | P1 | 未开始 | sandbox 的[网络访问的审批](packages/sandbox.md#网络访问的审批) |
 | agent 进程的重启：从 session 记录重建发给模型的历史（切换沙盒模式、取消超时、异常退出、Linux 上发现新仓库） | P1 | 未开始 | agent-host 的 [agent 进程的重启](packages/agent-host.md#agent-进程的重启) |
-| 三种模型协议的转换、模型清单、原样重放、拒绝和回退的作废事件、前缀校验失败的恢复 | P1 | 未开始 | [api](packages/api.md) |
+| 三种模型协议的转换、模型清单、原样重放、拒绝和回退的作废事件、前缀校验失败的恢复 | P1 | 进行中 | [api](packages/api.md) |
 | token 估算（算 `max_tokens`、判断上下文超长） | P1 | 未开始 | api 的 [token 计数](packages/api.md#token-计数) |
 | 模型测试的每次运行费用账本、按 `api` 的错误类别重跑一次、不稳定测试的报告 | P1 | 未开始 | overview 的 [CI 和真实模型测试](overview.md#ci-和真实模型测试) |
-| loop，`read`、`edit`、`write`、`shell` 和 `request_permissions` 工具 | P1 | 未开始 | agent-runtime 的[工具执行](packages/agent-runtime.md#工具执行) |
+| loop，`read`、`edit`、`write`、`shell` 和 `request_permissions` 工具 | P1 | 进行中 | agent-runtime 的[工具执行](packages/agent-runtime.md#工具执行) |
 | 规则文件（`AGENTS.md` 等）的加载、系统指令和会话开始的上下文消息 | P1 | 未开始 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
 | Host；CLI 的交互和非交互模式，P1 的子命令和会话内命令 | P1 | 未开始 | agent-host 的 [CLI](packages/agent-host.md#cli) |
-| task 的开始、结束和取消，工具调用的处理 | P1 | 未开始 | agent-host 的 [task 的开始、结束和取消](packages/agent-host.md#task-的开始结束和取消)和[工具调用的处理](packages/agent-host.md#工具调用的处理) |
+| task 的开始、结束和取消，工具调用的处理 | P1 | 进行中 | agent-host 的 [task 的开始、结束和取消](packages/agent-host.md#task-的开始结束和取消)和[工具调用的处理](packages/agent-host.md#工具调用的处理) |
 | 项目身份、`user_id`、目录位置、工作区锁和进程登记表 | P1 | 未开始 | agent-host 的[项目身份](packages/agent-host.md#项目身份)、[目录位置](packages/agent-host.md#目录位置)和 [session 的打开和关闭](packages/agent-host.md#session-的打开和关闭) |
-| 密钥检测和脱敏（`redaction/`），用于日志、错误信息、session 导出和记忆 | P1 | 未开始 | agent-host 的[模块](packages/agent-host.md#模块) |
-| 凭据：macOS 钥匙串，显式指定的文件或环境变量 | P1 | 未开始 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
+| 密钥检测和脱敏（`redaction/`），用于日志、错误信息、session 导出和记忆 | P1 | 进行中 | agent-host 的[模块](packages/agent-host.md#模块) |
+| 凭据：macOS 钥匙串，显式指定的文件或环境变量 | P1 | 进行中 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | 配置的分层和配置项 | P1 | 未开始 | agent-host 的[配置的分层](packages/agent-host.md#配置的分层) |
 | session 记录的存储（含每条消息在目标协议里的原文） | P1 | 未开始 | session-store 的[存储格式](packages/session-store.md#存储格式)和[事件格式](packages/session-store.md#事件格式) |
 | 上下文超长时明确报错停止 | P1 | 未开始 | agent-runtime 的[上下文](packages/agent-runtime.md#上下文) |

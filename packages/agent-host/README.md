@@ -12,7 +12,9 @@ npm install @ospreycode/agent-host
 
 `createHost` 创建 Host，`openSession` 检查配置和凭据、启动 agent 进程并完成握手。事件经 `onEvent` 送达，第一条是 `session.started`；需要用户回答的询问作为 `approval.requested` 到达，用 `session.respond` 回答。
 
-下面的例子用脚本模型，不联网。实际使用时去掉 `streamModel`，在 `models` 里写真实的模型和服务地址，凭据文件写真实的 API key。
+沙盒模式为 `read-only` 或 `workspace-write` 时，agent 进程和每条 shell 命令都在沙盒里运行，现在只支持 macOS，其他平台抛出 `SandboxUnavailableError`；`danger-full-access` 不启用沙盒，只能显式指定。
+
+下面的例子用脚本模型，不联网，也不启用沙盒。实际使用时去掉 `streamModel`，在 `models` 里写真实的模型和服务地址，凭据文件写真实的 API key。
 
 ```ts
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

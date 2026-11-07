@@ -64,7 +64,10 @@ const allowedLicenses = new Set([
 ]);
 
 /** 许可证表达式含 OR 的依赖选用的许可证，键是包名。 */
-const chosenLicenses: Record<string, string> = {};
+const chosenLicenses: Record<string, string> = {
+	// sandbox-runtime 的依赖
+	"node-forge": "BSD-3-Clause",
+};
 
 const repositoryUrl = "git+https://github.com/ospreycode/ospreycode.git";
 
