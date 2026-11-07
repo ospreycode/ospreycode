@@ -25,13 +25,6 @@ export interface ModelInfo {
 	max_output_tokens: number;
 }
 
-/** 每个 run 的上限，为空表示不设。loop 自己按它们控制，最终的上限由 Host 执行。 */
-export interface RunBudget {
-	max_cost_usd: number | null;
-	max_requests: number | null;
-	max_duration_ms: number | null;
-}
-
 /** `initialize` 的参数：agent 进程报告 `agent-runtime` 的包版本，和 Host 依赖的版本不同就停止。 */
 export interface InitializeParams {
 	version: string;
@@ -56,7 +49,6 @@ export interface AgentConfig {
 	date: string;
 	/** 操作系统的说明，如 `macOS 26.1 (arm64)`。 */
 	os: string;
-	budget: RunBudget;
 }
 
 /** `config/update` 的参数：只带变化的部分。 */

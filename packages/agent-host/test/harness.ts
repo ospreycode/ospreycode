@@ -86,7 +86,7 @@ export function testDirectories(): TestDirectories {
 	};
 }
 
-/** 脚本模型用的模型清单条目（ID 为 `scripted`），地址不会被访问。 */
+/** 脚本模型用的模型清单条目（ID 为 `scripted`），地址不会被访问；有价格，默认的费用上限才能启用。 */
 export const testModel: ModelFields = {
 	protocol: "anthropic.messages",
 	service: "test",
@@ -94,4 +94,5 @@ export const testModel: ModelFields = {
 	model: "scripted",
 	context_window: 200_000,
 	max_output_tokens: 8_000,
+	price: { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 },
 };

@@ -40,7 +40,7 @@ function asksForOutside(run: ScenarioRun, outside: string): string[] {
 	const asked = approvals(run);
 	if (asked.length === 0) return ["没有询问用户"];
 	const writes = asked.flatMap((event) =>
-		event.request.kind === "command"
+		event.kind === "tool_call" && event.request.kind === "command"
 			? (event.request.additional_permissions?.file_system?.write ?? [])
 			: [],
 	);

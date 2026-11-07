@@ -5,6 +5,7 @@ import type {
 	NetworkRequest,
 	PermissionRequest,
 } from "@ospreycode/sandbox";
+import type { BudgetLimit } from "./budget.js";
 
 /** Host 写入 session 记录的 task、批准、进程和协议原文事件的格式版本，写进这些事件的 `version`。 */
 export const recordFormatVersion = 1;
@@ -36,6 +37,8 @@ export interface TaskEnded {
 	usage: Usage;
 	/** `failed` 时的原因。 */
 	error?: string;
+	/** `budget_exceeded` 时超出的是哪一项。 */
+	limit?: BudgetLimit;
 }
 
 /**
@@ -57,6 +60,15 @@ export type ApprovalRequested =
 			tool_call_id?: string;
 			request: NetworkRequest;
 			reasons: string[];
+	  }
+	| {
+			request_id: string;
+			/** 超出了这个 run 的上限：批准就追加一份和初始上限相同的额度，拒绝就结束 task。 */
+			kind: "budget";
+			limit: BudgetLimit;
+			/** 当前的上限和已用的量：美元、次数或毫秒。 */
+			max: number;
+			used: number;
 	  };
 
 /**

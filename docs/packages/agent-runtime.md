@@ -85,7 +85,8 @@ runtime 在沙盒里读不到用户级配置，启用哪些扩展也由 Host 决
 - 启用的 skills：名称和说明，以及附带的脚本和文件在沙盒里可以读取的位置。
 - 启用的 MCP 工具：名称带 Host 分配的标签前缀，声明由 Host 给出（见 agent-host 的[所有扩展共同遵守](agent-host.md#所有扩展共同遵守)）。
 - 生效记忆的索引（P3，不超过 2,500 token，见 memory 的[检索](memory.md#检索)）；评测用的记忆选项（写入策略、记忆注入方式），只能由 Host SDK 的调用方在创建 session 时传入，CLI 和配置文件都不能设置（见 memory 的[评测](memory.md#评测)）。
-- 每个 run 的费用、请求次数和时间上限。loop 自己按它们控制，最终的上限由 Host 执行。
+
+每个 run 的费用、请求次数和时间上限不交给 runtime，只由 Host 执行（见 agent-host 的[预算](agent-host.md#预算)）。
 
 ## 工具执行
 

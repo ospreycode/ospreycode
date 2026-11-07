@@ -8,6 +8,7 @@ import type {
 	Usage,
 	UserContent,
 } from "@ospreycode/api/protocol";
+import type { BudgetLimit } from "../sessions/budget.js";
 import type {
 	ApprovalDecided,
 	ApprovalRequested,
@@ -86,6 +87,8 @@ export interface TaskEndedEvent extends EventBase, TaskScope, Stored {
 	outcome: TaskOutcome;
 	usage: Usage;
 	error?: string;
+	/** `budget_exceeded` 时超出的是哪一项。 */
+	limit?: BudgetLimit;
 }
 
 /** `message.completed`：模型的一条回复，带这条回复的用量和费用。 */

@@ -31,6 +31,8 @@ export interface ModelProxyOptions {
 	scrub: (text: string) => string;
 	/** 读到新的凭据值时登记，之后的日志和错误信息都去掉它。 */
 	onSecret: (value: string) => void;
+	/** 每次发出请求之前检查这个 run 的上限；返回 false 时 run 已经因为超出上限而停止。 */
+	admit: (run: Run) => Promise<boolean>;
 }
 
 interface Attempt {
@@ -99,6 +101,10 @@ export class ModelProxy {
 		signal: AbortSignal,
 	): Promise<Attempt> {
 		const { entry, credential, events } = this.#options;
+		if (!(await this.#options.admit(run))) {
+			throw new ChannelRequestError("cancelled", "超出了这个 run 的上限");
+		}
+		run.budget.count();
 		try {
 			for await (const event of this.#options.streamModel(
 				entry,

@@ -1,4 +1,6 @@
 import type { Usage } from "@ospreycode/api/protocol";
+import type { RunLimits } from "../config/session-config.js";
+import { type BudgetLimit, RunBudget } from "./budget.js";
 import { newId } from "./ids.js";
 
 /** 没有用量。 */
@@ -34,7 +36,16 @@ export class Run {
 	readonly taskApprovals = new Set<string>();
 	/** runtime 上报过的事件编号：Host 只在所属 run 内去重。 */
 	readonly runtimeEventIds = new Set<string>();
+	readonly budget: RunBudget;
+	/** 因为超出这一项上限而停止：task 以 `budget_exceeded` 结束。 */
+	exceeded: BudgetLimit | undefined;
+	/** 非交互运行的时间上限到时停止 run 的计时器。 */
+	deadline: NodeJS.Timeout | undefined;
 	#seq = 0;
+
+	constructor(limits: RunLimits) {
+		this.budget = new RunBudget(limits);
+	}
 
 	/** Host 已经取消了这个 run：之后除了 `task/end`，runtime 的请求都以 `no_active_task` 拒绝。 */
 	get cancelled(): boolean {

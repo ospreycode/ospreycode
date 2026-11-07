@@ -59,6 +59,7 @@ export {
 	isHostEvent,
 	startupErrorEventSchema,
 } from "./sdk/schema.js";
+export type { BudgetLimit } from "./sessions/budget.js";
 export type {
 	ApprovalDecided,
 	ApprovalRequested,

@@ -26,6 +26,8 @@ max_cost_usd = 2
 max_duration = "30m"
 ```
 
+每个 run 默认最多花 10 美元、发 200 次模型请求，`budget` 选项和 `[budget]` 可以改；启用费用上限时模型要有价格。超出时，审批策略不是 `never` 就发一条 `kind` 为 `budget` 的 `approval.requested`，批准就追加一份同样的额度；拒绝或审批策略为 `never` 时 task 以 `budget_exceeded` 结束，`task.ended` 的 `limit` 写明超出的是哪一项。
+
 沙盒模式为 `read-only` 或 `workspace-write` 时，agent 进程和每条 shell 命令都在沙盒里运行，现在只支持 macOS，其他平台抛出 `SandboxUnavailableError`；`danger-full-access` 不启用沙盒，只能由启动参数指定。
 
 下面的例子用脚本模型，不联网，也不启用沙盒。实际使用时去掉 `streamModel`，在 `models` 里写真实的模型和服务地址，凭据文件写真实的 API key。
@@ -62,6 +64,8 @@ const session = await host.openSession({
 			model: "example",
 			context_window: 200_000,
 			max_output_tokens: 8_000,
+			// 默认每个 run 有费用上限，要按价格计费
+			price: { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 },
 		},
 	},
 	credentials: { example: { file: keyFile } },

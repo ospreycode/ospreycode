@@ -49,6 +49,7 @@ import {
 	type SessionEndReason,
 } from "../sdk/events.js";
 import { version as hostVersion } from "../version.js";
+import type { BudgetLimit } from "./budget.js";
 import { EventSink } from "./emitter.js";
 import type { TaskOutcome } from "./events.js";
 import { newId } from "./ids.js";
@@ -162,6 +163,7 @@ export class HostSession implements ChannelHandlers {
 			events: this.#events,
 			scrub: options.scrub,
 			onSecret: options.onSecret,
+			admit: (run) => this.#admit(run),
 		});
 		this.ended = new Promise((resolve) => {
 			this.#resolveEnded = resolve;
@@ -265,8 +267,17 @@ export class HostSession implements ChannelHandlers {
 				"task 运行时的输入（steering 和 follow-up）要到 P1 才支持",
 			);
 		}
-		const run = new Run();
+		const { config } = this.#options;
+		const run = new Run(config.budget);
 		this.#run = run;
+		// 非交互运行没有人能追加额度：时间到了直接停止，不等下一次模型请求
+		const { maxDurationMs } = config.budget;
+		if (maxDurationMs !== null && config.approvalPolicy === "never") {
+			run.deadline = setTimeout(
+				() => this.#stopForBudget(run, "duration"),
+				maxDurationMs,
+			);
+		}
 		const content: UserContent[] = [{ type: "text", text: input }];
 		this.#events.runStarted(run);
 		this.#events.stored(run, {
@@ -333,7 +344,7 @@ export class HostSession implements ChannelHandlers {
 		}
 		this.#initialized.resolve();
 		const { config } = this.#options;
-		const { workspace, budget } = config;
+		const { workspace } = config;
 		const writableRoots = {
 			"read-only": [this.#tmpdir],
 			"workspace-write": [workspace, this.#tmpdir],
@@ -358,11 +369,6 @@ export class HostSession implements ChannelHandlers {
 			user_instructions: null,
 			date: localDate(),
 			os: `${process.platform} ${release()} (${arch()})`,
-			budget: {
-				max_cost_usd: budget.maxCostUsd,
-				max_requests: budget.maxRequests,
-				max_duration_ms: budget.maxDurationMs,
-			},
 		};
 	}
 
@@ -435,15 +441,48 @@ export class HostSession implements ChannelHandlers {
 		return run;
 	}
 
+	/**
+	 * 每次模型请求之前检查这个 run 的上限。超出时交互模式询问是否追加一份额度；拒绝了，或者是非交互
+	 * 模式，就停止 run，task 以 `budget_exceeded` 结束。返回能不能发出这次请求。
+	 */
+	async #admit(run: Run): Promise<boolean> {
+		for (;;) {
+			const exceeded = run.budget.exceeded(run.usage);
+			if (exceeded === undefined) return true;
+			if (this.#options.config.approvalPolicy !== "never") {
+				const answer = await this.#approvals.ask(run, {
+					kind: "budget",
+					...exceeded,
+				});
+				if (answer?.decision === "approve") {
+					run.budget.extend();
+					continue;
+				}
+			}
+			this.#stopForBudget(run, exceeded.limit);
+			return false;
+		}
+	}
+
+	/** 因为超出上限停止 run：和取消走同一条路，结束时记为 `budget_exceeded`。用户已经取消的不改。 */
+	#stopForBudget(run: Run, limit: BudgetLimit): void {
+		if (run.cancelled) return;
+		run.exceeded = limit;
+		void this.cancel();
+	}
+
 	#finishTask(run: Run, outcome: TaskOutcome, error?: string): void {
 		clearTimeout(this.#cancelTimer);
+		clearTimeout(run.deadline);
 		this.#run = undefined;
 		this.#usage = addUsage(this.#usage, run.usage);
+		const { exceeded } = run;
 		this.#events.stored(run, {
 			type: "task.ended",
-			outcome,
+			outcome: exceeded === undefined ? outcome : "budget_exceeded",
 			usage: run.usage,
-			...(error === undefined ? {} : { error }),
+			...(error === undefined || exceeded !== undefined ? {} : { error }),
+			...(exceeded === undefined ? {} : { limit: exceeded }),
 		});
 	}
 

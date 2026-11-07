@@ -39,7 +39,6 @@ export {
 	type ModelRequestResult,
 	type RecordAppendParams,
 	type RequestSpec,
-	type RunBudget,
 	type RuntimeNotifications,
 	type RuntimeRequests,
 	type StatusResult,

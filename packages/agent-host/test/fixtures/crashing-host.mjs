@@ -28,6 +28,7 @@ const session = await createHost({
 			model: "scripted",
 			context_window: 200_000,
 			max_output_tokens: 8_000,
+			price: { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 },
 		},
 	},
 	credentials: { test: { file: credentialFile } },

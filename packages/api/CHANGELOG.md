@@ -17,4 +17,4 @@
 - 按 WHATWG 规则解析 SSE 的 `parseSse`。
 - 模型清单：条目 `ModelEntry` 记下协议、服务、地址、上下文和输入输出的上限、价格（`ModelPrice`，含按提示长度的分档 `tiers` 和分时段的倍数 `periods`）、能否读图片、推理强度的映射 `thinking_level_map`、能否在中途追加 system 级指令和增减工具、Anthropic 的前缀校验和 `openai.chat` 的兼容差异 `compat`。内置清单 `builtinModels` 收录 Anthropic、OpenAI 和 DeepSeek 的 21 个对话模型，由 `npm run generate:models -w packages/api` 按固定 commit 从 models.dev 的源文件生成，叠加本包的修正层。`resolveEffort` 按映射取实际发出的推理强度（不支持的级别先往高找、再往低找），`computeCost` 按价格档和时段计算一次请求的费用。
 - 模型清单条目的校验：`parseModelFields` 校验用户配置里 `[models.<ID>]` 的字段（`ModelFields`，覆盖内置条目时只写要改的字段），`mergeModelFields` 按字段合并两层（表按键合并，数组整体替换），合并后用 `completeModel` 检查是否齐全；出错时抛出带键路径的 `ModelConfigError`。服务地址只接受 https，本机上的服务可以用 http。
-- `@ospreycode/api/testing`：按脚本返回结果的 `scriptedModel`。脚本可以给出拒绝的详情和回退的分界，作废事件按和转换模块相同的规则发出，用来覆盖中途拒绝、中途回退和回退模型被限流后返回拒绝。
+- `@ospreycode/api/testing`：按脚本返回结果的 `scriptedModel`，和转换模块一样按清单的价格计算费用（脚本写了 `cost_usd` 时用脚本的）。脚本可以给出拒绝的详情和回退的分界，作废事件按和转换模块相同的规则发出，用来覆盖中途拒绝、中途回退和回退模型被限流后返回拒绝。

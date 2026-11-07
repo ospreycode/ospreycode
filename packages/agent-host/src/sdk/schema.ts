@@ -57,6 +57,12 @@ const CommandRequest = Type.Object(
 	closed,
 );
 
+const BudgetLimit = Type.Union([
+	Type.Literal("cost"),
+	Type.Literal("requests"),
+	Type.Literal("duration"),
+]);
+
 const NetworkRequest = Type.Object(
 	{
 		kind: Type.Literal("network"),
@@ -196,6 +202,7 @@ const TaskEnded = event({
 	outcome: TaskOutcome,
 	usage: p.usage,
 	error: Type.Optional(Type.String()),
+	limit: Type.Optional(BudgetLimit),
 });
 
 const MessageCompleted = event({
@@ -244,6 +251,17 @@ const ApprovalRequested = Type.Union([
 		tool_call_id: Type.Optional(Type.String()),
 		request: NetworkRequest,
 		reasons: Type.Array(Type.String()),
+	}),
+	event({
+		...base,
+		...scope,
+		...stored,
+		type: Type.Literal("approval.requested"),
+		request_id: Type.String(),
+		kind: Type.Literal("budget"),
+		limit: BudgetLimit,
+		max: Type.Number({ minimum: 0 }),
+		used: Type.Number({ minimum: 0 }),
 	}),
 ]);
 

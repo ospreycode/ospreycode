@@ -1,4 +1,5 @@
 import type { StreamModel } from "../client/stream.js";
+import { computeCost } from "../models/cost.js";
 import type {
 	AssistantContent,
 	AssistantMessage,
@@ -85,7 +86,7 @@ export function scriptedModel(script: Script): StreamModel {
 	let calls = 0;
 	return async function* (entry, request, options) {
 		const turn = script(request, calls++);
-		const usage: Usage = {
+		const tokens: Usage = {
 			input: 0,
 			output: 0,
 			cache_read: 0,
@@ -93,6 +94,11 @@ export function scriptedModel(script: Script): StreamModel {
 			reasoning: 0,
 			...turn.usage,
 		};
+		// 和转换模块一样按清单的价格计费，脚本里写了费用时用脚本的
+		const usage: Usage =
+			tokens.cost_usd !== undefined || entry.price === undefined
+				? tokens
+				: { ...tokens, cost_usd: computeCost(entry.price, tokens, new Date()) };
 		const fallback = turn.content.findLast(
 			(block) => block.type === "fallback",
 		);

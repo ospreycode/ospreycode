@@ -31,7 +31,6 @@ const config: AgentConfig = {
 	user_instructions: null,
 	date: "2026-11-07",
 	os: "test",
-	budget: { max_cost_usd: null, max_requests: null, max_duration_ms: null },
 };
 
 const modelRequest: ModelRequestParams = {

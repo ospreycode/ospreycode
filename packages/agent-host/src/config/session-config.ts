@@ -395,6 +395,11 @@ export function resolveSessionConfig(
 	if (model === undefined) {
 		throw new ConfigError(`模型清单里没有 ${merged.model}`);
 	}
+	if (merged.budget.max_cost_usd !== null && model.price === undefined) {
+		throw new ConfigError(
+			`启用了每个 run 的费用上限，但模型 ${model.id} 在清单里没有价格：在 [models.${model.id}] 里写上 price，或者关闭费用上限`,
+		);
+	}
 
 	const permissionProfiles = merged.permissions;
 	const mode = merged.sandbox_mode;
