@@ -17,6 +17,8 @@ import { addUsage, emptyUsage, type Run } from "../sessions/run.js";
 
 /** 模型代理用到的依赖。 */
 export interface ModelProxyOptions {
+	/** 用作提示缓存的键：按通道确定，不采信 runtime 填写的值。 */
+	sessionId: string;
 	/** 这个 session 允许使用的模型。 */
 	entry: ModelEntry;
 	/** 模型服务的凭据，只在 Host 的内存里。 */
@@ -104,6 +106,7 @@ export class ModelProxy {
 					apiKey: credential.value,
 					fetch: this.#options.fetch,
 					signal,
+					cacheKey: this.#options.sessionId,
 				},
 			)) {
 				if (event.type === "end") {

@@ -1,4 +1,11 @@
-import { parseSse } from "../client/sse.js";
+import {
+	buildReply,
+	type ErrorClassifier,
+	runStream,
+	type StreamParser,
+	zeroUsage,
+} from "../client/request.js";
+import type { SseEvent } from "../client/sse.js";
 import type { StreamOptions } from "../client/stream.js";
 import { computeCost } from "../models/cost.js";
 import {
@@ -9,6 +16,7 @@ import {
 import type {
 	AssistantContent,
 	AssistantMessage,
+	BlockRef,
 	ErrorCategory,
 	Message,
 	ModelErrorInfo,
@@ -17,107 +25,175 @@ import type {
 	RefusalDetails,
 	StopReason,
 	StreamEvent,
+	SystemMessage,
 	Usage,
 	UserContent,
 } from "../protocol/index.js";
+import type { RequestContext } from "./openai-responses.js";
+import {
+	contentSha256,
+	fitIdentifier,
+	fitImages,
+	jsonArray,
+	jsonObject,
+	messageHashInput,
+	renderPart,
+	ToolNames,
+} from "./wire.js";
 
 /** P1 起固定发送的 API 版本，换版本按破坏性改动处理。 */
 export const anthropicVersion = "2026-10-21";
 
-/** 流在这么久没有数据时按网络中断处理。 */
-const idleTimeoutMs = 300_000;
+const nameLimit = 128;
+const callIdLimit = 64;
 
 type Json = Record<string, unknown>;
 
+function scopeOf(entry: ModelEntry) {
+	return {
+		protocol: "anthropic.messages" as const,
+		service: entry.service,
+		api_version: anthropicVersion,
+	};
+}
+
 function cacheControl(
 	retention: ModelRequest["cache_retention"],
-): Json | undefined {
+): string | undefined {
 	if (retention === "none") return undefined;
 	return retention === "long"
-		? { type: "ephemeral", ttl: "1h" }
-		: { type: "ephemeral" };
+		? '{"type":"ephemeral","ttl":"1h"}'
+		: '{"type":"ephemeral"}';
 }
 
-/** 在最后一个块上加缓存断点：断点只在组装请求时加，不进内部消息。 */
-function withBreakpoint(blocks: Json[], control: Json | undefined): Json[] {
-	const last = blocks.at(-1);
-	if (control === undefined || last === undefined) return blocks;
-	return [...blocks.slice(0, -1), { ...last, cache_control: control }];
+/** 在最后一段上加缓存断点：断点只在组装请求时加，不进保存的原文。 */
+function withBreakpoint(
+	pieces: readonly string[],
+	control: string | undefined,
+): string[] {
+	const last = pieces.at(-1);
+	if (control === undefined || last === undefined) return [...pieces];
+	return [
+		...pieces.slice(0, -1),
+		`${last.slice(0, -1)},"cache_control":${control}}`,
+	];
 }
 
-function userBlock(block: UserContent): Json {
-	return block.type === "text"
-		? { type: "text", text: block.text }
-		: {
-				type: "image",
-				source: {
-					type: "base64",
-					media_type: block.media_type,
-					data: block.data,
+function userBlock(block: UserContent): string {
+	return JSON.stringify(
+		block.type === "text"
+			? { type: "text", text: block.text }
+			: {
+					type: "image",
+					source: {
+						type: "base64",
+						media_type: block.media_type,
+						data: block.data,
+					},
 				},
-			};
+	);
 }
 
-function assistantBlock(block: AssistantContent): Json[] {
+/**
+ * 工具参数的原文：Anthropic 自己的工具调用就是流里 `partial_json` 拼出的原文，原样放进 `input`，
+ * 不经 JSON 往返；模型写出的参数不是 JSON 对象时发空对象，否则这段历史再也发不出去。
+ */
+function inputRaw(args: string): string {
+	try {
+		const value = JSON.parse(args) as unknown;
+		if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+			return args;
+		}
+	} catch {
+		// 参数原文不是 JSON：工具调用已经按失败处理，这里只要能发出去
+	}
+	return "{}";
+}
+
+/**
+ * 一条回复里发回 Anthropic 的块和它们在 `content` 里的下标。推理内容只发回同一服务：
+ * 同一服务上换模型时原样带回，由服务端丢弃读不了的；其他服务的签名这里验不了。
+ */
+function sentBlocks(
+	entry: ModelEntry,
+	message: AssistantMessage,
+): { index: number; block: AssistantContent }[] {
+	return message.content.flatMap((block, index) => {
+		if (block.type === "text" && block.text === "") return [];
+		if (
+			block.type === "reasoning" &&
+			(block.origin.protocol !== "anthropic.messages" ||
+				block.origin.service !== entry.service)
+		) {
+			return [];
+		}
+		return [{ index, block }];
+	});
+}
+
+function assistantBlock(block: AssistantContent, names: ToolNames): string {
 	switch (block.type) {
 		case "text":
-			return [{ type: "text", text: block.text }];
-		case "tool_call":
-			return [
-				{
-					type: "tool_use",
-					id: block.call_id,
-					name: block.name,
-					input: JSON.parse(block.arguments),
-				},
-			];
+			return JSON.stringify({ type: "text", text: block.text });
 		case "reasoning":
-			// 其他协议的推理内容带不过来；同协议内换模型时原样带回，由服务端丢弃读不了的
-			if (block.origin.protocol !== "anthropic.messages") return [];
-			return block.redacted
-				? [{ type: "redacted_thinking", data: block.opaque }]
-				: [{ type: "thinking", thinking: block.text, signature: block.opaque }];
+			return JSON.stringify(
+				block.redacted
+					? { type: "redacted_thinking", data: block.opaque }
+					: { type: "thinking", thinking: block.text, signature: block.opaque },
+			);
+		case "tool_call":
+			return jsonObject([
+				["type", '"tool_use"'],
+				["id", JSON.stringify(fitIdentifier(block.call_id, callIdLimit))],
+				["name", JSON.stringify(names.wire(block.name))],
+				["input", inputRaw(block.arguments)],
+			]);
 	}
 }
 
-function convertMessages(messages: readonly Message[]): Json[] {
-	const out: { role: string; content: Json[] }[] = [];
-	// 工具结果和紧跟其后的用户输入并进同一条 user 消息
-	const appendUser = (blocks: Json[]) => {
-		const last = out.at(-1);
-		if (last?.role === "user") last.content.push(...blocks);
-		else out.push({ role: "user", content: blocks });
-	};
-	for (const message of messages) {
-		switch (message.role) {
-			case "system":
-				out.push({
-					role: "system",
-					content: message.content.map((b) => ({ type: "text", text: b.text })),
-				});
-				break;
-			case "user":
-				appendUser(message.content.map(userBlock));
-				break;
-			case "tool_result":
-				appendUser([
-					{
-						type: "tool_result",
-						tool_use_id: message.call_id,
-						content: message.content.map(userBlock),
-						is_error: message.is_error,
-					},
-				]);
-				break;
-			case "assistant":
-				out.push({
-					role: "assistant",
-					content: message.content.flatMap((block) => assistantBlock(block)),
-				});
-				break;
+/**
+ * 一条内部消息在 Messages API 里的片段。system 和 assistant 消息是各自的内容块；user 消息和工具结果的块
+ * 并进同一条 user 消息，工具结果的第一段是 `tool_result` 块，其余是要移到这组结果之后的图片：
+ * `is_error` 为真的工具结果只接受文字。
+ */
+function messagePieces(
+	entry: ModelEntry,
+	message: Message,
+	names: ToolNames,
+): string[] {
+	switch (message.role) {
+		case "system":
+			return message.content.map((block) =>
+				JSON.stringify({ type: "text", text: block.text }),
+			);
+		case "user":
+			return fitImages(entry, message.content).map(userBlock);
+		case "tool_result": {
+			const content = fitImages(entry, message.content);
+			const kept = message.is_error
+				? content.filter((block) => block.type === "text")
+				: content;
+			const moved = message.is_error
+				? content.filter((block) => block.type === "image")
+				: [];
+			return [
+				jsonObject([
+					["type", '"tool_result"'],
+					[
+						"tool_use_id",
+						JSON.stringify(fitIdentifier(message.call_id, callIdLimit)),
+					],
+					["content", jsonArray(kept.map(userBlock))],
+					["is_error", String(message.is_error)],
+				]),
+				...moved.map(userBlock),
+			];
 		}
+		case "assistant":
+			return sentBlocks(entry, message).map(({ block }) =>
+				assistantBlock(block, names),
+			);
 	}
-	return out;
 }
 
 /** 做前缀校验的模型在开着推理时，请求带上这个 beta，并显式要求校验失败时报错。 */
@@ -128,11 +204,25 @@ function checksPrefix(entry: ModelEntry, effort: ResolvedEffort | undefined) {
 	return entry.prefix_check === true && effort?.value !== "disabled";
 }
 
-/** 把内部协议的请求转换成 Messages API 的请求体。同样的内部请求每次生成相同的请求体。 */
-export function anthropicRequestBody(
+/** 一条发出的消息：角色、内容块的原文，以及每个块对应的内部内容块（推理内容前缀不符时据此定位）。 */
+interface WireMessage {
+	role: string;
+	results: string[];
+	blocks: string[];
+	refs: (BlockRef | undefined)[];
+}
+
+/** 请求体，以及 `messages` 里每条消息每个内容块对应的内部内容块。 */
+interface Rendered {
+	body: string;
+	refs: (BlockRef | undefined)[][];
+}
+
+function render(
 	entry: ModelEntry,
 	request: ModelRequest,
-): Json {
+	context: RequestContext,
+): Rendered {
 	const [first, ...rest] = request.messages;
 	if (first?.role !== "system") {
 		throw new Error("内部请求的第一条消息必须是系统指令");
@@ -140,48 +230,172 @@ export function anthropicRequestBody(
 	if (request.sampling !== undefined) {
 		throw new Error(`Anthropic API ${anthropicVersion} 不接受采样参数`);
 	}
+	const scope = scopeOf(entry);
+	const { raws } = context;
 	const control = cacheControl(request.cache_retention);
-	const messages = convertMessages(rest).map((message, i, all) =>
-		i === all.length - 1
-			? {
-					...message,
-					content: withBreakpoint(message.content as Json[], control),
-				}
-			: message,
+	// 不支持中途 system 消息的模型（如 Sonnet 5），把之后的系统级指令并入开头的 system
+	const fold = entry.system_updates !== true;
+	const system = [
+		first,
+		...(fold
+			? rest.filter((m): m is SystemMessage => m.role === "system")
+			: []),
+	];
+	const systemPieces = renderPart(
+		raws,
+		scope,
+		{
+			part: "system",
+			message_id: first.message_id,
+			content_sha256: contentSha256(
+				entry,
+				system.map((message) => message.content),
+			),
+		},
+		() =>
+			system.flatMap((message) =>
+				message.content.map((block) =>
+					JSON.stringify({ type: "text", text: block.text }),
+				),
+			),
 	);
-	const body: Json = {
-		model: entry.model,
-		max_tokens: request.max_tokens ?? entry.max_output_tokens,
-		system: withBreakpoint(
-			first.content.map((b) => ({ type: "text", text: b.text })),
-			control,
-		),
-		messages,
-		stream: true,
-	};
-	const effort = resolveEffort(entry, request.reasoning_effort);
-	if (effort !== undefined) {
-		if (effort.value === "disabled") {
-			body.thinking = { type: "disabled" };
+	const names = new ToolNames(
+		request.tools.map((tool) => tool.name),
+		nameLimit,
+	);
+	const wire: WireMessage[] = [];
+	for (const message of rest) {
+		if (fold && message.role === "system") continue;
+		const pieces = renderPart(
+			raws,
+			scope,
+			{
+				part: "message",
+				message_id: message.message_id,
+				content_sha256: contentSha256(entry, messageHashInput(message)),
+			},
+			() => messagePieces(entry, message, names),
+		);
+		if (message.role === "system" || message.role === "assistant") {
+			// 推理块全部来自别的服务、只剩空的回复不发：服务要求每条消息都有内容
+			if (pieces.length === 0) continue;
+			wire.push({
+				role: message.role,
+				results: [],
+				blocks: [...pieces],
+				refs:
+					message.role === "assistant"
+						? sentBlocks(entry, message).map(({ index }) => ({
+								message_id: message.message_id,
+								index,
+							}))
+						: pieces.map(() => undefined),
+			});
+			continue;
+		}
+		let user = wire.at(-1);
+		if (user?.role !== "user") {
+			user = { role: "user", results: [], blocks: [], refs: [] };
+			wire.push(user);
+		}
+		// 工具结果的块排在同一条 user 消息的最前面，之后才是用户的话和移出来的图片
+		if (message.role === "tool_result") {
+			const [result, ...moved] = pieces;
+			if (result !== undefined) user.results.push(result);
+			user.blocks.push(...moved);
 		} else {
-			body.thinking = { type: "adaptive" };
-			body.output_config = { effort: effort.value };
+			user.blocks.push(...pieces);
 		}
 	}
-	// 不设时结果取决于账号的创建日期：较早的账号上失效的推理块会被悄悄送给模型并计费
-	if (checksPrefix(entry, effort)) body.prefix_mismatch_behavior = "error";
-	if (request.tools.length > 0) {
-		body.tools = withBreakpoint(
-			request.tools.map((tool) => ({
-				name: tool.name,
-				description: tool.description,
-				input_schema: tool.parameters,
-			})),
-			control,
+	const refs: (BlockRef | undefined)[][] = [];
+	const messages = wire.map((message, i) => {
+		const blocks = [...message.results, ...message.blocks];
+		refs.push(
+			message.role === "user" ? blocks.map(() => undefined) : message.refs,
 		);
-		body.tool_choice = { type: request.tool_choice };
-	}
-	return body;
+		return jsonObject([
+			["role", JSON.stringify(message.role)],
+			[
+				"content",
+				jsonArray(
+					i === wire.length - 1 ? withBreakpoint(blocks, control) : blocks,
+				),
+			],
+		]);
+	});
+	const tools =
+		request.tools.length === 0
+			? undefined
+			: renderPart(
+					raws,
+					scope,
+					{
+						part: "tools",
+						content_sha256: contentSha256(entry, request.tools),
+					},
+					() =>
+						request.tools.map((tool) =>
+							JSON.stringify({
+								name: names.wire(tool.name),
+								description: tool.description,
+								input_schema: tool.parameters,
+							}),
+						),
+				);
+	const effort = resolveEffort(entry, request.reasoning_effort);
+	return {
+		body: jsonObject([
+			["model", JSON.stringify(entry.model)],
+			["max_tokens", String(request.max_tokens ?? entry.max_output_tokens)],
+			["system", jsonArray(withBreakpoint(systemPieces, control))],
+			["messages", jsonArray(messages)],
+			[
+				"thinking",
+				effort === undefined
+					? undefined
+					: effort.value === "disabled"
+						? '{"type":"disabled"}'
+						: '{"type":"adaptive"}',
+			],
+			[
+				"output_config",
+				effort === undefined || effort.value === "disabled"
+					? undefined
+					: JSON.stringify({ effort: effort.value }),
+			],
+			// 不设时结果取决于账号的创建日期：较早的账号上失效的推理块会被悄悄送给模型并计费
+			[
+				"prefix_mismatch_behavior",
+				checksPrefix(entry, effort) ? '"error"' : undefined,
+			],
+			[
+				"tools",
+				tools === undefined
+					? undefined
+					: jsonArray(withBreakpoint(tools, control)),
+			],
+			[
+				"tool_choice",
+				tools === undefined
+					? undefined
+					: JSON.stringify({ type: request.tool_choice }),
+			],
+			["stream", "true"],
+		]),
+		refs,
+	};
+}
+
+/**
+ * 把内部协议的请求转换成 Messages API 的请求体原文：缓存断点加在 system、tools 和最后一条消息的末尾。
+ * 保存过原文的部分原样拼接，其余按内部消息转换；同样的内部请求每次得到相同的请求体。
+ */
+export function anthropicRequestBody(
+	entry: ModelEntry,
+	request: ModelRequest,
+	context: RequestContext = {},
+): string {
+	return render(entry, request, context).body;
 }
 
 const stopReasons: Record<string, StopReason> = {
@@ -212,6 +426,9 @@ function streamErrorCategory(type: unknown): ErrorCategory {
 			return "invalid_request";
 	}
 }
+
+const prefixMismatch =
+	/^messages\.(\d+)\.content\.(\d+): Invalid `signature` in `thinking` block\. The block is bound to a different conversation\./;
 
 /** 按状态码和各家的错误码归类 HTTP 错误，不只看状态码。 */
 export function classifyAnthropicError(
@@ -252,13 +469,7 @@ export function classifyAnthropicError(
 		if (message.includes("You have reached your specified API usage limits")) {
 			return info("billing");
 		}
-		if (
-			/^messages\.\d+\.content\.\d+: Invalid `signature` in `thinking` block\. The block is bound to a different conversation\./.test(
-				message,
-			)
-		) {
-			return info("reasoning_prefix_mismatch");
-		}
+		if (prefixMismatch.test(message)) return info("reasoning_prefix_mismatch");
 		return info("invalid_request");
 	}
 	if (status >= 500) return info("overloaded");
@@ -309,57 +520,120 @@ function toContent(block: BlockState, origin: Origin): AssistantContent {
 }
 
 /** 把 Messages API 的流逐块拼成内部协议的回复。 */
-class ReplyBuilder {
-	model: string;
-	usage: Usage = {
-		input: 0,
-		output: 0,
-		cache_read: 0,
-		cache_write: 0,
-		reasoning: 0,
-	};
-	stopReason: StopReason | undefined;
-	refusal: RefusalDetails | undefined;
-	#blocks: BlockState[] = [];
+class MessagesParser implements StreamParser {
 	#entry: ModelEntry;
 	#request: ModelRequest;
-	#messageId: string;
+	#options: StreamOptions;
+	#names: ToolNames;
+	#model: string;
+	#usage = zeroUsage();
+	#stopReason: StopReason | undefined;
+	#refusal: RefusalDetails | undefined;
+	#blocks: BlockState[] = [];
+	#stopped = false;
 
-	constructor(entry: ModelEntry, request: ModelRequest, messageId: string) {
+	constructor(
+		entry: ModelEntry,
+		request: ModelRequest,
+		options: StreamOptions,
+	) {
 		this.#entry = entry;
 		this.#request = request;
-		this.#messageId = messageId;
-		this.model = entry.model;
+		this.#options = options;
+		this.#names = new ToolNames(
+			request.tools.map((tool) => tool.name),
+			nameLimit,
+		);
+		this.#model = entry.model;
 	}
 
-	start(index: number, block: Json): StreamEvent | undefined {
+	event({ event, data }: SseEvent): StreamEvent[] | ModelErrorInfo {
+		if (event === "ping") return [];
+		const payload = JSON.parse(data) as Json;
+		switch (event) {
+			case "message_start": {
+				const message = payload.message as Json;
+				this.#model = String(message.model);
+				this.#addUsage(message.usage as Json);
+				return [{ type: "start", model: this.#model }];
+			}
+			case "content_block_start":
+				return this.#start(
+					payload.index as number,
+					payload.content_block as Json,
+				);
+			case "content_block_delta":
+				return this.#delta(payload.index as number, payload.delta as Json);
+			case "content_block_stop":
+				return this.#blocks[payload.index as number]?.type === "tool_use"
+					? [{ type: "tool_call_end", index: payload.index as number }]
+					: [];
+			case "message_delta": {
+				const delta = payload.delta as Json;
+				const reason = stopReasons[String(delta.stop_reason)];
+				if (reason === undefined) {
+					throw new Error(
+						`Messages API 返回了不认识的停止原因：${String(delta.stop_reason)}`,
+					);
+				}
+				this.#stopReason = reason;
+				const details = delta.stop_details as Json | null | undefined;
+				if (reason === "refusal" && typeof details?.category === "string") {
+					this.#refusal = {
+						category: details.category,
+						...(typeof details.explanation === "string"
+							? { explanation: details.explanation }
+							: {}),
+						...(typeof details.recommended_model === "string"
+							? { recommended_model: details.recommended_model }
+							: {}),
+					};
+				}
+				this.#addUsage(payload.usage as Json);
+				return [{ type: "usage", usage: this.#withCost(this.#usage) }];
+			}
+			case "message_stop":
+				this.#stopped = true;
+				return [];
+			case "error": {
+				const error = payload.error as Json;
+				return {
+					category: streamErrorCategory(error.type),
+					message: String(error.message),
+				};
+			}
+			default:
+				throw new Error(`Messages API 返回了不认识的事件：${event}`);
+		}
+	}
+
+	#start(index: number, block: Json): StreamEvent[] {
 		switch (block.type) {
 			case "text":
 				this.#blocks[index] = { type: "text", text: String(block.text ?? "") };
-				return undefined;
+				return [];
 			case "thinking":
 				this.#blocks[index] = { type: "thinking", text: "", signature: "" };
-				return undefined;
+				return [];
 			case "redacted_thinking":
 				this.#blocks[index] = {
 					type: "redacted_thinking",
 					data: String(block.data),
 				};
-				return undefined;
-			case "tool_use":
+				return [];
+			case "tool_use": {
+				const name = this.#names.original(String(block.name));
 				this.#blocks[index] = {
 					type: "tool_use",
 					id: String(block.id),
-					name: String(block.name),
+					name,
 					json: "",
 					input: block.input,
 				};
-				return {
-					type: "tool_call_start",
-					index,
-					call_id: String(block.id),
-					name: String(block.name),
-				};
+				return [
+					{ type: "tool_call_start", index, call_id: String(block.id), name },
+				];
+			}
 			default:
 				throw new Error(
 					`Messages API 返回了没有列出的内容块：${String(block.type)}`,
@@ -367,252 +641,155 @@ class ReplyBuilder {
 		}
 	}
 
-	delta(index: number, delta: Json): StreamEvent | undefined {
+	#delta(index: number, delta: Json): StreamEvent[] {
 		const block = this.#blocks[index];
 		if (block === undefined) throw new Error(`内容块 ${index} 还没有开始`);
 		if (delta.type === "text_delta" && block.type === "text") {
 			block.text += String(delta.text);
-			return { type: "text_delta", index, text: String(delta.text) };
+			return [{ type: "text_delta", index, text: String(delta.text) }];
 		}
 		if (delta.type === "thinking_delta" && block.type === "thinking") {
 			block.text += String(delta.thinking);
-			return { type: "reasoning_delta", index, text: String(delta.thinking) };
+			return [{ type: "reasoning_delta", index, text: String(delta.thinking) }];
 		}
 		if (delta.type === "signature_delta" && block.type === "thinking") {
 			block.signature += String(delta.signature);
-			return undefined;
+			return [];
 		}
 		if (delta.type === "input_json_delta" && block.type === "tool_use") {
 			block.json += String(delta.partial_json);
-			return {
-				type: "tool_call_delta",
-				index,
-				arguments: String(delta.partial_json),
-			};
+			return [
+				{
+					type: "tool_call_delta",
+					index,
+					arguments: String(delta.partial_json),
+				},
+			];
 		}
 		throw new Error(
 			`内容块 ${index}（${block.type}）收到了不认识的增量：${String(delta.type)}`,
 		);
 	}
 
-	stop(index: number): StreamEvent | undefined {
-		return this.#blocks[index]?.type === "tool_use"
-			? { type: "tool_call_end", index }
-			: undefined;
-	}
-
-	addUsage(raw: Json): StreamEvent {
+	#addUsage(raw: Json): void {
 		const number = (key: string, fallback: number) =>
 			typeof raw[key] === "number" ? (raw[key] as number) : fallback;
 		const details = raw.output_tokens_details as Json | undefined;
-		this.usage = {
-			input: number("input_tokens", this.usage.input),
-			output: number("output_tokens", this.usage.output),
-			cache_read: number("cache_read_input_tokens", this.usage.cache_read),
+		this.#usage = {
+			input: number("input_tokens", this.#usage.input),
+			output: number("output_tokens", this.#usage.output),
+			cache_read: number("cache_read_input_tokens", this.#usage.cache_read),
 			cache_write: number(
 				"cache_creation_input_tokens",
-				this.usage.cache_write,
+				this.#usage.cache_write,
 			),
 			// 推理 token 算在 output_tokens 里，另列为子项
 			reasoning:
 				typeof details?.thinking_tokens === "number"
 					? details.thinking_tokens
-					: this.usage.reasoning,
+					: this.#usage.reasoning,
 		};
-		return { type: "usage", usage: this.#usageWithCost() };
 	}
 
-	#usageWithCost(): Usage {
+	#withCost(usage: Usage): Usage {
 		const { price } = this.#entry;
 		return price === undefined
-			? this.usage
-			: { ...this.usage, cost_usd: computeCost(price, this.usage, new Date()) };
+			? usage
+			: { ...usage, cost_usd: computeCost(price, usage, new Date()) };
 	}
 
-	message(stopReason: StopReason): AssistantMessage {
-		const origin = {
-			protocol: "anthropic.messages" as const,
-			service: this.#entry.service,
-			model: this.model,
-		};
-		const content = this.#blocks.map((block) => toContent(block, origin));
-		const effort = resolveEffort(this.#entry, this.#request.reasoning_effort);
-		const message: AssistantMessage = {
-			role: "assistant",
-			message_id: this.#messageId,
-			content,
+	#content(): AssistantContent[] {
+		const origin: Origin = {
 			protocol: "anthropic.messages",
 			service: this.#entry.service,
-			requested_model: this.#entry.id,
-			model: this.model,
-			reasoning_effort: this.#request.reasoning_effort,
-			...(effort === undefined ? {} : { reasoning_effort_sent: effort.value }),
-			stop_reason: stopReason,
-			usage: this.#usageWithCost(),
+			model: this.#model,
 		};
-		if (this.refusal !== undefined) message.refusal = this.refusal;
-		return message;
+		return this.#blocks.map((block) => toContent(block, origin));
+	}
+
+	finish() {
+		const stopReason = this.#stopReason;
+		if (!this.#stopped || stopReason === undefined) return undefined;
+		const content = this.#content();
+		const message = buildReply(
+			this.#entry,
+			this.#request,
+			this.#options.messageId,
+			{
+				content,
+				model: this.#model,
+				stop_reason: stopReason,
+				usage: this.#usage,
+				...(this.#refusal === undefined ? {} : { refusal: this.#refusal }),
+			},
+		);
+		// 拒绝可能在输出部分内容之后才到，本轮的全部输出都不再发回
+		const events: StreamEvent[] =
+			stopReason === "refusal"
+				? [
+						{
+							type: "invalidate",
+							invalidation: {
+								blocks: content.map((_, index) => ({
+									message_id: this.#options.messageId,
+									index,
+								})),
+								reason: "refusal",
+							},
+						},
+					]
+				: [];
+		return { events, message };
+	}
+
+	partial(stopReason: "error" | "cancelled") {
+		return buildReply(this.#entry, this.#request, this.#options.messageId, {
+			content: this.#content(),
+			model: this.#model,
+			stop_reason: stopReason,
+			usage: this.#usage,
+		});
 	}
 }
 
-function errorEnd(builder: ReplyBuilder, error: ModelErrorInfo): StreamEvent {
-	return { type: "end", message: builder.message("error"), error };
-}
-
-function describe(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+/**
+ * 前缀校验失败时，错误信息里的 `messages.{i}.content.{j}` 映射回这次请求里内部的块；
+ * 只有 400 的消息正好是绑定到别的对话时才算前缀不符。
+ */
+function locating(refs: (BlockRef | undefined)[][]): ErrorClassifier {
+	return (status, body, retryAfter) => {
+		const info = classifyAnthropicError(status, body, retryAfter);
+		if (info.category !== "reasoning_prefix_mismatch") return info;
+		const [, i, j] = prefixMismatch.exec(info.message) ?? [];
+		const block = refs[Number(i)]?.[Number(j)];
+		return block === undefined ? info : { ...info, block };
+	};
 }
 
 /** 用 Messages API 发出一次流式请求。出错和取消也以 `end` 结束，不抛出约定中的失败。 */
-export async function* streamAnthropicMessages(
+export function streamAnthropicMessages(
 	entry: ModelEntry,
 	request: ModelRequest,
 	options: StreamOptions,
 ): AsyncGenerator<StreamEvent> {
-	const builder = new ReplyBuilder(entry, request, options.messageId);
-	const idle = new AbortController();
-	let timer = setTimeout(() => idle.abort(), idleTimeoutMs);
-	const signal = AbortSignal.any([options.signal, idle.signal]);
-	try {
-		let response: Response;
-		try {
-			response = await options.fetch(`${entry.base_url}/messages`, {
-				method: "POST",
-				headers: {
-					"content-type": "application/json",
-					accept: "text/event-stream",
-					"anthropic-version": anthropicVersion,
-					"x-api-key": options.apiKey,
-					...(checksPrefix(
-						entry,
-						resolveEffort(entry, request.reasoning_effort),
-					)
-						? { "anthropic-beta": prefixCheckBeta }
-						: {}),
-				},
-				body: JSON.stringify(anthropicRequestBody(entry, request)),
-				signal,
-			});
-		} catch (error) {
-			if (options.signal.aborted) {
-				yield { type: "end", message: builder.message("cancelled") };
-				return;
-			}
-			yield errorEnd(builder, {
-				category: "network",
-				message: describe(error),
-			});
-			return;
-		}
-		if (!response.ok || response.body === null) {
-			yield errorEnd(
-				builder,
-				classifyAnthropicError(
-					response.status,
-					await response.text(),
-					response.headers.get("retry-after"),
-				),
-			);
-			return;
-		}
-		let stopped = false;
-		try {
-			for await (const { event, data } of parseSse(response.body)) {
-				clearTimeout(timer);
-				timer = setTimeout(() => idle.abort(), idleTimeoutMs);
-				if (event === "ping") continue;
-				const payload = JSON.parse(data) as Json;
-				let out: StreamEvent | undefined;
-				switch (event) {
-					case "message_start": {
-						const message = payload.message as Json;
-						builder.model = String(message.model);
-						builder.addUsage(message.usage as Json);
-						out = { type: "start", model: builder.model };
-						break;
-					}
-					case "content_block_start":
-						out = builder.start(
-							payload.index as number,
-							payload.content_block as Json,
-						);
-						break;
-					case "content_block_delta":
-						out = builder.delta(payload.index as number, payload.delta as Json);
-						break;
-					case "content_block_stop":
-						out = builder.stop(payload.index as number);
-						break;
-					case "message_delta": {
-						const delta = payload.delta as Json;
-						const reason = stopReasons[String(delta.stop_reason)];
-						if (reason === undefined) {
-							throw new Error(
-								`Messages API 返回了不认识的停止原因：${String(delta.stop_reason)}`,
-							);
-						}
-						builder.stopReason = reason;
-						const details = delta.stop_details as Json | null | undefined;
-						if (reason === "refusal" && typeof details?.category === "string") {
-							builder.refusal = {
-								category: details.category,
-								...(typeof details.explanation === "string"
-									? { explanation: details.explanation }
-									: {}),
-							};
-						}
-						out = builder.addUsage(payload.usage as Json);
-						break;
-					}
-					case "message_stop":
-						stopped = true;
-						break;
-					case "error": {
-						const error = payload.error as Json;
-						yield errorEnd(builder, {
-							category: streamErrorCategory(error.type),
-							message: String(error.message),
-						});
-						return;
-					}
-					default:
-						throw new Error(`Messages API 返回了不认识的事件：${event}`);
-				}
-				if (out !== undefined) yield out;
-			}
-		} catch (error) {
-			if (options.signal.aborted) {
-				yield { type: "end", message: builder.message("cancelled") };
-				return;
-			}
-			if (idle.signal.aborted) {
-				yield errorEnd(builder, {
-					category: "network",
-					message: `流超过 ${idleTimeoutMs / 1000} 秒没有数据`,
-				});
-				return;
-			}
-			if (
-				error instanceof TypeError ||
-				(error as Error).name === "AbortError"
-			) {
-				yield errorEnd(builder, {
-					category: "network",
-					message: describe(error),
-				});
-				return;
-			}
-			throw error;
-		}
-		if (!stopped || builder.stopReason === undefined) {
-			yield errorEnd(builder, {
-				category: "network",
-				message: "流在 message_stop 之前结束",
-			});
-			return;
-		}
-		yield { type: "end", message: builder.message(builder.stopReason) };
-	} finally {
-		clearTimeout(timer);
-	}
+	const { body, refs } = render(entry, request, options);
+	const effort = resolveEffort(entry, request.reasoning_effort);
+	return runStream(
+		options,
+		{
+			url: `${entry.base_url}/messages`,
+			headers: {
+				"content-type": "application/json",
+				accept: "text/event-stream",
+				"anthropic-version": anthropicVersion,
+				"x-api-key": options.apiKey,
+				...(checksPrefix(entry, effort)
+					? { "anthropic-beta": prefixCheckBeta }
+					: {}),
+			},
+			body,
+		},
+		locating(refs),
+		new MessagesParser(entry, request, options),
+	);
 }

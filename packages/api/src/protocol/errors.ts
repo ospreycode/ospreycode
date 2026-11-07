@@ -1,3 +1,5 @@
+import type { BlockRef } from "./stream.js";
+
 /**
  * 模型请求失败的类别，loop 据此决定能不能重试，不需要认识各家的错误格式。
  *
@@ -31,4 +33,8 @@ export interface ModelErrorInfo {
 	message: string;
 	/** 限流时服务建议的等待时间。 */
 	retry_after_ms?: number;
+	/**
+	 * 推理内容前缀不符时，校验失败的推理块在这次请求里的位置：所在消息和它在发出的 `content` 里的下标。
+	 */
+	block?: BlockRef;
 }

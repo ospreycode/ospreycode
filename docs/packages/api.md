@@ -40,7 +40,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 ## 内部协议
 
 - **消息和内容块**：系统指令、会话中追加的指令、用户消息、模型回复和工具结果；内容块有文本、图片、工具调用和推理内容。每条消息带 runtime 生成的 `message_id`。工具调用同时保存模型返回的调用编号，和 Host 分配的 `tool_call_id` 对应。
-- **工具声明**：名称、说明和 JSON Schema 格式的参数。各家对名称和 schema 的限制不同，转换时按固定规则改写并保留对应关系，无法转换的报错。工具名按模型清单里各协议的字符集和长度上限改写：不合规的字符改成下划线，超长时截断并加 8 位哈希；MCP 工具名带标签前缀后常常超长。
+- **工具声明**：名称、说明和 JSON Schema 格式的参数。各家对名称和 schema 的限制不同，转换时按固定规则改写并保留对应关系，无法转换的报错。工具名和工具调用编号按各协议的限制改写：`[A-Za-z0-9_-]` 以外的字符改成下划线，超长时截断并加原文的 8 位哈希；工具名的上限是 OpenAI 两种协议 64 个字符、Anthropic 128 个，调用编号的上限是 Chat Completions 40 个、其余 64 个。同一个原文总是改写成同一个结果，所以工具调用和它的结果对得上；模型调用改写过的工具名时换回内部的名字，两个工具改写后重名时报错。MCP 工具名带标签前缀后常常超长。
 - **流式事件**：开始、文本增量、推理内容增量、工具调用的开始、参数增量和结束、用量、作废、结束。"作废"标出本轮哪些块不再发回模型以及原因（见[拒绝和回退](#拒绝和回退)）。
 - **停止原因**：正常结束、要调用工具、达到输出上限、上下文窗口用尽、服务端工具暂停、拒绝回答、出错、被取消。服务端工具暂停是 Anthropic 的 `pause_turn`：把暂停的回复原样追加为 assistant 消息后再次请求，响应带 `container` 时一并带回它的 id。Anthropic 的 beta 停止原因 `compaction` 只在采用服务端压缩时出现（见[上下文压缩](#上下文压缩)）。
 - **用量**：输入、输出、缓存读取、缓存写入和推理的 token 数，费用按模型清单里的价格计算。输入、缓存读取和缓存写入三项互不包含，推理算进输出、另列为子项；各家的口径不同（Anthropic 的 `input_tokens` 不含缓存，OpenAI 的含 `cached_tokens`），由适配器换成这个口径，token 计数的锚点和价格档都按它计算。用量保留各家的细分，清单的价格也不只是每个模型一个单价，只靠总数算不准：Anthropic 的缓存写入分 5 分钟和 1 小时两档，OpenAI 的分 `ttl_30m_tokens` 和 `ttl_12h_tokens`；服务端工具按次计费（`server_tool_use.web_search_requests` 等）；快速模式和 `inference_geo: "us"` 改变价格；两家都按提示长度分档，超过阈值时整次请求按更高的价格计。
@@ -48,7 +48,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
   - OpenAI 的额度不足和限流都是 429，按 `error.code` 区分：`credit_balance_exhausted`、`organization_spend_limit_exceeded`、`project_spend_limit_exceeded` 和 `organization_usage_limit_exceeded` 是额度不足（`error.type` 仍可能是 `insufficient_quota`）；`slow_down` 是限流；服务过载是 503 `server_is_overloaded`。
   - Anthropic 达到用量等级的月度消费上限时返回 429、不带 `retry-after`，按 `error.details.error_code` 为 `enforced_spend_limit_reached` 归入额度不足；组织或工作区自设的消费上限返回 400 `invalid_request_error`（"You have reached your specified API usage limits"），同样是额度不足；429 `ramp_limit_exceeded` 等 `retry-after` 后重试。上下文超长是 400 且没有错误码，按错误信息"prompt is too long"识别。
   - 流式响应开始之后的错误以流里的 `error` 事件到达，没有 HTTP 状态码，同样按类别归类。
-- **提示缓存**：断点在组装请求时加在固定的位置（`system`、`tools` 的末尾和最后一条消息），不放进内部消息，原样重放的原文里也不含它（见[原样重放](#原样重放)），否则断点每轮后移，几轮后就超过 Anthropic 每次最多 4 个断点的限制。转换模块对应到各家的做法：Anthropic 用内容块上的 `cache_control` 或请求顶层的自动缓存，两种都不加就不缓存；OpenAI 从 GPT-5.6 起用 `prompt_cache_breakpoint` 标出断点，写入缓存收费，分默认的 30 分钟和 Responses 可选的 12 小时两档。会让缓存前缀失效的请求参数：Anthropic 的顶层 effort，OpenAI 的 `reasoning.effort`、`tools`、`parallel_tool_calls` 和 `text.verbosity`。
+- **提示缓存**：断点在组装请求时加在固定的位置（`system`、`tools` 的末尾和最后一条消息），不放进内部消息，原样重放的原文里也不含它（见[原样重放](#原样重放)），否则断点每轮后移，几轮后就超过 Anthropic 每次最多 4 个断点的限制。转换模块对应到各家的做法：Anthropic 用内容块上的 `cache_control` 或请求顶层的自动缓存，两种都不加就不缓存；OpenAI 用服务端自动选的隐式断点，Responses 的请求带 `prompt_cache_key`（session 标识，不缓存时不带），GPT-5.6 起写入缓存收费。GPT-5.6 起还能用 `prompt_cache_breakpoint` 显式标出断点，但要配合 `prompt_cache_options`，经中转服务实测有的通道对它返回 400，所以不用。会让缓存前缀失效的请求参数：Anthropic 的顶层 effort，OpenAI 的 `reasoning.effort`、`tools`、`parallel_tool_calls` 和 `text.verbosity`。
 - **协议专有的内容**分两类：
   - 其他包要据此做决定的，定义正式类型：推理内容（摘要可以为空，带 `redacted` 标记、不透明的签名或加密数据，以及产生它的协议、服务和模型）、拒绝的详情、回退的分界、服务端对输入的变换（`input_transformations`）、分次用量和文本上可选的 `phase`。它们决定换模型、压缩和前缀校验的处理、task 是否结束、Host 按哪个模型检查和计费。
   - 其余只原样往返：Anthropic 的服务端工具块（web search、web fetch、code execution、tool search 等）、`citations`、`document`、`search_result`、`tool_reference`、`container`、`connector_text` 和 MCP 块，OpenAI 的 `web_search_call`、`annotations` 等。它们在启用对应功能时按协议逐项列出，作为带来源的不透明块按原位置保存，只发回同一协议和同一服务。响应里出现没列出的类型时报错：Anthropic 要求每种块都原样带回，丢掉不认识的块等于改写之后每一轮的前缀；服务端工具和 beta 都要显式开启，正常使用遇不到没列出的类型。
@@ -103,7 +103,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 - 对外的入口是 `streamModel(entry, request, {messageId, apiKey, fetch, signal})`，产出内部协议的流式事件，以唯一的 `end` 结束：服务报错、网络中断和取消都体现在 `end` 里（`stop_reason` 为 `error` 或 `cancelled`，前者另带错误类别），不抛出；只有转换模块的缺陷和没有列出的内容才抛出。`testing/` 的脚本模型用法相同。
 - `anthropic-version` 由 adapter 显式发送，P1 固定为 `2026-10-21`，换版本按破坏性改动处理。这个版本里发送 `temperature`、`top_p` 或 `top_k`，在 assistant 消息里直接放 `document` 块，或在 user 消息的文本上带 `citations`，都返回 400。
 - 代理不在 `api` 里处理，由 Host 传入的 `fetch` 决定（见 overview 的[语言和运行环境](../overview.md#语言和运行环境)）。
-- 流的空闲超时 300 秒，归入"网络中断和超时"。解析器用录制的真实流测试，包括兼容服务的非标准事件（没有 `event:` 的错误、注释心跳）。
+- 流的空闲超时 300 秒，归入"网络中断和超时"。解析器用录制的真实流测试，包括兼容服务的非标准事件（没有 `event:` 的错误、注释心跳）。不带内容的事件里没列出的类型忽略（中转服务会加 `response.metadata` 这类事件），带内容的没列出的类型报错。
 
 ## 转换规则
 
@@ -133,7 +133,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 **兼容接口的差异写进模型配置**：是否支持 `developer` 角色、流式响应里是否返回用量、工具是否支持 strict 模式、推理参数的写法、是否接受 `store`，以及推理内容放在哪个字段（`reasoning_content`、`reasoning`，或带加密条目的 `reasoning_details`；DeepSeek 要求带回的 assistant 消息附上 `reasoning_content`）。转换模块按配置处理，不按服务地址猜。`strict` 总是显式写明：不写时 Responses 会把 schema 规范化成 strict 模式，Chat 不会。
 
-**工具结果里的图片**：`openai.chat` 的 tool 消息只能放文本，图片移到这组工具结果之后追加的 user 消息里（照 pi）；Responses 的 `function_call_output` 能直接带 `input_image`；Anthropic 对 `is_error` 为真的工具结果只接受文本，也这样移出。
+**工具结果里的图片**：`openai.chat` 的 tool 消息只能放文本，图片移到这组工具结果之后追加的 user 消息里（照 pi）；Responses 的 `function_call_output` 能直接带 `input_image`；Anthropic 对 `is_error` 为真的工具结果只接受文本，图片移到同一条 user 消息里这组 `tool_result` 块之后。清单标明不读图片的模型收到图片时，转换模块换成一句文字占位。
 
 **模型能力以模型清单为准**：上下文长度、最大输出长度，是否支持工具、并行工具调用、图片、推理和提示缓存，是否支持中途 system 消息、能否在对话中增减工具，`tool_choice` 允许的值，服务档位的价格倍率，都从清单读取（这几项 models.dev v2 已经提供），context 和转换模块据此决定做法。
 
@@ -154,7 +154,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 升级之后重新转换同一段历史，结果可能和当初发出的不同，而 Anthropic 的前缀校验和提示缓存都要求历史不变。所以 Host 的模型代理保存发出和收到的原文，之后原样重放：
 
-- 每次请求的 `system`、`tools` 和每条消息在目标协议里的形式，以原始 JSON 文本按 `message_id`、内部消息的内容哈希、协议、服务和 API 版本保存为 agent-host 定义的事件，存进 session 记录：发出的消息按首次发出时、去掉缓存断点后的形式，assistant 消息按收到的形式，`tool_use` 的 `input` 用流里 `partial_json` 拼出的原文。
+- 每次请求的 `system`、`tools` 和每条消息在目标协议里的形式，按片段（一个内容块、一个 item 或一条消息的 JSON 原文）以 `message_id`、内容哈希、协议、服务和 API 版本保存为 agent-host 定义的事件，存进 session 记录：发出的消息按首次发出时、去掉缓存断点后的形式，assistant 消息按收到的形式（Responses 的 item 原样保存，中转服务加在 item 上的字段也照样带回，实测接受）；`tool_use` 的 `input` 直接放工具调用参数的原文，Anthropic 自己的调用就是流里 `partial_json` 拼出的原文。内容哈希连同模型清单里影响转换结果的字段（模型名、`system_updates`、`compat`）一起算，这些字段变了就重新转换。`api` 只定义存取的接口 `RawStore`，保存由调用方负责。
 - 在同一协议、服务和 API 版本上继续对话时，按 `message_id` 和内容哈希取回原文，用字符串拼接组成请求体，只转换新的消息；内部消息变了就重新转换，这次重新转换本身就是一次编辑。
 - 升级后工具定义或系统指令变了，按 `tool_addition`、`tool_removal` 和段落补丁追加，不改顶层；换 API 版本时所有消息都要重新转换，按[前缀校验失败](#前缀校验失败)处理。
 - 存原文而不存解析后的对象：JSON 往返会把整数形式的键挪到最前、让超过 2^53 的整数丢失精度、把 `1.0` 变成 `1`。

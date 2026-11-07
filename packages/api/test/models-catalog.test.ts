@@ -119,7 +119,9 @@ describe("Anthropic 的推理字段", () => {
 
 	test("开着推理时发 adaptive 和 effort，做前缀校验的模型显式要求校验失败时报错", () => {
 		expect(
-			anthropicRequestBody(model("claude-haiku-5-5"), request("low")),
+			JSON.parse(
+				anthropicRequestBody(model("claude-haiku-5-5"), request("low")),
+			),
 		).toMatchObject({
 			thinking: { type: "adaptive" },
 			output_config: { effort: "low" },
@@ -128,9 +130,8 @@ describe("Anthropic 的推理字段", () => {
 	});
 
 	test("关闭推理时不设前缀校验的字段", () => {
-		const body = anthropicRequestBody(
-			model("claude-haiku-5-5"),
-			request("off"),
+		const body = JSON.parse(
+			anthropicRequestBody(model("claude-haiku-5-5"), request("off")),
 		);
 		expect(body.thinking).toEqual({ type: "disabled" });
 		expect(body).not.toHaveProperty("output_config");

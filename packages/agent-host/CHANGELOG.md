@@ -15,4 +15,5 @@
 - 诊断日志：错误和警告写进 Host 根目录下的 `data/logs/<UTC 日期>.log`。日志、`error` 和 `warning` 事件、`task.ended` 的 `error` 都先去掉 Host 持有的凭据和疑似密钥。
 - 沙盒：macOS 上 `read-only` 和 `workspace-write` 的 session 由离线的辅助进程启动 agent 进程，每条 shell 命令由命令的辅助进程单独包装；批准的 `with_additional_permissions`（文件路径）只加在这一条命令的沙盒上。`require_escalated`、`unix_sockets` 和 `local_binding` 暂不支持，在询问之前拒绝。其他平台的沙盒模式抛出 `SandboxUnavailableError`。
 - 对外的事件格式：`hostEventSchema` 和 `isHostEvent`（对外事件、api 的流式事件和 agent-runtime 的工具事件在同一份 schema 里），非交互模式的退出码 `exitCodeFor`，session 打开之前就失败时的 `startupErrorEvent` 和 `startupExitCode`，CLI 的 JSON 输出用的 `toJsonLine`（转义 U+2028、U+2029）和 `inJsonOutput`。
+- 模型代理把 session 标识作为提示缓存的键交给 `api`，三种协议（`anthropic.messages`、`openai.responses`、`openai.chat`）的模型都可以选用。
 - 模块骨架：配置检查（`ConfigError`）、按文件或环境变量读凭据（`readCredential`、`CredentialError`）、密钥检测和替换（`containsSecret`、`redact`）、工作区和根目录的检查（`WorkspaceError`）、session 和 task 的生命周期、通道的服务端、工具调用的处理和询问、模型代理、agent 进程和命令的启动（`AgentStartError`）。

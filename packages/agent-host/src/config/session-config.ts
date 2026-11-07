@@ -5,7 +5,6 @@ import {
 	type ModelEntry,
 	type ModelFields,
 	mergeModelFields,
-	supportedProtocols,
 } from "@ospreycode/api";
 import type { ReasoningEffort } from "@ospreycode/api/protocol";
 import {
@@ -395,9 +394,6 @@ export function resolveSessionConfig(
 	const model = models.find((entry) => entry.id === merged.model);
 	if (model === undefined) {
 		throw new ConfigError(`模型清单里没有 ${merged.model}`);
-	}
-	if (!supportedProtocols.includes(model.protocol)) {
-		throw new ConfigError(`模型 ${model.id} 的协议 ${model.protocol} 还不支持`);
 	}
 
 	const permissionProfiles = merged.permissions;

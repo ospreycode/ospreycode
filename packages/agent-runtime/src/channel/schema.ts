@@ -286,9 +286,11 @@ const ToolResult = Type.Union([
 	),
 ]);
 
+const BlockRef = Type.Object({ message_id: Id, index: Count }, closed);
+
 const Invalidation = Type.Object(
 	{
-		blocks: Type.Array(Type.Object({ message_id: Id, index: Count }, closed)),
+		blocks: Type.Array(BlockRef),
 		reason: Type.Union([
 			Type.Literal("refusal"),
 			Type.Literal("fallback"),
@@ -320,6 +322,7 @@ const ModelErrorInfo = Type.Object(
 		]),
 		message: Type.String(),
 		retry_after_ms: Type.Optional(Count),
+		block: Type.Optional(BlockRef),
 	},
 	closed,
 );

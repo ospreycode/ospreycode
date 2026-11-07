@@ -86,7 +86,7 @@ const request: ModelRequest = {
 
 describe("anthropicRequestBody", () => {
 	test("工具结果和其后的用户输入并成一条 user 消息，断点加在 system、tools 和最后一条消息的末尾", () => {
-		expect(anthropicRequestBody(entry, request)).toEqual({
+		expect(JSON.parse(anthropicRequestBody(entry, request))).toEqual({
 			model: "claude-haiku-5-5",
 			max_tokens: 8_000,
 			system: [
@@ -141,8 +141,8 @@ describe("anthropicRequestBody", () => {
 	});
 
 	test("同样的内部请求每次生成相同的请求体", () => {
-		expect(JSON.stringify(anthropicRequestBody(entry, request))).toBe(
-			JSON.stringify(anthropicRequestBody(entry, request)),
+		expect(anthropicRequestBody(entry, request)).toBe(
+			anthropicRequestBody(entry, request),
 		);
 	});
 });

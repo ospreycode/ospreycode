@@ -154,6 +154,7 @@ export class HostSession implements ChannelHandlers {
 		});
 		this.#approvals = new Approvals(this.#events);
 		this.#modelProxy = new ModelProxy({
+			sessionId: this.sessionId,
 			entry: options.config.model,
 			credential: options.credential,
 			fetch: options.fetch,
