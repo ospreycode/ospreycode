@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
@@ -7,13 +7,22 @@ declare module "vitest" {
 	interface ProvidedContext {
 		/** 模型测试的密钥目录：每个服务一个文件，文件名是服务名。 */
 		modelKeysDir: string;
+		/** 各服务共用的接口地址，来自密钥目录里的 base-url 文件。 */
+		modelBaseUrl: string;
 	}
 }
 
 /** 模型测试用到的服务，也是密钥文件的名字。 */
-export const modelServices = ["openai", "anthropic", "deepseek"] as const;
+export const modelServices = ["openai", "anthropic", "gemini"] as const;
 
-/** 检查密钥目录：在仓库之外，每个服务的密钥文件都在，并且只对当前用户可读写。 */
+function readBaseUrl(dir: string): string {
+	return readFileSync(join(dir, "base-url"), "utf8").trim();
+}
+
+/**
+ * 检查密钥目录：在仓库之外，每个服务的密钥文件都在并且只对当前用户可读写，
+ * base-url 文件写的是 https 地址。
+ */
 export function keysDirProblems(dir: string, repoDir: string): string[] {
 	if (statSync(dir, { throwIfNoEntry: false })?.isDirectory() !== true) {
 		return [`${dir} 不是目录`];
@@ -38,6 +47,12 @@ export function keysDirProblems(dir: string, repoDir: string): string[] {
 			);
 		}
 	}
+	const baseUrlFile = join(dir, "base-url");
+	if (statSync(baseUrlFile, { throwIfNoEntry: false })?.isFile() !== true) {
+		problems.push(`缺少接口地址文件 ${baseUrlFile}`);
+	} else if (URL.parse(readBaseUrl(dir))?.protocol !== "https:") {
+		problems.push(`${baseUrlFile} 要写一个 https 地址`);
+	}
 	return problems;
 }
 
@@ -48,7 +63,7 @@ function configError(message: string): Error {
 	return error;
 }
 
-/** vitest 的全局初始化：选中 model 标签时检查密钥目录，把它的路径交给测试。 */
+/** vitest 的全局初始化：选中 model 标签时检查密钥目录，把它的路径和接口地址交给测试。 */
 export default function setup(project: TestProject): void {
 	if (!(project.globalConfig.tagsFilter ?? []).includes("model")) return;
 	const dir = process.env.OSPREYCODE_TEST_KEYS;
@@ -63,4 +78,5 @@ export default function setup(project: TestProject): void {
 	);
 	if (problems.length > 0) throw configError(problems.join("\n"));
 	project.provide("modelKeysDir", realpathSync(dir));
+	project.provide("modelBaseUrl", readBaseUrl(dir));
 }
