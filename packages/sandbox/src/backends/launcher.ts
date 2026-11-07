@@ -50,6 +50,8 @@ export interface SandboxHelperOptions {
 
 /** 一个运行中的辅助进程。 */
 export interface SandboxHelper {
+	/** 辅助进程的 pid，也是它的进程组编号。 */
+	readonly pid: number;
 	/** 为一个沙盒生成完整的启动命令，`filesystem` 是这个沙盒额外的读写范围。 */
 	wrap(
 		command: string,
@@ -137,6 +139,7 @@ export async function startSandboxHelper(
 		);
 	}
 	return {
+		pid,
 		async wrap(command, bash, filesystem) {
 			const { argv } = await request({
 				method: "wrap",

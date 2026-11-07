@@ -50,6 +50,7 @@ export {
 	type Host,
 	type HostOptions,
 	type OpenSessionOptions,
+	type ProjectInfo,
 	type Session,
 } from "./sdk/host.js";
 export {

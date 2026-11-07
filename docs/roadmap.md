@@ -31,7 +31,7 @@
 | 规则文件（`AGENTS.md` 等）的加载、系统指令和会话开始的上下文消息 | P1 | 未开始 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
 | Host；CLI 的交互和非交互模式，P1 的子命令和会话内命令 | P1 | 未开始 | agent-host 的 [CLI](packages/agent-host.md#cli) |
 | task 的开始、结束和取消，工具调用的处理 | P1 | 进行中 | agent-host 的 [task 的开始、结束和取消](packages/agent-host.md#task-的开始结束和取消)和[工具调用的处理](packages/agent-host.md#工具调用的处理) |
-| 项目身份、`user_id`、目录位置、工作区锁和进程登记表 | P1 | 未开始 | agent-host 的[项目身份](packages/agent-host.md#项目身份)、[目录位置](packages/agent-host.md#目录位置)和 [session 的打开和关闭](packages/agent-host.md#session-的打开和关闭) |
+| 项目身份、`user_id`、目录位置、工作区锁和进程登记表 | P1 | 已完成 | agent-host 的[项目身份](packages/agent-host.md#项目身份)、[目录位置](packages/agent-host.md#目录位置)和 [session 的打开和关闭](packages/agent-host.md#session-的打开和关闭) |
 | 密钥检测和脱敏（`redaction/`），用于日志、错误信息、session 导出和记忆 | P1 | 进行中 | agent-host 的[模块](packages/agent-host.md#模块) |
 | 凭据：macOS 钥匙串，显式指定的文件或环境变量 | P1 | 进行中 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | 配置的分层和配置项 | P1 | 进行中 | agent-host 的[配置的分层](packages/agent-host.md#配置的分层) |

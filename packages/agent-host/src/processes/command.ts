@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createWriteStream } from "node:fs";
 import { killGroup } from "./group.js";
+import type { ProcessTracker } from "./registry.js";
 
 /** 交给模型的输出上限（字节），超出时保留开头和结尾各一半，完整输出在输出文件里。 */
 export const modelOutputLimit = 32 * 1024;
@@ -21,6 +22,8 @@ export interface RunCommandOptions {
 	outputFile: string;
 	/** 上限以内的输出，按收到的顺序交给调用方流回 runtime。 */
 	onOutput: (text: string) => Promise<void>;
+	/** 命令的进程记进进程登记表。 */
+	tracker: ProcessTracker;
 }
 
 /** 命令的结果。 */
@@ -102,6 +105,14 @@ export async function runCommand(
 	};
 	child.stdout.on("data", collect);
 	child.stderr.on("data", collect);
+	try {
+		await options.tracker.add(pid, "command");
+	} catch (error) {
+		killGroup(pid);
+		await closed;
+		file.end();
+		throw error;
+	}
 
 	let timedOut = false;
 	let cancelled = false;
@@ -120,6 +131,7 @@ export async function runCommand(
 	clearTimeout(timer);
 	options.signal.removeEventListener("abort", onAbort);
 	killGroup(pid);
+	await options.tracker.remove(pid);
 	// 输出的管道可能还有没读完的数据，等它们关闭
 	await closed;
 	file.end();

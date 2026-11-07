@@ -23,6 +23,7 @@ import {
 } from "@ospreycode/sandbox";
 import { Compile } from "typebox/compile";
 import { runCommand } from "../processes/command.js";
+import type { ProcessTracker } from "../processes/registry.js";
 import { isInside } from "../project/paths.js";
 import type { EventSink } from "../sessions/emitter.js";
 import { newId } from "../sessions/ids.js";
@@ -56,6 +57,8 @@ export interface ToolCallsOptions {
 	env: Record<string, string>;
 	/** 启用的工具。 */
 	tools: readonly string[];
+	/** 命令的进程记进进程登记表。 */
+	tracker: ProcessTracker;
 }
 
 function text(value: string): UserContent[] {
@@ -297,6 +300,7 @@ export class ToolCalls {
 			timeoutMs,
 			signal,
 			outputFile,
+			tracker: this.#options.tracker,
 			onOutput: async (output) => {
 				events.streaming(run, {
 					type: "tool_call.output",

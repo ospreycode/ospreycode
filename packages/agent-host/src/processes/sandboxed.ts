@@ -6,6 +6,7 @@ import {
 	writableRoots,
 } from "@ospreycode/sandbox/backends";
 import type { CommandLauncher } from "../actions/tool-calls.js";
+import type { ProcessTracker } from "./registry.js";
 
 /** 一个 session 的沙盒：agent 进程的启动命令、命令沙盒的启动方式，session 结束时停掉辅助进程。 */
 export interface SessionSandbox {
@@ -72,6 +73,8 @@ export interface SandboxedSessionOptions {
 	bash: string;
 	/** agent 进程的完整命令：Node 加入口文件。 */
 	agentCommand: readonly string[];
+	/** 辅助进程记进进程登记表。 */
+	tracker: ProcessTracker;
 }
 
 /**
@@ -81,17 +84,39 @@ export interface SandboxedSessionOptions {
 export async function sandboxedSession(
 	options: SandboxedSessionOptions,
 ): Promise<SessionSandbox> {
-	const { policy, bash } = options;
-	const start = () =>
-		startSandboxHelper({
+	const { policy, bash, tracker } = options;
+	const start = async () => {
+		const helper = await startSandboxHelper({
 			entry: options.helperEntry,
 			policy,
 			env: options.env,
 		});
-	const [offline, commands] = await Promise.all([start(), start()]);
-	const stop = async () => {
-		await Promise.all([offline.stop(), commands.stop()]);
+		try {
+			await tracker.add(helper.pid, "helper");
+		} catch (error) {
+			await helper.stop();
+			throw error;
+		}
+		return helper;
 	};
+	const started = await Promise.allSettled([start(), start()]);
+	const helpers = started.flatMap((result) =>
+		result.status === "fulfilled" ? [result.value] : [],
+	);
+	const stop = async () => {
+		await Promise.all(
+			helpers.map(async (helper) => {
+				await helper.stop();
+				await tracker.remove(helper.pid);
+			}),
+		);
+	};
+	const [offline, commands] = helpers;
+	if (offline === undefined || commands === undefined) {
+		await stop();
+		const failure = started.find((result) => result.status === "rejected");
+		throw (failure as PromiseRejectedResult).reason;
+	}
 	try {
 		return {
 			agentArgv: await offline.wrap(shellQuote(options.agentCommand), bash),

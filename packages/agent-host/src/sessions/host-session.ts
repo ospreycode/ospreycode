@@ -32,7 +32,9 @@ import {
 	startAgentProcess,
 } from "../processes/agent-process.js";
 import { findBash, sandboxEnvironment } from "../processes/environment.js";
+import type { ProcessTracker } from "../processes/registry.js";
 import type { SessionSandbox } from "../processes/sandboxed.js";
+import type { WorkspaceLock } from "../project/locks.js";
 import {
 	createSessionDirectories,
 	type SessionDirectories,
@@ -62,6 +64,7 @@ export class AgentStartError extends Error {
 
 /** 打开 session 用到的依赖，都已检查过。 */
 export interface HostSessionOptions {
+	sessionId: string;
 	root: string;
 	config: SessionConfig;
 	/** 模型服务的凭据。 */
@@ -71,6 +74,12 @@ export interface HostSessionOptions {
 	streamModel: StreamModel;
 	/** 按沙盒模式准备 agent 进程的启动命令和命令沙盒。 */
 	createSandbox: (context: SandboxContext) => Promise<SessionSandbox>;
+	/** 这个 session 启动的进程记进进程登记表。 */
+	tracker: ProcessTracker;
+	/** 已经取得的工作区锁，session 结束时释放。 */
+	lock: WorkspaceLock;
+	userId: string;
+	projectId: string;
 	onEvent: (event: HostEvent) => void;
 }
 
@@ -80,6 +89,7 @@ export interface SandboxContext {
 	/** 沙盒里的进程的环境变量。 */
 	env: Record<string, string>;
 	directories: SessionDirectories;
+	tracker: ProcessTracker;
 }
 
 function describeExit(exit: ProcessExit): string {
@@ -97,7 +107,7 @@ function localDate(): string {
  * 把模型请求和工具调用交给模型代理和 actions。
  */
 export class HostSession implements ChannelHandlers {
-	readonly sessionId = newId();
+	readonly sessionId: string;
 	readonly agentId = newId();
 	/** session 关闭后兑现，包括 agent 进程意外退出。 */
 	readonly ended: Promise<void>;
@@ -115,9 +125,12 @@ export class HostSession implements ChannelHandlers {
 	#initialized = Promise.withResolvers<void>();
 	#failure: Error | undefined;
 	#cancelTimer: NodeJS.Timeout | undefined;
+	/** agent 进程退出、从进程登记表里删掉之后兑现。 */
+	#agentGone!: Promise<void>;
 	#resolveEnded!: () => void;
 
 	private constructor(options: HostSessionOptions) {
+		this.sessionId = options.sessionId;
 		this.#options = options;
 		this.#events = new EventSink(this.sessionId, this.agentId, options.onEvent);
 		this.#approvals = new Approvals(this.#events);
@@ -141,7 +154,7 @@ export class HostSession implements ChannelHandlers {
 	}
 
 	async #start(): Promise<void> {
-		const { config, root, hostEnv } = this.#options;
+		const { config, root, hostEnv, tracker } = this.#options;
 		const { workspace } = config;
 		const directories = createSessionDirectories(root, this.sessionId);
 		this.#tmpdir = directories.tmp;
@@ -156,6 +169,7 @@ export class HostSession implements ChannelHandlers {
 			bash,
 			env,
 			directories,
+			tracker,
 		});
 		this.#toolCalls = new ToolCalls({
 			events: this.#events,
@@ -170,29 +184,35 @@ export class HostSession implements ChannelHandlers {
 			outputDir: directories.output,
 			env,
 			tools: ["shell"],
+			tracker,
 		});
-		this.#agent = startAgentProcess({
+		const agent = startAgentProcess({
 			argv: this.#sandbox.agentArgv,
 			env,
 			cwd: workspace,
 			onChannelFailure: (error) => this.#onChannelFailure(error),
 		});
-		serveChannel(this.#agent.channel, this);
-		void this.#agent.exited.then((exit) => this.#onAgentExit(exit));
+		this.#agent = agent;
+		serveChannel(agent.channel, this);
+		void agent.exited.then((exit) => this.#onAgentExit(exit));
 		const timer = setTimeout(
 			() =>
 				this.#initialized.reject(
 					new AgentStartError(
-						`agent 进程 ${initializeTimeoutMs / 1000} 秒内没有发来 initialize\n${this.#agent.diagnostics()}`,
+						`agent 进程 ${initializeTimeoutMs / 1000} 秒内没有发来 initialize\n${agent.diagnostics()}`,
 					),
 				),
 			initializeTimeoutMs,
 		);
 		try {
+			await tracker.add(agent.pid, "agent");
+			this.#agentGone = agent.exited.then(() => tracker.remove(agent.pid));
 			await this.#initialized.promise;
 		} catch (error) {
 			this.#state = "closed";
-			this.#agent.kill();
+			agent.kill();
+			await agent.exited;
+			await tracker.remove(agent.pid);
 			await this.#sandbox.stop();
 			throw error;
 		} finally {
@@ -203,6 +223,8 @@ export class HostSession implements ChannelHandlers {
 			type: "session.started",
 			format_version: eventFormatVersion,
 			host_version: hostVersion,
+			user_id: this.#options.userId,
+			project_id: this.#options.projectId,
 			workspace,
 			model: config.model.id,
 			sandbox_mode: config.sandboxMode,
@@ -273,7 +295,7 @@ export class HostSession implements ChannelHandlers {
 		await this.#agent.stop();
 		await this.#sandbox.stop();
 		this.#state = "closed";
-		this.#end("closed");
+		await this.#end("closed");
 	}
 
 	async initialize(params: InitializeParams): Promise<AgentConfig> {
@@ -413,7 +435,10 @@ export class HostSession implements ChannelHandlers {
 		void this.#sandbox.stop().then(() => this.#end(ended));
 	}
 
-	#end(reason: SessionEndReason): void {
+	/** 全部进程结束之后：删掉 agent 进程的登记，释放工作区锁，发出 `session.ended`。 */
+	async #end(reason: SessionEndReason): Promise<void> {
+		await this.#agentGone;
+		this.#options.lock.release();
 		this.#events.session({ type: "session.ended", reason, usage: this.#usage });
 		this.#resolveEnded();
 	}

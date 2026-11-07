@@ -47,6 +47,8 @@ export interface SessionStartedEvent extends EventBase {
 	type: "session.started";
 	format_version: number;
 	host_version: string;
+	user_id: string;
+	project_id: string;
 	workspace: string;
 	model: string;
 	sandbox_mode: string;

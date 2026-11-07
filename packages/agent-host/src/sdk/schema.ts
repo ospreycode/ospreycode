@@ -145,6 +145,8 @@ const SessionStarted = event({
 	type: Type.Literal("session.started"),
 	format_version: Type.Integer(),
 	host_version: Type.String(),
+	user_id: Type.String(),
+	project_id: Type.String(),
 	workspace: Type.String(),
 	model: Type.String(),
 	sandbox_mode: Type.String(),

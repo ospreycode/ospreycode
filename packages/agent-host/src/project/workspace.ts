@@ -1,8 +1,9 @@
 import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { networkFilesystem } from "./filesystem.js";
 import { currentUid, isInside } from "./paths.js";
 
-/** 工作区或 Host 根目录不满足要求。 */
+/** 工作区或 Host 根目录不满足要求，或者工作区已经有打开的 session。 */
 export class WorkspaceError extends Error {
 	override name = "WorkspaceError";
 }
@@ -35,8 +36,25 @@ export function findProjectRoot(workspace: string): ProjectRoot {
 }
 
 /**
- * 准备 Host 根目录，返回真实路径：不存在时以 0700 创建，已存在时要属于当前用户、权限为 0700。
- * 所有沙盒都拒绝读取整个根目录，再按用途放开子目录。
+ * 在 Host 根目录下建一个 0700 的目录。已有的不能是符号链接：沙盒按路径放开根目录下的子目录，
+ * 链接会把放开的范围带到别处。
+ */
+export function ensureDirectory(path: string): void {
+	const stat = lstatSync(path, { throwIfNoEntry: false });
+	if (stat === undefined) {
+		mkdirSync(path, { mode: 0o700 });
+		return;
+	}
+	if (!stat.isDirectory()) {
+		throw new WorkspaceError(
+			`Host 根目录下的 ${path} 要是目录，不能是符号链接或文件`,
+		);
+	}
+}
+
+/**
+ * 准备 Host 根目录，返回真实路径：不存在时以 0700 创建，已存在时要属于当前用户、权限为 0700，
+ * 并且不在网络文件系统上（SQLite 的 WAL 不可用）。所有沙盒都拒绝读取整个根目录，再按用途放开子目录。
  */
 export function prepareRoot(root: string): string {
 	mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -46,7 +64,17 @@ export function prepareRoot(root: string): string {
 			`Host 根目录要属于当前用户、权限为 700，现在是 ${(stat.mode & 0o777).toString(8)}：${root}`,
 		);
 	}
-	return realpathSync(root);
+	const real = realpathSync(root);
+	const network = networkFilesystem(real);
+	if (network !== undefined) {
+		throw new WorkspaceError(
+			`Host 根目录在网络文件系统（${network}）上，SQLite 的 WAL 在上面不可用：${real}`,
+		);
+	}
+	for (const dir of ["data", "data/locks", "data/logs"]) {
+		ensureDirectory(join(real, dir));
+	}
+	return real;
 }
 
 /** 根目录和工作区互相包含时报错：快照和搜索会碰到 Host 的数据，或者 agent 读不到自己的工作区。 */
@@ -54,6 +82,22 @@ export function checkSeparate(root: string, workspace: string): void {
 	if (isInside(root, workspace) || isInside(workspace, root)) {
 		throw new WorkspaceError(
 			`Host 根目录 ${root} 和工作区 ${workspace} 不能互相包含`,
+		);
+	}
+}
+
+/**
+ * Host 和它依赖的包（包括 Node 本身）不能装在工作区里：沙盒内的 agent 可以改写工作区，改过的代码
+ * 下次会在沙盒外运行。`files` 是 Host 用到的程序文件。
+ */
+export function checkInstallLocation(
+	workspace: string,
+	files: readonly string[],
+): void {
+	const inside = files.find((file) => isInside(realpathSync(file), workspace));
+	if (inside !== undefined) {
+		throw new WorkspaceError(
+			`Osprey Code 的程序文件 ${inside} 在工作区 ${workspace} 里：沙盒里的 agent 能改写它，改过的代码会在沙盒外运行。把 Osprey Code 装到工作区之外再运行`,
 		);
 	}
 }
@@ -79,8 +123,7 @@ export function createSessionDirectories(
 		tmp: join(root, "tmp", name),
 		output: join(root, "output", name),
 	};
-	for (const dir of Object.values(directories)) {
-		mkdirSync(dir, { recursive: true, mode: 0o700 });
-	}
+	for (const parent of ["tmp", "output"]) ensureDirectory(join(root, parent));
+	for (const dir of Object.values(directories)) ensureDirectory(dir);
 	return directories;
 }

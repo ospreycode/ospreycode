@@ -143,7 +143,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 - 根目录权限为 0700，启动时检查属主和权限，不对就报错。
 - 不提供改位置的环境变量：SDK 由调用方传入根目录，测试用临时的 HOME。
 - 根目录和工作区互相包含时（包括在主目录里启动）报错停止，按真实路径比较：根目录在工作区内时，快照和搜索都会碰到 Host 数据；工作区在根目录内时，agent 读不到自己的工作区。
-- 根目录在网络文件系统上时报错：SQLite 的 WAL 不可用。
+- 根目录在网络文件系统上时报错：SQLite 的 WAL 不可用。Linux 上按 `statfs` 的文件系统类型判断（NFS、SMB、CIFS、9P 等）；macOS 的 `statfs` 里文件系统的编号是内核动态分配的，改看 `mount` 输出里这个挂载点有没有 `local` 标志。
 - Unix socket 的路径有长度上限（macOS 104 字节），所以 `tmp/` 和 `output/` 下的目录用 session 编号的前 12 个字符命名；Host 启动时检查最长的 socket 路径，超出就报错。
 
 ## 配置的分层
@@ -212,7 +212,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 - **打开**：用户启动 CLI 新建或恢复一个 session 时，Host 依次取得工作区锁，运行会话开始的 hooks，启动本地 MCP server、连接远程 MCP server 并等它们就绪（P2，每个最多 30 秒，超时的停掉并在 CLI 报告，见 mcp 的[本地 server 进程的生命周期](mcp.md#本地-server-进程的生命周期)），再启动 agent 进程并完成握手。会话开始的 hooks 阻止时不打开 session，退出码 1 并显示原因；hooks 补充的信息并入会话开始的上下文消息末尾。
 - **工作区锁**：session 打开时取得、关闭时释放，锁文件放 `data/locks/`，文件名取工作区真实路径 SHA-256 的前 16 位十六进制。已有打开的 session 的工作区和这次的工作区相同或互相包含时，启动直接报错：互相包含的两个工作区会改到同一批文件。为了让这个检查是原子的，取锁时先取 `data/locks/` 下的全局登记锁，读出各个有效锁文件里记录的工作区真实路径，比较相同和包含，再建自己的锁，最后释放登记锁。不打开 session 的子命令（`login`、`mcp`、`plugin`、`session list` 等）不取锁。
 - **工作区固定**：session 记录创建时的工作区真实路径，只能在同一路径恢复，否则报错并给出原路径；影子仓库和 `output/<session>/` 都按这个工作区建立。
-- **锁的做法**：工作区锁、session-store 的 session 写锁和数据目录的清理锁用同一种做法（照 Codex 的 pid 文件）：锁文件以 `O_EXCL` 创建，内容是 pid、进程启动时间和系统启动标识，工作区锁另记工作区的真实路径；撞锁时核对持锁进程是否还在（`kill(pid, 0)` 加启动时间比对），不在就删掉重试，在就报错。
+- **锁的做法**：工作区锁、session-store 的 session 写锁和数据目录的清理锁用同一种做法（照 Codex 的 pid 文件）：锁文件先写进临时文件再硬链接到锁的位置（和 `O_EXCL` 一样只有一个进程能建成，内容也不会只写了一半），内容是 pid、进程启动时间（macOS 取 `ps -o lstart=`，Linux 取 `/proc/<pid>/stat`）和系统启动标识，工作区锁另记工作区的真实路径；撞锁时核对持锁进程是否还在（`kill(pid, 0)` 加启动时间比对），不在就删掉重试，在就报错。删失效的锁时先改名再核对内容，两个 Host 同时发现同一个失效的锁时，后一个不会删掉前一个刚建的锁。登记表这类小文件的锁只在读写期间持有，撞锁时等待（最多 10 秒）而不报错。
 - **进程登记表**：`data/processes.json` 记录每个沙盒实例（agent 进程、命令沙盒、辅助进程、本地 MCP server、越界进程）和辅助进程报来的子进程（如 Linux 上的 socat 桥接）的 pid、进程启动时间、session、种类和工作区，退出时删除。残留进程只在打开同一工作区（锁已失效）或恢复同一 session 时清理，按 pid 加启动时间核对后结束；Linux 的占位文件同样只清本工作区的。
 - **关闭**：交互模式下用户退出 CLI 时关闭；非交互模式在任务结束、按 [CLI](#cli) 的规则处理完后台命令后关闭。交互会话空闲时不自动关闭。Host 崩溃时没有正常收尾，下次启动时按上面两条清除失效的锁和残留的进程。
 - **关闭顺序**：取消进行中的记忆提取（P3） → 会话结束的 hooks → 结束全部沙盒（包括后台命令和本地 MCP server，结束方式见 mcp 的[本地 server 进程的生命周期](mcp.md#本地-server-进程的生命周期)） → 保存事件 → 释放锁。会话结束的 hooks 并行运行，每个超时省略时 2 秒、上限 5 秒，到时结束它们的沙盒并记事件，不能阻止关闭。
@@ -455,7 +455,7 @@ CLI 是单独的 `cli` 包，只依赖 `agent-host` 的 `sdk/` 入口和终端�
 CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 session-store 的存储格式分开，存储格式迁移时它不变。
 
 - CLI 每行写一个 JSON 对象到 stdout，日志只写 stderr，U+2028、U+2029 转义输出，退出前等 stdout 写完。
-- 第一条事件是 `session.started`，带整数 `format_version` 和 Host 版本。每个事件带 `type`、`session_id` 和 `time`；属于某个 task 的事件另带 `task_id`、`run_id`、`agent_id`，不属于任何 task 的工作（如后台的记忆提取）只另带 `run_id`；会存储的事件另带 `event_id` 和 run 内的 `seq`，便于和 session 记录对照。新增事件类型或字段不改 `format_version`，消费方忽略不认识的部分；删除、改名或改变含义时加一，并在 CHANGELOG 写明迁移方法。
+- 第一条事件是 `session.started`，带整数 `format_version`、Host 版本、`user_id` 和 `project_id`。每个事件带 `type`、`session_id` 和 `time`；属于某个 task 的事件另带 `task_id`、`run_id`、`agent_id`，不属于任何 task 的工作（如后台的记忆提取）只另带 `run_id`；会存储的事件另带 `event_id` 和 run 内的 `seq`，便于和 session 记录对照。新增事件类型或字段不改 `format_version`，消费方忽略不认识的部分；删除、改名或改变含义时加一，并在 CHANGELOG 写明迁移方法。
 - 事件类型：`session.started`、`session.ended`；`task.started`、`task.ended`；`run.started`（子 agent 带父字段）；`message.completed`；`tool_call.started`、`tool_call.completed`（结果的状态见[工具调用的处理](#工具调用的处理)）；`approval.requested`、`approval.decided`（被策略拒绝时 `decision` 为 `denied_by_policy`）；`elicitation.requested`、`elicitation.answered`；`memory.candidates`（task 结束时列出候选）、`memory.updated`；后台命令、压缩、hooks、进程和输入插入的事件；`warning`、`error`。
 - 需要前端回答的请求都作为 `approval.requested` 发出，用 `kind` 区分：`tool_call`（工具调用和权限申请）、`network`（未放行的域名）、`budget`（超出预算后是否追加，见[预算](#预算)）、`resume_uncertain`（恢复时结果不确定的调用跳过还是重新执行，见[中断后的恢复](#中断后的恢复)）、`extension_changed`（扩展内容变了要重新确认）。`session.respond` 接受这些请求的决定和 elicitation 的表单答复。
 - `message.completed` 带这条回复的用量和费用，`task.ended` 和 `session.ended` 带合计，脚本和评测不用读存储文件。
