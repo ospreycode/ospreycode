@@ -15,6 +15,9 @@
 			"@ospreycode/api": [
 				"./packages/api/src/index.ts"
 			],
+			"@ospreycode/api/protocol": [
+				"./packages/api/src/protocol/index.ts"
+			],
 			"@ospreycode/skills": [
 				"./packages/skills/src/index.ts"
 			],

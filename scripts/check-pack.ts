@@ -3,15 +3,24 @@ import {
 	copyFileSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readWorkspace } from "./workspace.ts";
 
 const rootDir = fileURLToPath(new URL("..", import.meta.url));
+
+/** README 里语言标为 `ts` 的代码块：它们是示例，都要能运行。 */
+export function readmeExamples(markdown: string): string[] {
+	return Array.from(
+		markdown.matchAll(/^```ts\n([\s\S]*?)^```$/gm),
+		(match) => match[1] ?? "",
+	);
+}
 
 function run(command: string, args: readonly string[], cwd: string): string {
 	return execFileSync(command, args, {
@@ -57,6 +66,8 @@ function main(): void {
 		);
 		// 临时项目在仓库之外，registry 和 min-release-age 要照仓库的设置
 		copyFileSync(join(rootDir, ".npmrc"), join(project, ".npmrc"));
+		const nodeTypes =
+			readWorkspace(rootDir).root.devDependencies?.["@types/node"];
 		run(
 			"npm",
 			[
@@ -65,6 +76,8 @@ function main(): void {
 				"--no-audit",
 				"--no-fund",
 				...packed.map(({ filename }) => join(temp, filename)),
+				// README 的示例用到 Node 的全局对象，类型检查要有它的声明
+				`@types/node@${nodeTypes}`,
 			],
 			project,
 		);
@@ -82,7 +95,20 @@ function main(): void {
 			);
 		}
 
-		// 以使用方的设置解析类型声明
+		const examples = published.flatMap(({ dir }) =>
+			readmeExamples(readFileSync(join(rootDir, dir, "README.md"), "utf8")).map(
+				(code, i) => {
+					const file = `example-${basename(dir)}-${i + 1}.ts`;
+					writeFileSync(join(project, file), code);
+					return file;
+				},
+			),
+		);
+		for (const file of examples) {
+			run(process.execPath, [file], project);
+		}
+
+		// 以使用方的设置解析类型声明，并检查 README 的示例
 		writeFileSync(
 			join(project, "check.ts"),
 			specifiers
@@ -97,14 +123,14 @@ function main(): void {
 					target: "es2024",
 					strict: true,
 					noEmit: true,
-					types: [],
+					types: ["node"],
 				},
-				files: ["check.ts"],
+				files: ["check.ts", ...examples],
 			}),
 		);
 		run(join(rootDir, "node_modules", ".bin", "tsc"), ["-p", project], project);
 		console.log(
-			`${published.length} 个包打包后在 monorepo 之外能安装、导入并解析类型声明`,
+			`${published.length} 个包打包后在 monorepo 之外能安装、导入并解析类型声明，README 的 ${examples.length} 个示例能运行`,
 		);
 	} finally {
 		rmSync(temp, { recursive: true, force: true });

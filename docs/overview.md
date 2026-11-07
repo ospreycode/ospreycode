@@ -204,7 +204,7 @@ coding-agent/
 - 每个包有自己的 `package.json`、`src/`、`test/`、`README.md` 和 `CHANGELOG.md`；设计文档列出的模块是该包 `src/` 下的目录。
 - 公开接口只由 `package.json` 的 `exports` 声明，其他包只能经这些入口引用。包之间的依赖写在各自的 `package.json` 里，检查脚本确认每个包只引用声明过的依赖，[依赖方向](#依赖方向)由此自动检查。
 - 所有发布的包用同一个版本号，一起升级、一起发布，包之间的依赖固定到这个确切版本。
-- 根目录的 `npm run check` 做格式、lint、类型检查和依赖检查，`npm test` 运行各包的测试，`npm run check:pack` 做打包后在 monorepo 之外的安装检查，`npm run version:set -- <版本>` 同步所有包的版本。
+- 根目录的 `npm run check` 做格式、lint、类型检查和依赖检查，`npm test` 运行各包的测试，`npm run check:pack` 做打包后在 monorepo 之外的安装检查并运行各包 README 里的示例，`npm run version:set -- <版本>` 同步所有包的版本。
 - 每个包单独维护 CHANGELOG，未发布的改动记在 `## [Unreleased]` 下。
 
 ### SDK 标准

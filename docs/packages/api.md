@@ -56,6 +56,19 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 内部协议有格式版本。会话记录保存内部协议的消息，格式变化时提供迁移；Host 另外保存每条消息在目标协议里的原文（见[原样重放](#原样重放)）。
 
+内部协议在三种协议里的对应：
+
+| 内部协议 | `openai.chat` | `openai.responses` | `anthropic.messages` |
+|---|---|---|---|
+| 第一条 `system` 消息（系统指令） | `system` 消息 | `instructions` | 顶层 `system` |
+| 追加的 `system` 消息 | `developer` 消息，不接受的服务并入开头的指令 | `developer` 消息 | 中途的 `role: "system"` 消息 |
+| `user` 消息 | `user` 消息 | `role: "user"` 的 message item | `user` 消息 |
+| `tool_call` 块（`call_id`、参数原文） | assistant 消息的 `tool_calls[]` | `function_call` item | `tool_use` 块，`input` 用 `partial_json` 拼出的原文 |
+| `tool_result` 消息 | `tool` 消息，图片移到这组结果之后的 `user` 消息 | `function_call_output` item | `user` 消息里的 `tool_result` 块，连续的工具结果和其后的用户输入并成一条 |
+| `reasoning` 块 | 模型配置指定的字段（`reasoning_content`、`reasoning_details` 等） | `reasoning` item（摘要、`encrypted_content`） | `thinking`（签名）和 `redacted_thinking` |
+| `text` 块的 `phase` | 去掉 | assistant message item 的 `phase` | 去掉 |
+| 停止原因、拒绝的详情 | `finish_reason` | `status`、`incomplete_details`、`refusal` 内容块 | `stop_reason`、`stop_details` |
+
 ## 请求参数
 
 照 pi-coding-agent（`packages/ai` 的 `SimpleStreamOptions` 和 `Model`）：

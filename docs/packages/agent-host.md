@@ -89,6 +89,9 @@ agent-host/
 
 沙盒内的代码和模型都不能指定 user、project、session、task、run 和 tool call 的标识。
 
+- 上表的标识和 runtime 生成的 `message_id` 都是 `crypto.randomUUID()` 生成的小写 UUID v4。不用按时间排序的 v7：`tmp/` 和 `output/` 下的目录名只取 session 标识的前 12 个字符，要求这一段是随机的。
+- 格式定义在各包里：事件的公共字段和会话树、检查点的格式在 session-store，工具调用和 runtime 自己的事件在 agent-runtime 的 `contracts/`，权限请求、决定和规则在 sandbox 的 `contracts/`，task、批准、进程事件和协议原文在本包的 `sessions/`。
+
 ## 项目身份
 
 memory 按 `project_id` 隔离 project 记忆，session-store 按它分开存储 session 记录，判断错了，一个项目就能读到另一个项目的数据。Host 按本机记录判断，不采信仓库内容自己声明的身份，识别时不运行 git。
