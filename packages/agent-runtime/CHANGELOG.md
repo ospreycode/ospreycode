@@ -9,4 +9,5 @@
 - agent 进程的入口 `@ospreycode/agent-runtime/agent`：从继承的 fd 3 连上通道，`initialize` 报告包版本 `version`，取得配置后运行 loop，Host 关闭通道后退出。也可以用 `runAgent(stream)` 在给定的连接上运行。
 - `protocolSchemas`：内部协议和工具调用格式的 schema（消息、流式事件、工具结果、工具调用事件等），供组合别的 schema 使用；模型错误可以带推理内容前缀不符的块（`block`）。
 - 最小的 loop：请求模型、按顺序执行工具调用、限流和服务过载时最多重试 3 次、取消时补上未完成调用的结果；`shell` 工具的声明和参数的 schema `shellArgumentsSchema`。
+- 上下文的长度：每次请求前估算上下文（`estimateContext`：以当前模型最后一条正常结束的回复的用量为锚点，加上之后新增内容的估算；文字按 UTF-8 字节数除以 1.7（`textTokens`），图片按各家的公式（`imageTokens`，尺寸从 PNG、JPEG、GIF、WebP 的文件头读出）），超过输入容量的 90%（`openai.chat` 为 85%）时 task 以 `failed` 结束并说明原因，不发出请求；`max_tokens` 取最大输出长度和剩余的上下文中较小的一个。`ModelInfo` 加上 `protocol` 和 `max_input_tokens`。
 - 作废：loop 把模型流里的作废事件和自己产生的作废经 `record/append` 上报为 `blocks.invalidated`，组装之后的请求时跳过作废的块（作废后什么都不剩的回复整条跳过），作废的工具调用不执行。流中途出错时已收到的部分照常记入历史并作废；推理内容前缀不符时，从出错的推理块起之后的推理内容都作废，再请求一次，仍然失败就结束 task。

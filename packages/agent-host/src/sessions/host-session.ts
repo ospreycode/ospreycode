@@ -344,8 +344,12 @@ export class HostSession implements ChannelHandlers {
 			writable_roots: writableRoots,
 			model: {
 				id: config.model.id,
+				protocol: config.model.protocol,
 				reasoning_effort: config.reasoningEffort,
 				context_window: config.model.context_window,
+				...(config.model.max_input_tokens === undefined
+					? {}
+					: { max_input_tokens: config.model.max_input_tokens }),
 				max_output_tokens: config.model.max_output_tokens,
 			},
 			sandbox_mode: config.sandboxMode,

@@ -61,6 +61,11 @@ export {
 	protocolSchemas,
 } from "./channel/schema.js";
 export {
+	estimateContext,
+	imageTokens,
+	textTokens,
+} from "./context/estimate.js";
+export {
 	contractsVersion,
 	type DenialReason,
 	type RuntimeEvent,

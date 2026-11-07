@@ -20,6 +20,7 @@ const config: AgentConfig = {
 	writable_roots: ["/work"],
 	model: {
 		id: "test-model",
+		protocol: "anthropic.messages",
 		reasoning_effort: "off",
 		context_window: 200_000,
 		max_output_tokens: 8_000,

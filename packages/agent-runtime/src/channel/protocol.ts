@@ -2,6 +2,7 @@ import type {
 	AssistantMessage,
 	ModelErrorInfo,
 	ModelRequest,
+	ProtocolName,
 	ReasoningEffort,
 	StreamEvent,
 	UserContent,
@@ -15,8 +16,12 @@ export type ApprovalPolicyName = "on-request" | "never" | "granular";
 export interface ModelInfo {
 	/** 模型清单里的 ID。 */
 	id: string;
+	/** 模型用的协议：估算图片的 token 和上下文超长的阈值按它定。 */
+	protocol: ProtocolName;
 	reasoning_effort: ReasoningEffort;
 	context_window: number;
+	/** 输入的上限；比 `context_window` 小时另外限制输入。 */
+	max_input_tokens?: number;
 	max_output_tokens: number;
 }
 

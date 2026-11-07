@@ -25,7 +25,7 @@
 | 网络访问的审批 | P1 | 未开始 | sandbox 的[网络访问的审批](packages/sandbox.md#网络访问的审批) |
 | agent 进程的重启：从 session 记录重建发给模型的历史（切换沙盒模式、取消超时、异常退出、Linux 上发现新仓库） | P1 | 未开始 | agent-host 的 [agent 进程的重启](packages/agent-host.md#agent-进程的重启) |
 | 三种模型协议的转换、模型清单、原样重放、拒绝和回退的作废事件、前缀校验失败的恢复 | P1 | 已完成 | [api](packages/api.md) |
-| token 估算（算 `max_tokens`、判断上下文超长） | P1 | 未开始 | api 的 [token 计数](packages/api.md#token-计数) |
+| token 估算（算 `max_tokens`、判断上下文超长） | P1 | 已完成 | api 的 [token 计数](packages/api.md#token-计数) |
 | 模型测试的每次运行费用账本、按 `api` 的错误类别重跑一次、不稳定测试的报告 | P1 | 未开始 | overview 的 [CI 和真实模型测试](overview.md#ci-和真实模型测试) |
 | loop，`read`、`edit`、`write`、`shell` 和 `request_permissions` 工具 | P1 | 进行中 | agent-runtime 的[工具执行](packages/agent-runtime.md#工具执行) |
 | 规则文件（`AGENTS.md` 等）的加载、系统指令和会话开始的上下文消息 | P1 | 未开始 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
@@ -36,7 +36,7 @@
 | 凭据：macOS 钥匙串，显式指定的文件或环境变量 | P1 | 已完成 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | 配置的分层和配置项 | P1 | 进行中 | agent-host 的[配置的分层](packages/agent-host.md#配置的分层) |
 | session 记录的存储（含每条消息在目标协议里的原文） | P1 | 已完成 | session-store 的[存储格式](packages/session-store.md#存储格式)和[事件格式](packages/session-store.md#事件格式) |
-| 上下文超长时明确报错停止 | P1 | 未开始 | agent-runtime 的[上下文](packages/agent-runtime.md#上下文) |
+| 上下文超长时明确报错停止 | P1 | 已完成 | agent-runtime 的[上下文](packages/agent-runtime.md#上下文) |
 | sandbox 专项评测、一组小规模编码题（SWE-bench Pro V2 的 60 道） | P1 | 未开始 | evaluation 的[首批 benchmark](packages/evaluation.md#首批-benchmark)和 [Sandbox 专项评测的运行环境](packages/evaluation.md#sandbox-专项评测的运行环境) |
 | 每个 run 的费用、请求次数和时间上限 | P1 | 未开始 | agent-host 的[预算](packages/agent-host.md#预算) |
 | 切换模型和推理强度 | P1 | 未开始 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |

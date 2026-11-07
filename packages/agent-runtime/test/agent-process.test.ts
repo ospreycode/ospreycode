@@ -76,6 +76,7 @@ function serveInitialize(): Promise<string> {
 			writable_roots: [home],
 			model: {
 				id: "test-model",
+				protocol: "anthropic.messages",
 				reasoning_effort: "off",
 				context_window: 200_000,
 				max_output_tokens: 8_000,

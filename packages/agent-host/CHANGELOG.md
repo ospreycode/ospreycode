@@ -17,5 +17,6 @@
 - 对外的事件格式：`hostEventSchema` 和 `isHostEvent`（对外事件、api 的流式事件和 agent-runtime 的工具事件在同一份 schema 里），非交互模式的退出码 `exitCodeFor`，session 打开之前就失败时的 `startupErrorEvent` 和 `startupExitCode`，CLI 的 JSON 输出用的 `toJsonLine`（转义 U+2028、U+2029）和 `inJsonOutput`。
 - 模型代理把 session 标识作为提示缓存的键交给 `api`，三种协议（`anthropic.messages`、`openai.responses`、`openai.chat`）的模型都可以选用。
 - runtime 上报推理内容前缀不符的作废时，发一条 `warning` 告诉用户。
+- 启动配置里的模型信息带上协议和输入上限，runtime 据此估算上下文。
 - 原样重放：模型代理保存每次请求的系统指令、工具声明和每条消息在目标协议里的原文（Responses 的回复按收到的 item），第一次保存时写一条 `protocol.raw` 事件进 session 记录（`ProtocolRaw`，按片段保存，不发给前端），之后同一协议、服务和 API 版本上内容没变时原样拼接；agent 进程重启时保留。
 - 模块骨架：配置检查（`ConfigError`）、按文件或环境变量读凭据（`readCredential`、`CredentialError`）、密钥检测和替换（`containsSecret`、`redact`）、工作区和根目录的检查（`WorkspaceError`）、session 和 task 的生命周期、通道的服务端、工具调用的处理和询问、模型代理、agent 进程和命令的启动（`AgentStartError`）。

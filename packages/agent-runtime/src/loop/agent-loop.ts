@@ -18,6 +18,11 @@ import type {
 	StatusResult,
 	TaskEndParams,
 } from "../channel/protocol.js";
+import {
+	contextThreshold,
+	estimateContext,
+	inputCapacity,
+} from "../context/estimate.js";
 import type { ToolResult, ToolSpec } from "../contracts/index.js";
 import { buildSystemPrompt } from "../instructions/system-prompt.js";
 
@@ -165,7 +170,25 @@ export class AgentLoop {
 	async #runTurns(signal: AbortSignal): Promise<TaskEndParams> {
 		let prefixRetried = false;
 		for (;;) {
-			const attempt = await this.#requestModel(signal);
+			const { model } = this.#config;
+			const estimate = estimateContext(
+				model,
+				this.#sent().messages,
+				this.#declarations(),
+			);
+			const capacity = inputCapacity(model);
+			const threshold = contextThreshold(model);
+			if (estimate > capacity * threshold) {
+				// 压缩上下文要到 P3 才有，现在明确报错停止，不悄悄截断
+				return {
+					outcome: "failed",
+					error: `上下文快到模型的上限了：估计 ${estimate} token，超过了 ${capacity} 的 ${threshold * 100}%。还不能压缩上下文，请新开一个 session 继续`,
+				};
+			}
+			const attempt = await this.#requestModel(
+				signal,
+				Math.min(model.max_output_tokens, model.context_window - estimate),
+			);
 			if (attempt === "cancelled") return { outcome: "cancelled" };
 			const { message, error } = attempt;
 			if (error !== undefined) {
@@ -277,7 +300,14 @@ export class AgentLoop {
 		await this.#invalidate({ blocks, reason: "reasoning_prefix_mismatch" });
 	}
 
-	async #requestModel(signal: AbortSignal): Promise<Attempt | "cancelled"> {
+	#declarations() {
+		return [...this.#tools.values()].map((tool) => tool.declaration);
+	}
+
+	async #requestModel(
+		signal: AbortSignal,
+		maxTokens: number,
+	): Promise<Attempt | "cancelled"> {
 		for (let attempt = 0; ; attempt++) {
 			this.#state = "model";
 			const sent = this.#sent();
@@ -291,10 +321,11 @@ export class AgentLoop {
 						request: {
 							model: this.#config.model.id,
 							reasoning_effort: this.#config.model.reasoning_effort,
+							max_tokens: maxTokens,
 							tool_choice: "auto",
 							cache_retention: "short",
 							messages: sent.messages,
-							tools: [...this.#tools.values()].map((tool) => tool.declaration),
+							tools: this.#declarations(),
 						},
 					},
 					{
