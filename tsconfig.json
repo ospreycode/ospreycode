@@ -30,6 +30,9 @@
 			"@ospreycode/agent-runtime": [
 				"./packages/agent-runtime/src/index.ts"
 			],
+			"@ospreycode/agent-runtime/agent": [
+				"./packages/agent-runtime/src/entry/agent.ts"
+			],
 			"@ospreycode/agent-host": [
 				"./packages/agent-host/src/index.ts"
 			],

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -7,6 +7,8 @@ import {
 	exactVersion,
 	type Manifest,
 	readWorkspace,
+	versionDeclaration,
+	versionFile,
 	type Workspace,
 } from "./workspace.ts";
 
@@ -113,6 +115,20 @@ export function checkVersions(workspace: Workspace): string[] {
 		}
 	}
 	return problems;
+}
+
+/** 带 `src/version.ts` 的包，那里写的版本要和 package.json 一致；`source` 是文件内容。 */
+export function checkVersionFiles(
+	files: readonly { manifest: Manifest; source: string }[],
+): string[] {
+	return files.flatMap(({ manifest, source }) => {
+		const declared = versionDeclaration.exec(source)?.[1];
+		return declared === manifest.version
+			? []
+			: [
+					`${manifest.name} 的 ${versionFile} 写的版本是 ${declared ?? "（没有）"}，要和 package.json 的 ${manifest.version} 一致，用 npm run version:set 改`,
+				];
+	});
 }
 
 export function checkDirection(workspace: Workspace): string[] {
@@ -266,6 +282,14 @@ function main(): void {
 			...workspace.packages.map((p) => p.manifest),
 		]),
 		...checkVersions(workspace),
+		...checkVersionFiles(
+			workspace.packages
+				.filter(({ dir }) => existsSync(join(rootDir, dir, versionFile)))
+				.map(({ dir, manifest }) => ({
+					manifest,
+					source: readFileSync(join(rootDir, dir, versionFile), "utf8"),
+				})),
+		),
 		...checkDirection(workspace),
 		...checkExports(workspace, tsconfig.compilerOptions.paths),
 		...checkRepository(workspace),

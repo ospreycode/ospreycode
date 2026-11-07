@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -7,8 +7,24 @@ import {
 	exactVersion,
 	type Manifest,
 	readWorkspace,
+	versionDeclaration,
+	versionFile,
 	type WorkspacePackage,
 } from "./workspace.ts";
+
+/** 把 `src/version.ts` 里的版本改成 version。 */
+export function withVersionDeclaration(
+	source: string,
+	version: string,
+): string {
+	if (!versionDeclaration.test(source)) {
+		throw new Error(`${versionFile} 里没有 export const version = "…"; 这一行`);
+	}
+	return source.replace(
+		versionDeclaration,
+		`export const version = "${version}";`,
+	);
+}
 
 /** 把每个包的版本和包之间的依赖都改成 version，其余字段和顺序不变。 */
 export function withVersion(
@@ -49,6 +65,13 @@ function main(): void {
 			join(rootDir, dir, "package.json"),
 			`${JSON.stringify(manifest, null, "\t")}\n`,
 		);
+		const file = join(rootDir, dir, versionFile);
+		if (existsSync(file)) {
+			writeFileSync(
+				file,
+				withVersionDeclaration(readFileSync(file, "utf8"), version),
+			);
+		}
 	}
 	// lockfile 里也记着各包的版本
 	execFileSync(

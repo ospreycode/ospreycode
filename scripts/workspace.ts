@@ -38,6 +38,15 @@ export interface Workspace {
 export const exactVersion =
 	/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+/**
+ * 运行时要知道自己版本的包把它写在 `src/version.ts` 里（读 package.json 在打包后找不到文件），
+ * 由 `npm run version:set` 改写，`npm run check` 核对。
+ */
+export const versionFile = "src/version.ts";
+
+/** `src/version.ts` 里写版本的那一行。 */
+export const versionDeclaration = /^export const version = "([^"]*)";$/m;
+
 export function readManifest(path: string): Manifest {
 	return JSON.parse(readFileSync(path, "utf8")) as Manifest;
 }

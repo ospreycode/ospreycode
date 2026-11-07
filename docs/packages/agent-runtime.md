@@ -36,9 +36,9 @@ agent-runtime/
 | `task/end` | runtime → Host，请求 | 报告 task 结束；Host 还有待插入的输入时回复继续，runtime 取出后接着请求模型 | P0 |
 | `run/cancel` | Host → runtime，请求 | 中断当前 run（见 agent-host 的 [task 的开始、结束和取消](agent-host.md#task-的开始结束和取消)） | P0 |
 | `status` | Host → runtime，请求 | 查询 runtime 当前在做什么：等待模型、执行哪些工具调用、空闲 | P0 |
-| `model/request` | runtime → Host，流式请求 | 内部协议的模型请求；流式事件以通知返回，最终响应带停止原因和用量（见 api 的[在系统中的位置](api.md#在系统中的位置)） | P0 |
+| `model/request` | runtime → Host，流式请求 | 内部协议的模型请求；流式事件以 `model/event` 通知返回，最终响应是这次回复，带停止原因和用量，模型出错时另带错误类别（见 api 的[在系统中的位置](api.md#在系统中的位置)） | P0 |
 | `model/count_tokens` | runtime → Host，请求 | token 计数（见 api 的 [token 计数](api.md#token-计数)） | P3 |
-| `tool_call/run` | runtime → Host，流式请求 | Host 代为执行的工具：shell（含后台命令的启动、查询、写入和停止）、MCP 工具、越界动作。第一条通知带 Host 分配的 `tool_call_id`，随后是输出通知，最终响应是结果；Permission 的判断和询问都在其中完成 | P0 |
+| `tool_call/run` | runtime → Host，流式请求 | Host 代为执行的工具：shell（含后台命令的启动、查询、写入和停止）、MCP 工具、越界动作。第一条通知 `tool_call/started` 带 Host 分配的 `tool_call_id`，随后是输出通知 `tool_call/output`，最终响应是结果；Permission 的判断和询问都在其中完成 | P0 |
 | `tool_call/register` | runtime → Host，请求 | 登记 runtime 一侧执行的工具调用（文件工具、`skill_load`、`memory_*`），返回 `tool_call_id` 和决定；`skill_load`、`memory_*` 登记后再用下面的 `skill/load`、`memory/*` 取内容 | P0 |
 | `tool_call/complete` | runtime → Host，请求 | 提交用 `tool_call/register` 登记的调用的结果 | P0 |
 | `input/available` | Host → runtime，通知 | 有 steering 或后台命令的通知等待插入 | P1 |
@@ -59,14 +59,15 @@ agent-runtime/
 - UTF-8 的 JSON，一行一条消息，只按字节 `0x0A` 分帧，整行凑齐后严格按 UTF-8 解码。不用 `readline`：`JSON.stringify` 不转义 U+2028、U+2029，`readline` 会在这两处断行。单条消息不超过 16 MiB，图片和长输出按引用传，每份只过一次通道。
 - 照 Codex app-server（rust-v0.167.0）用 JSON-RPC 2.0 的请求、响应和通知三种形状，不带 `jsonrpc` 字段，不用 batch。两个方向都能发请求，`id` 是各方向自增的整数。流式结果是带 `request_id` 的通知，以该请求唯一的最终响应结束。
 - `cancel` 带被取消请求的 `request_id`。照 LSP，被取消的请求仍回一次最终响应，未完成时回 `cancelled` 错误并附已产生的用量，Host 据此执行预算。
+- 错误响应的 `error` 是 `{code, message, data}`，`code` 只有 `cancelled` 和 `no_active_task` 两个字符串，不用 JSON-RPC 的整数错误码：两端出自同一次发布，不和其他实现互通。约定中会发生的失败（模型出错、工具失败、被拒绝）都在最终响应的内容里，不是错误响应。
 - 通道不设超时和心跳：批准可能等很久，对端退出靠 EOF 和进程退出发现。消息不带 session、task 和 run 标识，由 Host 按通道确定；session 空闲或 run 已取消后仍发来需要进行中 task 的请求，Host 以 `no_active_task` 拒绝。
 - 超长、非法 UTF-8、不符合 schema、未知方法和重复的 `id` 都是协议错误：Host 结束 agent 进程，run 记 `failed`。两端出自同一次发布，格式错误只能是缺陷或 agent 被攻破。
 - 版本不协商：`initialize` 带的包版本和 Host 依赖的版本不同就报错停止。每次重启 agent 进程都重新检查，因为 Host 运行期间包可能在磁盘上被升级。
-- schema 在 `channel/` 里用 `typebox`（1.4.4，MIT，没有依赖）定义一次，Host 校验收到的每条消息，runtime 不重复检查 Host 发来的消息。
+- schema 在 `channel/` 里用 `typebox`（1.4.3，MIT，没有依赖）定义一次，Host 校验收到的每条消息，runtime 不重复检查 Host 发来的消息。内部协议和工具调用的类型在 `api` 和 `contracts/` 里手写，schema 和它们逐个对应，编译时核对两边一致：`api` 不增加运行时依赖。
 
 ### 进程入口
 
-`entry/` 为不同角色各提供一个入口，Host 用 `process.execPath` 运行：
+`entry/` 为不同角色各提供一个入口，Host 用 `process.execPath` 运行，按 `exports` 里的子路径（如 `@ospreycode/agent-runtime/agent`）找到文件。入口只在作为主模块运行时启动（`import.meta.main`），被导入时什么也不做。包版本写在 `src/version.ts`，由 `npm run version:set` 改写：读 `package.json` 在 `cli` 打包后找不到文件。
 
 - **agent 进程**：Host 通过 sandbox 启动它，它从继承的 fd 3 连上通道（见 agent-host 的[通道的连接](agent-host.md#通道的连接)），取得配置，再组装 runtime。单独测试 runtime 时由测试实现通道接口，不需要启动 Host。
 - **apply-edits**：执行批准的越界文件改动，不建通道，申请经 stdin 传入、结果经 stdout 返回（见 sandbox 的[文件改动](sandbox.md#文件改动)）。

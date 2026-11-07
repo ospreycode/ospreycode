@@ -5,6 +5,7 @@ import {
 	checkExports,
 	checkLicenses,
 	checkRepository,
+	checkVersionFiles,
 	checkVersions,
 } from "../check-deps.ts";
 import type { Manifest, Workspace } from "../workspace.ts";
@@ -272,5 +273,28 @@ describe("checkLicenses", () => {
 				{ name: "b", licenseDeclared: "(MIT OR ISC) AND BSD-3-Clause" },
 			]),
 		).toHaveLength(2);
+	});
+});
+
+describe("checkVersionFiles", () => {
+	const source = (version: string) =>
+		`/** 本包的版本。 */\nexport const version = "${version}";\n`;
+
+	test("src/version.ts 写的版本和 package.json 一致时没有问题", () => {
+		expect(
+			checkVersionFiles([
+				{ manifest: manifest("api"), source: source("0.1.0") },
+			]),
+		).toEqual([]);
+	});
+
+	test("报告不一致和缺少的版本", () => {
+		const problems = checkVersionFiles([
+			{ manifest: manifest("api"), source: source("0.2.0") },
+			{ manifest: manifest("cli"), source: "export {};\n" },
+		]);
+		expect(problems).toHaveLength(2);
+		expect(problems[0]).toContain("0.2.0");
+		expect(problems[1]).toContain("（没有）");
 	});
 });
