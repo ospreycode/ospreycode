@@ -12,6 +12,7 @@ export {
 	type CredentialSource,
 	readCredential,
 } from "./credentials/sources.js";
+export { type CredentialStore, macosKeychain } from "./credentials/store.js";
 export { WorkspaceError } from "./project/workspace.js";
 export { containsSecret, redact } from "./redaction/redact.js";
 export type {

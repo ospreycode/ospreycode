@@ -20,10 +20,10 @@ agent-host/
   processes/    通过 sandbox 启动 agent 进程、命令沙盒、越界动作、hooks 和本地 MCP server，维护进程登记表
   hooks/        hooks 的配置、确认和触发
   workspace/    快照、撤销和还原
-  diagnostics/  调试日志，经过 redaction/ 去掉凭据
+  diagnostics/  调试日志，经过 redaction/ 去掉凭据：`data/logs/<UTC 日期>.log`，一行一个 JSON，每行一次追加写入
 ```
 
-`redaction/` 用已知密钥格式的正则（`sk-`、`ghp_`、`AKIA` 前缀、PEM 块、JWT）加高熵字符串判断。命中时：日志、错误信息和 session 导出里替换成 `[REDACTED]`；记忆候选直接拒绝；session 记录原样保存，存储文件只对当前用户可读。
+`redaction/` 用已知密钥格式的正则（`sk-`、`ghp_`、`AKIA` 前缀、PEM 块、JWT）加高熵字符串判断，Host 读进内存的凭据另按原文替换。命中时：日志、错误信息（`error`、`warning` 事件和 `task.ended` 的 `error`）和 session 导出里替换成 `[REDACTED]`；记忆候选直接拒绝；session 记录原样保存，存储文件只对当前用户可读。
 
 ## Host 负责
 
@@ -46,7 +46,7 @@ agent-host/
 首版 Host 和 CLI 在同一个进程里，不常驻后台。
 
 - `sdk/` 按消息设计：调用的参数和返回值、事件、Host 发给前端的请求都能序列化成 JSON。批准和 elicitation 作为事件到达，前端用 `session.respond(requestId, decision)` 回复，不要求调用方传回调函数，SDK 的调用方因此可以在另一个进程里。
-- `createHost({root, env, fetch, streamModel, agentEntry})`：根目录和 Host 的环境变量由调用方传入，SDK 不读进程级的状态；`fetch`、`streamModel`（发起模型请求的函数，测试传入 `api` 的脚本模型）和 agent 进程的入口不传时用默认的。`openSession` 的选项里带接收事件的 `onEvent`，第一条事件 `session.started` 不会错过。
+- `createHost({root, env, fetch, streamModel, agentEntry, sandboxHelperEntry, credentialStore})`：根目录和 Host 的环境变量由调用方传入，SDK 不读进程级的状态；`fetch`、`streamModel`（发起模型请求的函数，测试传入 `api` 的脚本模型）、agent 进程和辅助进程的入口、系统凭据库不传时用默认的。`openSession` 的选项里带接收事件的 `onEvent`，第一条事件 `session.started` 不会错过。
 - Host 用单独的进程组（`detached`）启动全部子进程：agent 进程、辅助进程、命令沙盒、本地 MCP server 和 hooks。终端的 Ctrl+C 只到 Host，由 Host 决定取消当前动作还是退出（见 [CLI](#cli)），子进程由 Host 按各自的结束方式收尾。
 
 ### 通道的连接
@@ -199,7 +199,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 
 - **来源**：macOS 上交互使用时放在登录钥匙串里（`ospreycode login` 隐藏输入后写入，或用 `--with-api-key` 从标准输入读入）。没有系统凭据库的环境（Linux、CI 和测试）由启动参数 `--credential-file <ID>=<路径>`、`--credential-env <ID>=<变量名>` 或用户级配置的 `[credentials]` 显式指定来源，不自动查找。macOS 上不接受环境变量来源：沙盒内能读到 Host 进程启动时的环境变量（见 sandbox 的[沙盒后端](sandbox.md#沙盒后端)）。
 - **凭据的 ID**：模型服务的凭据用服务名，远程 MCP server 的静态令牌用 `mcp:<标签>`，本地 MCP server 的密钥用 `mcp:<标签>:<环境变量名>`。同一个 ID 按启动参数、用户级配置、钥匙串的顺序取第一个找到的来源。
-- macOS 上用 `@napi-rs/keyring`（2.1.2，MIT，没有依赖和生命周期脚本，只装当前平台的预编译包）读写登录钥匙串。它用基于文件的旧式钥匙串接口，正是 sandbox 文档要求的存放位置。不调用 `security` 命令：写入时要把密钥放在命令行参数里，长度超限时还会截断或误解析。
+- macOS 上用 `@napi-rs/keyring`（2.1.2，MIT，没有依赖和生命周期脚本，只装当前平台的预编译包）读写登录钥匙串，条目的服务名是 `ospreycode`、账户名是凭据的 ID。它用基于文件的旧式钥匙串接口（实测条目在 `login.keychain-db` 里），正是 sandbox 文档要求的存放位置；原生模块只在 macOS 上用到时加载。不调用 `security` 命令：写入时要把密钥放在命令行参数里，长度超限时还会截断或误解析。SDK 的调用方可以经 `createHost` 的 `credentialStore` 换成别的实现或不用系统凭据库。
 - 适配层对所有沙盒禁止读取 `~/Library/Keychains`。旧式钥匙串按创建条目的程序授权，同一用户在沙盒外运行的 node 进程（例如 npm 包的 install 脚本）仍能不经提示读取，文档要写明。
 - 钥匙串锁定或不可用时报错停止，不退回明文文件。
 - Linux 不接系统凭据库，所以 Linux 上不提供 `login`，也不支持需要保存令牌的 MCP OAuth；P1 的 Linux 只用于评测容器和 CI。

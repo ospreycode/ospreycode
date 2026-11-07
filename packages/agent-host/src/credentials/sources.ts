@@ -22,6 +22,26 @@ export interface CredentialContext {
 	platform: NodeJS.Platform;
 }
 
+/** Host 内存里的一个凭据。 */
+export interface LoadedCredential {
+	id: string;
+	value: string;
+	/** 凭据来自文件时重新读取文件：服务返回 401 时用新值重发一次。其他来源为空。 */
+	reread?: () => string;
+}
+
+/** 按来源读出一个凭据，文件来源附带重新读取的方法。 */
+export function loadCredential(
+	id: string,
+	source: CredentialSource,
+	context: CredentialContext,
+): LoadedCredential {
+	const value = readCredential(id, source, context);
+	return "file" in source
+		? { id, value, reread: () => readCredential(id, source, context) }
+		: { id, value };
+}
+
 /**
  * 读出一个凭据，只保存在 Host 的内存里。文件要只对当前用户可读写、属于当前用户、不在工作区内；
  * macOS 上不接受环境变量来源：沙盒内能读到 Host 进程启动时的环境变量。

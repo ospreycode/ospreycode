@@ -25,6 +25,8 @@ import { Approvals } from "../actions/approvals.js";
 import { ToolCalls } from "../actions/tool-calls.js";
 import { type ChannelHandlers, serveChannel } from "../channel/serve.js";
 import type { SessionConfig } from "../config/session-config.js";
+import type { LoadedCredential } from "../credentials/sources.js";
+import type { DiagnosticLog } from "../diagnostics/log.js";
 import { ModelProxy } from "../model-proxy/proxy.js";
 import {
 	type AgentProcess,
@@ -39,7 +41,6 @@ import {
 	createSessionDirectories,
 	type SessionDirectories,
 } from "../project/workspace.js";
-import { redact } from "../redaction/redact.js";
 import {
 	eventFormatVersion,
 	type HostEvent,
@@ -68,7 +69,12 @@ export interface HostSessionOptions {
 	root: string;
 	config: SessionConfig;
 	/** 模型服务的凭据。 */
-	apiKey: string;
+	credential: LoadedCredential;
+	/** 去掉文本里的凭据和疑似密钥。 */
+	scrub: (text: string) => string;
+	/** 读到新的凭据值时登记。 */
+	onSecret: (value: string) => void;
+	log: DiagnosticLog;
 	hostEnv: Readonly<Record<string, string | undefined>>;
 	fetch: typeof globalThis.fetch;
 	streamModel: StreamModel;
@@ -132,14 +138,22 @@ export class HostSession implements ChannelHandlers {
 	private constructor(options: HostSessionOptions) {
 		this.sessionId = options.sessionId;
 		this.#options = options;
-		this.#events = new EventSink(this.sessionId, this.agentId, options.onEvent);
+		this.#events = new EventSink({
+			sessionId: this.sessionId,
+			agentId: this.agentId,
+			listener: options.onEvent,
+			scrub: options.scrub,
+			log: options.log,
+		});
 		this.#approvals = new Approvals(this.#events);
 		this.#modelProxy = new ModelProxy({
 			entry: options.config.model,
-			apiKey: options.apiKey,
+			credential: options.credential,
 			fetch: options.fetch,
 			streamModel: options.streamModel,
 			events: this.#events,
+			scrub: options.scrub,
+			onSecret: options.onSecret,
 		});
 		this.ended = new Promise((resolve) => {
 			this.#resolveEnded = resolve;
@@ -427,9 +441,7 @@ export class HostSession implements ChannelHandlers {
 		}
 		this.#events.session({
 			type: "error",
-			message: redact(`${reason}\n${this.#agent.diagnostics()}`, [
-				this.#options.apiKey,
-			]),
+			message: `${reason}\n${this.#agent.diagnostics()}`,
 		});
 		const ended = this.#failure === undefined ? "agent_exited" : "error";
 		void this.#sandbox.stop().then(() => this.#end(ended));

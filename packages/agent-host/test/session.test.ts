@@ -48,6 +48,7 @@ async function open(
 	session = await createHost({
 		root: dirs.root,
 		env: dirs.env,
+		credentialStore: null,
 		...(script === undefined ? {} : { streamModel: scriptedModel(script) }),
 		...hostOptions,
 	}).openSession({
@@ -206,7 +207,11 @@ describe("agent 进程", () => {
 
 describe("打开 session 之前的检查", () => {
 	test("模型不在清单里、缺少凭据来源、凭据文件权限过宽", async () => {
-		const host = createHost({ root: dirs.root, env: dirs.env });
+		const host = createHost({
+			root: dirs.root,
+			env: dirs.env,
+			credentialStore: null,
+		});
 		const base = {
 			workspace: dirs.workspace,
 			model: "scripted",
@@ -221,7 +226,7 @@ describe("打开 session 之前的检查", () => {
 		).rejects.toBeInstanceOf(ConfigError);
 		await expect(
 			host.openSession({ ...base, credentials: {} }),
-		).rejects.toBeInstanceOf(ConfigError);
+		).rejects.toThrow(/没有模型服务 test 的凭据来源/);
 		await expect(
 			host.openSession({
 				...base,

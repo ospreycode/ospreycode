@@ -10,7 +10,13 @@ import {
 	type SessionConfig,
 	type SessionOptions,
 } from "../config/session-config.js";
-import { readCredential } from "../credentials/sources.js";
+import {
+	CredentialError,
+	type LoadedCredential,
+	loadCredential,
+} from "../credentials/sources.js";
+import { type CredentialStore, macosKeychain } from "../credentials/store.js";
+import { DiagnosticLog } from "../diagnostics/log.js";
 import {
 	bootId,
 	type ProcessIdentity,
@@ -30,6 +36,7 @@ import {
 	prepareRoot,
 	resolveWorkspace,
 } from "../project/workspace.js";
+import { redact } from "../redaction/redact.js";
 import { HostSession } from "../sessions/host-session.js";
 import { newId } from "../sessions/ids.js";
 import type { HostEvent } from "./events.js";
@@ -48,6 +55,11 @@ export interface HostOptions {
 	agentEntry?: string;
 	/** 沙盒辅助进程的入口文件；不传时从 `@ospreycode/sandbox` 的 exports 找到。 */
 	sandboxHelperEntry?: string;
+	/**
+	 * 系统凭据库：启动参数和用户级配置都没有指定某个凭据的来源时从这里读。不传时 macOS 上用登录钥匙串，
+	 * 其他平台没有；传 `null` 表示不用系统凭据库。
+	 */
+	credentialStore?: CredentialStore | null;
 }
 
 /** 打开 session 的选项。 */
@@ -103,6 +115,13 @@ export interface Host {
 	 * 用它接上原来的记录。项目不存在时抛出 `ConfigError`。
 	 */
 	linkProject(directory: string, projectId: string): Promise<void>;
+	/**
+	 * 把凭据保存进系统凭据库（`ospreycode login`），已有的覆盖。没有系统凭据库的平台抛出
+	 * `CredentialError`：那里用 `--credential-file` 或用户级配置的 `[credentials]` 指定来源。
+	 */
+	saveCredential(id: string, value: string): Promise<void>;
+	/** 从系统凭据库删除凭据（`ospreycode logout`），本来就没有时返回 false。 */
+	deleteCredential(id: string): Promise<boolean>;
 }
 
 function resolveEntry(specifier: string): string {
@@ -134,6 +153,51 @@ export function createHost(options: HostOptions): Host {
 	const owner = selfIdentity();
 	const registry = new Registry(data, owner);
 	const processes = new ProcessRegistry(data, owner);
+	const store =
+		options.credentialStore === undefined
+			? process.platform === "darwin"
+				? macosKeychain()
+				: undefined
+			: (options.credentialStore ?? undefined);
+	// Host 读进内存的凭据，日志、错误信息和事件里都去掉它们
+	const secrets = new Set<string>();
+	const scrub = (text: string) => redact(text, [...secrets]);
+	const log = new DiagnosticLog(join(data, "logs"), scrub);
+	const requireStore = (): CredentialStore => {
+		if (store === undefined) {
+			throw new CredentialError(
+				"这个平台没有系统凭据库：用 --credential-file 或用户级配置的 [credentials] 指定凭据来源",
+			);
+		}
+		return store;
+	};
+
+	/** 凭据按启动参数、用户级配置、系统凭据库的顺序取第一个找到的来源。 */
+	const credentialFor = async (
+		config: SessionConfig,
+	): Promise<{ credential: LoadedCredential; file?: string }> => {
+		const id = config.model.service;
+		const source = config.credentials[id];
+		if (source !== undefined) {
+			return {
+				credential: loadCredential(id, source, {
+					workspace: config.workspace,
+					env: options.env,
+					platform: process.platform,
+				}),
+				...("file" in source ? { file: realpathSync(source.file) } : {}),
+			};
+		}
+		const value = await store?.get(id);
+		if (value === undefined) {
+			throw new CredentialError(
+				store === undefined
+					? `没有模型服务 ${id} 的凭据来源：用 --credential-file 或用户级配置的 [credentials] 指定`
+					: `没有模型服务 ${id} 的凭据：用 ospreycode login --service ${id} 保存，或用 --credential-file 指定`,
+			);
+		}
+		return { credential: { id, value } };
+	};
 
 	const resolveConfig = (sessionOptions: SessionOptions): SessionConfig => {
 		const workspace = resolveWorkspace(sessionOptions.workspace);
@@ -149,95 +213,100 @@ export function createHost(options: HostOptions): Host {
 		});
 	};
 
+	const openSession = async (
+		sessionOptions: OpenSessionOptions,
+	): Promise<Session> => {
+		const config = resolveConfig(sessionOptions);
+		const { workspace } = config;
+		checkInstallLocation(workspace, programFiles);
+		const { credential, file } = await credentialFor(config);
+		secrets.add(credential.value);
+		const mode = config.sandboxMode;
+		if (mode !== "danger-full-access") checkSandboxSupport(process.platform);
+		const userId = await registry.userId();
+		const projectId = await registry.projectId(projectKey(config.projectRoot));
+		const lock = await acquireWorkspaceLock(
+			join(data, "locks"),
+			workspace,
+			owner,
+		);
+		let session: HostSession;
+		try {
+			await processes.cleanWorkspace(workspace);
+			const sessionId = newId();
+			session = await HostSession.open({
+				sessionId,
+				root,
+				config,
+				credential,
+				scrub,
+				onSecret: (value) => secrets.add(value),
+				log,
+				hostEnv: options.env,
+				fetch: options.fetch ?? globalThis.fetch,
+				streamModel: options.streamModel ?? streamModel,
+				tracker: processes.tracker(sessionId, workspace),
+				lock,
+				userId,
+				projectId,
+				createSandbox: async ({ bash, env, directories, tracker }) => {
+					if (mode === "danger-full-access") {
+						return unsandboxedSession(agentCommand, bash);
+					}
+					if (env.HOME === undefined) {
+						throw new ConfigError(
+							"Host 的环境变量里没有 HOME，找不到要禁止读取的密钥位置",
+						);
+					}
+					return sandboxedSession({
+						helperEntry,
+						policy: {
+							mode,
+							workspace,
+							tmpdir: directories.tmp,
+							readOnly: [directories.output],
+							denyRead: [
+								root,
+								...(file === undefined ? [] : [file]),
+								...config.denyRead,
+							],
+							denyWrite: [...config.denyWrite],
+							home: env.HOME,
+						},
+						env,
+						bash,
+						agentCommand,
+						tracker,
+					});
+				},
+				onEvent: sessionOptions.onEvent,
+			});
+		} catch (error) {
+			lock.release();
+			throw error;
+		}
+		return {
+			id: session.sessionId,
+			ended: session.ended,
+			submit: (input) => session.submit(input),
+			respond: (requestId, answer) => session.respond(requestId, answer),
+			cancel: () => session.cancel(),
+			close: () => session.close(),
+		};
+	};
+
 	return {
 		resolveConfig,
 		async openSession(sessionOptions) {
-			const config = resolveConfig(sessionOptions);
-			const { workspace } = config;
-			checkInstallLocation(workspace, programFiles);
-			const credentialId = config.model.service;
-			const source = config.credentials[credentialId];
-			if (source === undefined) {
-				throw new ConfigError(
-					`没有模型服务 ${credentialId} 的凭据来源：用启动参数或用户级配置的 [credentials] 指定`,
-				);
-			}
-			const apiKey = readCredential(credentialId, source, {
-				workspace,
-				env: options.env,
-				platform: process.platform,
-			});
-			const mode = config.sandboxMode;
-			if (mode !== "danger-full-access") checkSandboxSupport(process.platform);
-			const userId = await registry.userId();
-			const projectId = await registry.projectId(
-				projectKey(config.projectRoot),
-			);
-			const lock = await acquireWorkspaceLock(
-				join(data, "locks"),
-				workspace,
-				owner,
-			);
-			let session: HostSession;
 			try {
-				await processes.cleanWorkspace(workspace);
-				const sessionId = newId();
-				session = await HostSession.open({
-					sessionId,
-					root,
-					config,
-					apiKey,
-					hostEnv: options.env,
-					fetch: options.fetch ?? globalThis.fetch,
-					streamModel: options.streamModel ?? streamModel,
-					tracker: processes.tracker(sessionId, workspace),
-					lock,
-					userId,
-					projectId,
-					createSandbox: async ({ bash, env, directories, tracker }) => {
-						if (mode === "danger-full-access") {
-							return unsandboxedSession(agentCommand, bash);
-						}
-						if (env.HOME === undefined) {
-							throw new ConfigError(
-								"Host 的环境变量里没有 HOME，找不到要禁止读取的密钥位置",
-							);
-						}
-						return sandboxedSession({
-							helperEntry,
-							policy: {
-								mode,
-								workspace,
-								tmpdir: directories.tmp,
-								readOnly: [directories.output],
-								denyRead: [
-									root,
-									...("file" in source ? [realpathSync(source.file)] : []),
-									...config.denyRead,
-								],
-								denyWrite: [...config.denyWrite],
-								home: env.HOME,
-							},
-							env,
-							bash,
-							agentCommand,
-							tracker,
-						});
-					},
-					onEvent: sessionOptions.onEvent,
-				});
+				return await openSession(sessionOptions);
 			} catch (error) {
-				lock.release();
+				log.write({
+					level: "error",
+					message: `打开 session 失败：${(error as Error).message}`,
+				});
 				throw error;
 			}
-			return {
-				id: session.sessionId,
-				ended: session.ended,
-				submit: (input) => session.submit(input),
-				respond: (requestId, answer) => session.respond(requestId, answer),
-				cancel: () => session.cancel(),
-				close: () => session.close(),
-			};
 		},
 		listProjects: () => registry.projects(),
 		async linkProject(directory, projectId) {
@@ -250,5 +319,7 @@ export function createHost(options: HostOptions): Host {
 				projectId,
 			);
 		},
+		saveCredential: async (id, value) => requireStore().set(id, value),
+		deleteCredential: async (id) => requireStore().delete(id),
 	};
 }

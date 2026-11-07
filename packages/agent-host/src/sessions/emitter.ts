@@ -1,3 +1,4 @@
+import type { DiagnosticLog } from "../diagnostics/log.js";
 import type { EventBase, HostEvent, Stored, TaskScope } from "../sdk/events.js";
 import { newId } from "./ids.js";
 import type { Run } from "./run.js";
@@ -14,33 +15,56 @@ type StreamingEvent = Extract<
 	{ type: "model.delta" | "tool_call.output" }
 >;
 
-/** 给事件补上公共字段后交给前端：时间、所属的 session、task、run 和 agent，会存储的事件另带编号和序号。 */
-export class EventSink {
-	#sessionId: string;
-	#agentId: string;
-	#listener: (event: HostEvent) => void;
+/** `EventSink` 用到的依赖。 */
+export interface EventSinkOptions {
+	sessionId: string;
+	agentId: string;
+	listener: (event: HostEvent) => void;
+	/** 去掉文本里的凭据和疑似密钥：错误和警告的文字可能来自模型服务或 agent 进程的输出。 */
+	scrub: (text: string) => string;
+	/** 错误和警告另写进诊断日志。 */
+	log: DiagnosticLog;
+}
 
-	constructor(
-		sessionId: string,
-		agentId: string,
-		listener: (event: HostEvent) => void,
-	) {
-		this.#sessionId = sessionId;
-		this.#agentId = agentId;
-		this.#listener = listener;
+/**
+ * 给事件补上公共字段后交给前端：时间、所属的 session、task、run 和 agent，会存储的事件另带编号和序号。
+ * 错误和警告的文字先去掉凭据，再写进诊断日志。
+ */
+export class EventSink {
+	#options: EventSinkOptions;
+
+	constructor(options: EventSinkOptions) {
+		this.#options = options;
 	}
 
 	#base(): EventBase {
-		return { session_id: this.#sessionId, time: new Date().toISOString() };
+		return {
+			session_id: this.#options.sessionId,
+			time: new Date().toISOString(),
+		};
 	}
 
 	#scope(run: Run): TaskScope {
-		return { task_id: run.taskId, run_id: run.runId, agent_id: this.#agentId };
+		return {
+			task_id: run.taskId,
+			run_id: run.runId,
+			agent_id: this.#options.agentId,
+		};
 	}
 
 	/** 不属于任何 task 的事件。 */
 	session(event: Without<SessionEvent, keyof EventBase>): void {
-		this.#listener({ ...this.#base(), ...event } as HostEvent);
+		if (event.type === "error" || event.type === "warning") {
+			const message = this.#options.scrub(event.message);
+			this.#options.log.write({
+				level: event.type,
+				message,
+				session_id: this.#options.sessionId,
+			});
+			this.#options.listener({ ...this.#base(), type: event.type, message });
+			return;
+		}
+		this.#options.listener({ ...this.#base(), ...event } as HostEvent);
 	}
 
 	/** 属于 run、会存储的事件。 */
@@ -51,12 +75,24 @@ export class EventSink {
 			keyof EventBase | keyof TaskScope | keyof Stored
 		>,
 	): void {
-		this.#listener({
+		let scrubbed = event;
+		if (event.type === "task.ended" && event.error !== undefined) {
+			const error = this.#options.scrub(event.error);
+			scrubbed = { ...event, error };
+			if (event.outcome === "failed") {
+				this.#options.log.write({
+					level: "error",
+					message: `task ${run.taskId} 失败：${error}`,
+					session_id: this.#options.sessionId,
+				});
+			}
+		}
+		this.#options.listener({
 			...this.#base(),
 			...this.#scope(run),
 			event_id: newId(),
 			seq: run.nextSeq(),
-			...event,
+			...scrubbed,
 		} as HostEvent);
 	}
 
@@ -65,7 +101,7 @@ export class EventSink {
 		run: Run,
 		event: Without<StreamingEvent, keyof EventBase | keyof TaskScope>,
 	): void {
-		this.#listener({
+		this.#options.listener({
 			...this.#base(),
 			...this.#scope(run),
 			...event,

@@ -11,7 +11,7 @@ import type {
 	AssistantMessage,
 	ModelErrorInfo,
 } from "@ospreycode/api/protocol";
-import { redact } from "../redaction/redact.js";
+import type { LoadedCredential } from "../credentials/sources.js";
 import type { EventSink } from "../sessions/emitter.js";
 import { addUsage, emptyUsage, type Run } from "../sessions/run.js";
 
@@ -20,10 +20,19 @@ export interface ModelProxyOptions {
 	/** 这个 session 允许使用的模型。 */
 	entry: ModelEntry;
 	/** 模型服务的凭据，只在 Host 的内存里。 */
-	apiKey: string;
+	credential: LoadedCredential;
 	fetch: typeof globalThis.fetch;
 	streamModel: StreamModel;
 	events: EventSink;
+	/** 去掉文本里的凭据和疑似密钥：服务返回的错误信息可能带着它们。 */
+	scrub: (text: string) => string;
+	/** 读到新的凭据值时登记，之后的日志和错误信息都去掉它。 */
+	onSecret: (value: string) => void;
+}
+
+interface Attempt {
+	message: AssistantMessage | undefined;
+	error: ModelErrorInfo | undefined;
 }
 
 /**
@@ -42,7 +51,7 @@ export class ModelProxy {
 		context: HandlerContext<RuntimeRequests["model/request"]["stream"]>,
 		run: Run,
 	): Promise<ModelRequestResult> {
-		const { entry, apiKey, events } = this.#options;
+		const { entry, credential, events } = this.#options;
 		if (params.request.model !== entry.id) {
 			// runtime 只会请求启动配置里的模型，请求别的模型说明它被攻破或有缺陷
 			throw new ProtocolError(
@@ -50,39 +59,17 @@ export class ModelProxy {
 			);
 		}
 		const signal = AbortSignal.any([context.signal, run.signal]);
-		let message: AssistantMessage | undefined;
-		let error: ModelErrorInfo | undefined;
-		try {
-			for await (const event of this.#options.streamModel(
-				entry,
-				params.request,
-				{
-					messageId: params.message_id,
-					apiKey,
-					fetch: this.#options.fetch,
-					signal,
-				},
-			)) {
-				if (event.type === "end") {
-					message = event.message;
-					error = event.error;
-					break;
-				}
-				events.streaming(run, {
-					type: "model.delta",
-					message_id: params.message_id,
-					event,
-				});
-				await context.stream({ method: "model/event", params: { event } });
+		let attempt = await this.#attempt(params, context, run, signal);
+		// 凭据来自文件时，用户可能刚换了密钥：重新读取一次，值变了才重发
+		if (attempt.error?.category === "authentication" && credential.reread) {
+			const fresh = credential.reread();
+			if (fresh !== credential.value) {
+				credential.value = fresh;
+				this.#options.onSecret(fresh);
+				attempt = await this.#attempt(params, context, run, signal);
 			}
-		} catch (thrown) {
-			// 转换模块遇到了没有列出的内容，或服务返回了不合规的数据：这次请求按请求格式错误失败
-			message = this.#emptyReply(params);
-			error = {
-				category: "invalid_request",
-				message: thrown instanceof Error ? thrown.message : String(thrown),
-			};
 		}
+		const { message, error } = attempt;
 		if (message === undefined) {
 			throw new Error("模型的流没有以 end 结束");
 		}
@@ -97,8 +84,49 @@ export class ModelProxy {
 			? { message }
 			: {
 					message,
-					error: { ...error, message: redact(error.message, [apiKey]) },
+					error: { ...error, message: this.#options.scrub(error.message) },
 				};
+	}
+
+	async #attempt(
+		params: ModelRequestParams,
+		context: HandlerContext<RuntimeRequests["model/request"]["stream"]>,
+		run: Run,
+		signal: AbortSignal,
+	): Promise<Attempt> {
+		const { entry, credential, events } = this.#options;
+		try {
+			for await (const event of this.#options.streamModel(
+				entry,
+				params.request,
+				{
+					messageId: params.message_id,
+					apiKey: credential.value,
+					fetch: this.#options.fetch,
+					signal,
+				},
+			)) {
+				if (event.type === "end") {
+					return { message: event.message, error: event.error };
+				}
+				events.streaming(run, {
+					type: "model.delta",
+					message_id: params.message_id,
+					event,
+				});
+				await context.stream({ method: "model/event", params: { event } });
+			}
+		} catch (thrown) {
+			// 转换模块遇到了没有列出的内容，或服务返回了不合规的数据：这次请求按请求格式错误失败
+			return {
+				message: this.#emptyReply(params),
+				error: {
+					category: "invalid_request",
+					message: thrown instanceof Error ? thrown.message : String(thrown),
+				},
+			};
+		}
+		return { message: undefined, error: undefined };
 	}
 
 	#emptyReply(params: ModelRequestParams): AssistantMessage {

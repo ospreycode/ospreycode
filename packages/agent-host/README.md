@@ -77,6 +77,8 @@ await session.close();
 rmSync(base, { recursive: true, force: true });
 ```
 
+凭据按启动参数（`credentials`）、用户级配置的 `[credentials]`、系统凭据库的顺序取第一个找到的来源。macOS 上的系统凭据库是登录钥匙串，`host.saveCredential(id, value)` 写入；`createHost` 的 `credentialStore` 可以换成别的实现，传 `null` 不用。错误和警告写进根目录下的 `data/logs/`，日志、错误信息和事件里都去掉 Host 持有的凭据。
+
 打开的 session 持有工作区锁：同一个工作区或互相包含的工作区同时只能有一个打开的 session，`close()` 时释放。Host 启动的进程记在根目录的 `data/processes.json` 里，Host 崩溃后残留的进程在下次打开同一工作区时结束。`host.listProjects()` 和 `host.linkProject(directory, projectId)` 查看和关联项目。
 
 对外的事件格式：`hostEventSchema` 是全部事件的 JSON Schema（`isHostEvent` 按它检查），`exitCodeFor` 给出非交互模式的退出码，`toJsonLine` 把事件写成 CLI JSON 输出里的一行。

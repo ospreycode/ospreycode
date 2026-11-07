@@ -23,6 +23,7 @@
 		"build": "tsc -p tsconfig.build.json"
 	},
 	"dependencies": {
+		"@napi-rs/keyring": "2.1.2",
 		"@ospreycode/agent-plugins": "0.1.0",
 		"@ospreycode/agent-runtime": "0.1.0",
 		"@ospreycode/api": "0.1.0",
