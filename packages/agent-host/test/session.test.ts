@@ -98,12 +98,12 @@ describe("在指定时刻取消（脚本模型）", () => {
 		});
 		expect(log.types().filter((type) => type !== "model.delta")).toEqual([
 			"session.started",
-			"task.started",
 			"run.started",
+			"task.started",
 			"message.completed",
 			"task.ended",
-			"task.started",
 			"run.started",
+			"task.started",
 			"message.completed",
 			"task.ended",
 		]);

@@ -1,3 +1,9 @@
+/**
+ * 在会话树上开始一个 run 的事件类型：它的 `data` 是 `RunRecord`，格式版本是 `storageVersion`。
+ * 这是本包唯一读取内容的事件，按它维护 run 的接续关系。
+ */
+export const runStartedType = "run.started";
+
 /** 会话树上的一个位置：某个 run 里序号为 `seq` 的事件之后。 */
 export interface Position {
 	run_id: string;

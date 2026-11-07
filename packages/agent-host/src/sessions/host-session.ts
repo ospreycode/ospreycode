@@ -9,6 +9,7 @@ import {
 	type ModelRequestParams,
 	type ModelRequestResult,
 	ProtocolError,
+	type RecordAppendParams,
 	type RuntimeRequests,
 	version as runtimeVersion,
 	type TaskEndParams,
@@ -21,6 +22,7 @@ import {
 import type { StreamModel } from "@ospreycode/api";
 import type { UserContent } from "@ospreycode/api/protocol";
 import type { ApprovalAnswer } from "@ospreycode/sandbox";
+import type { SessionStore, SessionWriter } from "@ospreycode/session-store";
 import { Approvals } from "../actions/approvals.js";
 import { ToolCalls } from "../actions/tool-calls.js";
 import { type ChannelHandlers, serveChannel } from "../channel/serve.js";
@@ -84,6 +86,10 @@ export interface HostSessionOptions {
 	tracker: ProcessTracker;
 	/** 已经取得的工作区锁，session 结束时释放。 */
 	lock: WorkspaceLock;
+	/** 这个项目的 session 记录，session 结束时关闭。 */
+	store: SessionStore;
+	/** 这个 session 的写入者，持有写锁。 */
+	writer: SessionWriter;
 	userId: string;
 	projectId: string;
 	onEvent: (event: HostEvent) => void;
@@ -142,6 +148,7 @@ export class HostSession implements ChannelHandlers {
 			sessionId: this.sessionId,
 			agentId: this.agentId,
 			listener: options.onEvent,
+			record: (event) => options.writer.append(event),
 			scrub: options.scrub,
 			log: options.log,
 		});
@@ -260,12 +267,13 @@ export class HostSession implements ChannelHandlers {
 		const run = new Run();
 		this.#run = run;
 		const content: UserContent[] = [{ type: "text", text: input }];
+		this.#events.runStarted(run);
 		this.#events.stored(run, {
 			type: "task.started",
 			source: "user",
 			input: content,
 		});
-		this.#events.stored(run, { type: "run.started" });
+		this.#options.writer.setTitle(input.split("\n", 1)[0] ?? "");
 		await this.#agent.channel.notify("task/start", { input: content });
 		return run.taskId;
 	}
@@ -391,8 +399,19 @@ export class HostSession implements ChannelHandlers {
 		return this.#toolCalls.complete(params);
 	}
 
-	recordAppend(): void {
-		// runtime 自己的事件从 P1 起交给 session-store 保存；P0 还没有 session 记录
+	/** runtime 自己的事件：属于当前的 run，同一个 run 里重复的 `event_id` 只记一次。 */
+	recordAppend(params: RecordAppendParams): void {
+		const run = this.#run;
+		if (run === undefined || run.cancelled) {
+			this.#events.session({
+				type: "warning",
+				message: `runtime 在没有进行中的 task 时上报了事件 ${params.event.type}，已丢弃`,
+			});
+			return;
+		}
+		if (run.runtimeEventIds.has(params.event_id)) return;
+		run.runtimeEventIds.add(params.event_id);
+		this.#events.runtime(run, params.event);
 	}
 
 	/** 当前的 run。session 空闲或 run 已取消后，需要进行中 task 的请求以 `no_active_task` 拒绝。 */
@@ -447,9 +466,14 @@ export class HostSession implements ChannelHandlers {
 		void this.#sandbox.stop().then(() => this.#end(ended));
 	}
 
-	/** 全部进程结束之后：删掉 agent 进程的登记，释放工作区锁，发出 `session.ended`。 */
+	/**
+	 * 全部进程结束之后：删掉 agent 进程的登记，关闭 session 记录（释放写锁），释放工作区锁，
+	 * 发出 `session.ended`。
+	 */
 	async #end(reason: SessionEndReason): Promise<void> {
 		await this.#agentGone;
+		this.#options.writer.close();
+		this.#options.store.close();
 		this.#options.lock.release();
 		this.#events.session({ type: "session.ended", reason, usage: this.#usage });
 		this.#resolveEnded();

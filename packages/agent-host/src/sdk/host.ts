@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { type StreamModel, streamModel } from "@ospreycode/api";
 import type { ApprovalAnswer } from "@ospreycode/sandbox";
 import { checkSandboxSupport } from "@ospreycode/sandbox/backends";
+import { SessionStore, type SessionWriter } from "@ospreycode/session-store";
 import { ConfigError } from "../config/errors.js";
 import {
 	resolveSessionConfig,
@@ -28,10 +29,14 @@ import {
 	unsandboxedSession,
 } from "../processes/sandboxed.js";
 import { projectKey, Registry } from "../project/identity.js";
-import { acquireWorkspaceLock } from "../project/locks.js";
+import {
+	acquireExclusiveLock,
+	acquireWorkspaceLock,
+} from "../project/locks.js";
 import {
 	checkInstallLocation,
 	checkSeparate,
+	ensureDirectory,
 	findProjectRoot,
 	prepareRoot,
 	resolveWorkspace,
@@ -231,10 +236,31 @@ export function createHost(options: HostOptions): Host {
 			owner,
 		);
 		let session: HostSession;
+		let store: SessionStore | undefined;
+		let writer: SessionWriter | undefined;
 		try {
 			await processes.cleanWorkspace(workspace);
 			const sessionId = newId();
+			const projectDir = join(data, "projects", projectId);
+			ensureDirectory(join(data, "projects"));
+			ensureDirectory(projectDir);
+			store = SessionStore.open(join(projectDir, "sessions.sqlite"));
+			writer = await store.create(
+				{
+					session_id: sessionId,
+					workspace,
+					created_at: new Date().toISOString(),
+				},
+				(id) =>
+					acquireExclusiveLock(
+						join(data, "locks", `session-${id}.lock`),
+						owner,
+						`session ${id} `,
+					),
+			);
 			session = await HostSession.open({
+				store,
+				writer,
 				sessionId,
 				root,
 				config,
@@ -282,6 +308,8 @@ export function createHost(options: HostOptions): Host {
 				onEvent: sessionOptions.onEvent,
 			});
 		} catch (error) {
+			writer?.close();
+			store?.close();
 			lock.release();
 			throw error;
 		}

@@ -35,7 +35,7 @@
 | 密钥检测和脱敏（`redaction/`），用于日志、错误信息、session 导出和记忆 | P1 | 已完成 | agent-host 的[模块](packages/agent-host.md#模块) |
 | 凭据：macOS 钥匙串，显式指定的文件或环境变量 | P1 | 已完成 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | 配置的分层和配置项 | P1 | 进行中 | agent-host 的[配置的分层](packages/agent-host.md#配置的分层) |
-| session 记录的存储（含每条消息在目标协议里的原文） | P1 | 未开始 | session-store 的[存储格式](packages/session-store.md#存储格式)和[事件格式](packages/session-store.md#事件格式) |
+| session 记录的存储（含每条消息在目标协议里的原文） | P1 | 进行中 | session-store 的[存储格式](packages/session-store.md#存储格式)和[事件格式](packages/session-store.md#事件格式) |
 | 上下文超长时明确报错停止 | P1 | 未开始 | agent-runtime 的[上下文](packages/agent-runtime.md#上下文) |
 | sandbox 专项评测、一组小规模编码题（SWE-bench Pro V2 的 60 道） | P1 | 未开始 | evaluation 的[首批 benchmark](packages/evaluation.md#首批-benchmark)和 [Sandbox 专项评测的运行环境](packages/evaluation.md#sandbox-专项评测的运行环境) |
 | 每个 run 的费用、请求次数和时间上限 | P1 | 未开始 | agent-host 的[预算](packages/agent-host.md#预算) |

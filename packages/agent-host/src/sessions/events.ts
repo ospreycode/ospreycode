@@ -9,6 +9,9 @@ import type {
 	PermissionRequest,
 } from "@ospreycode/sandbox";
 
+/** Host 写入 session 记录的 task、批准、进程和协议原文事件的格式版本，写进这些事件的 `version`。 */
+export const recordFormatVersion = 1;
+
 /** task 的来源：session 空闲时的用户输入、follow-up、后台命令的通知。 */
 export type TaskSource = "user" | "follow_up" | "notification";
 

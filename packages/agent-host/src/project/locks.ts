@@ -114,6 +114,27 @@ export async function withFileLock<T>(
 	}
 }
 
+/**
+ * 取得一个长时间持有的锁（如 session 的写锁）：持有者已经不在时接管，还在时抛出错误。
+ * `describe` 写进错误信息，说明被谁占着。
+ */
+export async function acquireExclusiveLock(
+	path: string,
+	owner: ProcessIdentity,
+	describe: string,
+): Promise<{ release(): void }> {
+	while (!tryCreate(path, owner)) {
+		const holder = readLock(path);
+		if (holder !== undefined && isSameProcess(holder, owner.boot_id)) {
+			throw new Error(
+				`${describe}正被另一个 Host 进程使用（pid ${holder.pid}）`,
+			);
+		}
+		if (holder !== undefined) removeStale(path, holder);
+	}
+	return { release: () => unlinkSync(path) };
+}
+
 /** 原子地写入一个文件：写到同一目录的临时文件，再改名覆盖。 */
 export function writeFileAtomic(path: string, content: string): void {
 	const temp = `${path}.${randomUUID()}.tmp`;
