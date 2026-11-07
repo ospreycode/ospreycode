@@ -1,6 +1,11 @@
 import { parseSse } from "../client/sse.js";
 import type { StreamOptions } from "../client/stream.js";
-import type { ModelEntry } from "../models/entry.js";
+import { computeCost } from "../models/cost.js";
+import {
+	type ModelEntry,
+	type ResolvedEffort,
+	resolveEffort,
+} from "../models/entry.js";
 import type {
 	AssistantContent,
 	AssistantMessage,
@@ -115,6 +120,14 @@ function convertMessages(messages: readonly Message[]): Json[] {
 	return out;
 }
 
+/** 做前缀校验的模型在开着推理时，请求带上这个 beta，并显式要求校验失败时报错。 */
+const prefixCheckBeta = "thinking-binding-controls-2026-08-01";
+
+/** 这次请求要不要显式开启前缀校验：Haiku 5.5 关掉推理时不能设这个字段。 */
+function checksPrefix(entry: ModelEntry, effort: ResolvedEffort | undefined) {
+	return entry.prefix_check === true && effort?.value !== "disabled";
+}
+
 /** 把内部协议的请求转换成 Messages API 的请求体。同样的内部请求每次生成相同的请求体。 */
 export function anthropicRequestBody(
 	entry: ModelEntry,
@@ -123,11 +136,6 @@ export function anthropicRequestBody(
 	const [first, ...rest] = request.messages;
 	if (first?.role !== "system") {
 		throw new Error("内部请求的第一条消息必须是系统指令");
-	}
-	if (request.reasoning_effort !== "off") {
-		throw new Error(
-			"anthropic.messages 的推理强度要到 P1 才支持，现在只能用 off",
-		);
 	}
 	if (request.sampling !== undefined) {
 		throw new Error(`Anthropic API ${anthropicVersion} 不接受采样参数`);
@@ -151,6 +159,17 @@ export function anthropicRequestBody(
 		messages,
 		stream: true,
 	};
+	const effort = resolveEffort(entry, request.reasoning_effort);
+	if (effort !== undefined) {
+		if (effort.value === "disabled") {
+			body.thinking = { type: "disabled" };
+		} else {
+			body.thinking = { type: "adaptive" };
+			body.output_config = { effort: effort.value };
+		}
+	}
+	// 不设时结果取决于账号的创建日期：较早的账号上失效的推理块会被悄悄送给模型并计费
+	if (checksPrefix(entry, effort)) body.prefix_mismatch_behavior = "error";
 	if (request.tools.length > 0) {
 		body.tools = withBreakpoint(
 			request.tools.map((tool) => ({
@@ -246,18 +265,6 @@ export function classifyAnthropicError(
 	return info("invalid_request");
 }
 
-function cost(entry: ModelEntry, usage: Usage): number | undefined {
-	const { price } = entry;
-	if (price === undefined) return undefined;
-	return (
-		(usage.input * price.input +
-			usage.output * price.output +
-			usage.cache_read * price.cache_read +
-			usage.cache_write * price.cache_write) /
-		1_000_000
-	);
-}
-
 type BlockState =
 	| { type: "text"; text: string }
 	| { type: "thinking"; text: string; signature: string }
@@ -315,10 +322,12 @@ class ReplyBuilder {
 	refusal: RefusalDetails | undefined;
 	#blocks: BlockState[] = [];
 	#entry: ModelEntry;
+	#request: ModelRequest;
 	#messageId: string;
 
-	constructor(entry: ModelEntry, messageId: string) {
+	constructor(entry: ModelEntry, request: ModelRequest, messageId: string) {
 		this.#entry = entry;
+		this.#request = request;
 		this.#messageId = messageId;
 		this.model = entry.model;
 	}
@@ -395,6 +404,7 @@ class ReplyBuilder {
 	addUsage(raw: Json): StreamEvent {
 		const number = (key: string, fallback: number) =>
 			typeof raw[key] === "number" ? (raw[key] as number) : fallback;
+		const details = raw.output_tokens_details as Json | undefined;
 		this.usage = {
 			input: number("input_tokens", this.usage.input),
 			output: number("output_tokens", this.usage.output),
@@ -403,14 +413,20 @@ class ReplyBuilder {
 				"cache_creation_input_tokens",
 				this.usage.cache_write,
 			),
-			reasoning: 0,
+			// 推理 token 算在 output_tokens 里，另列为子项
+			reasoning:
+				typeof details?.thinking_tokens === "number"
+					? details.thinking_tokens
+					: this.usage.reasoning,
 		};
 		return { type: "usage", usage: this.#usageWithCost() };
 	}
 
 	#usageWithCost(): Usage {
-		const usd = cost(this.#entry, this.usage);
-		return usd === undefined ? this.usage : { ...this.usage, cost_usd: usd };
+		const { price } = this.#entry;
+		return price === undefined
+			? this.usage
+			: { ...this.usage, cost_usd: computeCost(price, this.usage, new Date()) };
 	}
 
 	message(stopReason: StopReason): AssistantMessage {
@@ -420,6 +436,7 @@ class ReplyBuilder {
 			model: this.model,
 		};
 		const content = this.#blocks.map((block) => toContent(block, origin));
+		const effort = resolveEffort(this.#entry, this.#request.reasoning_effort);
 		const message: AssistantMessage = {
 			role: "assistant",
 			message_id: this.#messageId,
@@ -428,7 +445,8 @@ class ReplyBuilder {
 			service: this.#entry.service,
 			requested_model: this.#entry.id,
 			model: this.model,
-			reasoning_effort: "off",
+			reasoning_effort: this.#request.reasoning_effort,
+			...(effort === undefined ? {} : { reasoning_effort_sent: effort.value }),
 			stop_reason: stopReason,
 			usage: this.#usageWithCost(),
 		};
@@ -451,7 +469,7 @@ export async function* streamAnthropicMessages(
 	request: ModelRequest,
 	options: StreamOptions,
 ): AsyncGenerator<StreamEvent> {
-	const builder = new ReplyBuilder(entry, options.messageId);
+	const builder = new ReplyBuilder(entry, request, options.messageId);
 	const idle = new AbortController();
 	let timer = setTimeout(() => idle.abort(), idleTimeoutMs);
 	const signal = AbortSignal.any([options.signal, idle.signal]);
@@ -465,6 +483,12 @@ export async function* streamAnthropicMessages(
 					accept: "text/event-stream",
 					"anthropic-version": anthropicVersion,
 					"x-api-key": options.apiKey,
+					...(checksPrefix(
+						entry,
+						resolveEffort(entry, request.reasoning_effort),
+					)
+						? { "anthropic-beta": prefixCheckBeta }
+						: {}),
 				},
 				body: JSON.stringify(anthropicRequestBody(entry, request)),
 				signal,

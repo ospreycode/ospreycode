@@ -16,7 +16,7 @@ npm install @ospreycode/api
 - `@ospreycode/api`：`streamModel(entry, request, options)` 按模型清单条目的协议发出请求，产出内部协议的流式事件，以唯一的 `end` 结束；服务报错、网络中断和取消都体现在 `end` 里。`fetch` 和凭据由调用方传入，本包不读环境变量和凭据文件，也不重试。现在支持 `anthropic.messages`。
 - `@ospreycode/api/testing`：`scriptedModel(script)` 按脚本返回结果，用法和 `streamModel` 相同，供测试模拟模型服务报错、在指定时刻取消。
 
-模型清单条目的校验：`parseModelFields(value, key)` 校验用户配置里一个模型的字段，各层按字段合并后用 `completeModel(id, fields, key)` 检查是否齐全，出错时抛出 `ModelConfigError`，`key` 是出错的键路径。
+模型清单：`builtinModels` 是随包发布的内置清单（Anthropic、OpenAI、DeepSeek 的对话模型），由 `scripts/generate-models.ts` 按固定的 commit 从 models.dev 的源文件生成。`resolveEffort(entry, effort)` 取这个模型上实际发出的推理强度，`computeCost(price, usage, time)` 按价格档和时段计算费用。`parseModelFields(value, key)` 校验用户配置里一个模型的字段，`mergeModelFields` 按字段合并两层，合并后用 `completeModel(id, fields, key)` 检查是否齐全，出错时抛出 `ModelConfigError`，`key` 是出错的键路径。
 
 ```ts
 import { type ModelRequest, protocolVersion } from "@ospreycode/api/protocol";

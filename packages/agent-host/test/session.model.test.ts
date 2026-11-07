@@ -20,12 +20,9 @@ afterEach(async () => {
 test("真实模型经通道请求模型、由 Host 执行 shell，完成任务", {
 	tags: ["model"],
 }, async () => {
+	// 内置清单里的条目，只把地址换成中转服务
 	const entry: ModelFields = {
-		protocol: "anthropic.messages",
-		service: "anthropic",
 		base_url: inject("modelBaseUrl"),
-		model: "claude-haiku-5-5",
-		context_window: 200_000,
 		max_output_tokens: 2_000,
 	};
 	const log = new EventLog();

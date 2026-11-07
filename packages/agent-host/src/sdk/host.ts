@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type StreamModel, streamModel } from "@ospreycode/api";
+import { builtinModels, type StreamModel, streamModel } from "@ospreycode/api";
 import type { ApprovalAnswer } from "@ospreycode/sandbox";
 import { checkSandboxSupport } from "@ospreycode/sandbox/backends";
 import { SessionStore, type SessionWriter } from "@ospreycode/session-store";
@@ -214,7 +214,7 @@ export function createHost(options: HostOptions): Host {
 			projectRoot: project.root,
 			git: project.git,
 			home: options.env.HOME,
-			catalog: [],
+			catalog: builtinModels,
 		});
 	};
 

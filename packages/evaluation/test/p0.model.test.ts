@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { builtinModels, type ModelEntry } from "@ospreycode/api";
 import {
 	formatSummary,
 	p0Scenarios,
@@ -9,6 +10,9 @@ import {
 import { afterAll, describe, expect, inject, test } from "vitest";
 
 const results: ScenarioResult[] = [];
+const haiku = builtinModels.find(
+	(m) => m.id === "claude-haiku-5-5",
+) as ModelEntry;
 
 describe.runIf(process.platform === "darwin")(
 	"P0 验收（真实模型、macOS 真实沙盒）",
@@ -24,12 +28,8 @@ describe.runIf(process.platform === "darwin")(
 					scenario,
 					{
 						model: {
-							id: "claude-haiku-5-5",
-							protocol: "anthropic.messages",
-							service: "anthropic",
+							...haiku,
 							base_url: inject("modelBaseUrl"),
-							model: "claude-haiku-5-5",
-							context_window: 200_000,
 							max_output_tokens: 2_000,
 						},
 						reasoningEffort: "off",

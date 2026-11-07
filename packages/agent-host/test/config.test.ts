@@ -109,7 +109,22 @@ input = 1
 			context_window: 200_000,
 			price: { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 },
 		});
-		expect(config.models.map((model) => model.id)).toEqual(["scripted"]);
+	});
+
+	test("内置清单的条目可以只覆盖个别字段", () => {
+		userConfig(
+			`[models.claude-haiku-5-5]\nbase_url = "https://relay.example.com/v1"`,
+		);
+		const config = resolve({ model: "claude-haiku-5-5" });
+		expect(config.model).toMatchObject({
+			id: "claude-haiku-5-5",
+			protocol: "anthropic.messages",
+			service: "anthropic",
+			base_url: "https://relay.example.com/v1",
+			prefix_check: true,
+			thinking_level_map: { off: "disabled", low: "low" },
+		});
+		expect(config.models.map((model) => model.id)).toContain("gpt-5.6-sol");
 	});
 
 	test("禁止读写的路径在各层取并集，~/ 按 HOME 展开", () => {

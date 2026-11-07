@@ -1,0 +1,139 @@
+import {
+	anthropicRequestBody,
+	builtinModels,
+	completeModel,
+	computeCost,
+	type ModelEntry,
+	resolveEffort,
+} from "@ospreycode/api";
+import type { ModelRequest, Usage } from "@ospreycode/api/protocol";
+import { describe, expect, test } from "vitest";
+
+function model(id: string): ModelEntry {
+	const entry = builtinModels.find((candidate) => candidate.id === id);
+	if (entry === undefined) throw new Error(`内置清单里没有 ${id}`);
+	return entry;
+}
+
+describe("内置清单", () => {
+	test("每个条目都完整，ID 不重复，按服务选协议", () => {
+		const ids = builtinModels.map((entry) => entry.id);
+		expect(new Set(ids).size).toBe(ids.length);
+		for (const entry of builtinModels) {
+			expect(completeModel(entry.id, entry, `models.${entry.id}`)).toEqual(
+				entry,
+			);
+		}
+		expect(model("claude-haiku-5-5").protocol).toBe("anthropic.messages");
+		expect(model("gpt-5.6-sol").protocol).toBe("openai.responses");
+		expect(model("deepseek-flash")).toMatchObject({
+			protocol: "openai.chat",
+			compat: { reasoning_field: "reasoning_content" },
+		});
+	});
+});
+
+describe("推理强度", () => {
+	test("不支持的级别先往高找、再往低找", () => {
+		// Opus 5.5 不能关闭推理，请求 off 时按 low 发
+		expect(resolveEffort(model("claude-opus-5-5"), "off")).toEqual({
+			level: "low",
+			value: "low",
+		});
+		expect(resolveEffort(model("claude-haiku-5-5"), "off")).toEqual({
+			level: "off",
+			value: "disabled",
+		});
+		expect(resolveEffort(model("gpt-5.6-sol"), "off")?.value).toBe("none");
+		expect(resolveEffort(model("gpt-6.1-sol"), "off")?.value).toBe("low");
+		// DeepSeek 没有 medium，往高找到 high；没有 xhigh 时 max 之上找不到，往低找回 max
+		expect(resolveEffort(model("deepseek-flash"), "medium")?.value).toBe(
+			"high",
+		);
+		expect(
+			resolveEffort(
+				{ ...model("deepseek-flash"), thinking_level_map: { low: "low" } },
+				"max",
+			)?.value,
+		).toBe("low");
+		const { thinking_level_map: _, ...plain } = model("gpt-5.4");
+		expect(resolveEffort(plain, "high")).toBeUndefined();
+	});
+});
+
+describe("费用", () => {
+	const usage: Usage = {
+		input: 1_000_000,
+		output: 1_000_000,
+		cache_read: 0,
+		cache_write: 0,
+		reasoning: 0,
+	};
+
+	test("总输入超过阈值时整次请求按高一档计费", () => {
+		const price = model("claude-haiku-5-5").price;
+		if (price === undefined) throw new Error("没有价格");
+		const monday = new Date("2026-11-09T12:00:00Z");
+		expect(
+			computeCost(price, { ...usage, input: 50_000, output: 0 }, monday),
+		).toBeCloseTo((50_000 * 0.1) / 1_000_000);
+		expect(
+			computeCost(
+				price,
+				{ ...usage, input: 60_000, cache_read: 60_000, output: 0 },
+				monday,
+			),
+		).toBeCloseTo((60_000 * 0.5 + 60_000 * 0.05) / 1_000_000);
+	});
+
+	test("工作日高峰时段按倍数计费", () => {
+		const price = model("deepseek-flash").price;
+		if (price === undefined) throw new Error("没有价格");
+		const offPeak = computeCost(price, usage, new Date("2026-11-09T05:00:00Z"));
+		expect(
+			computeCost(price, usage, new Date("2026-11-09T07:30:00Z")),
+		).toBeCloseTo(offPeak * 2);
+		// 周六不算高峰
+		expect(
+			computeCost(price, usage, new Date("2026-11-07T07:30:00Z")),
+		).toBeCloseTo(offPeak);
+	});
+});
+
+describe("Anthropic 的推理字段", () => {
+	const request = (effort: ModelRequest["reasoning_effort"]): ModelRequest => ({
+		model: "claude-haiku-5-5",
+		reasoning_effort: effort,
+		tool_choice: "auto",
+		cache_retention: "none",
+		messages: [
+			{
+				role: "system",
+				message_id: "s",
+				content: [{ type: "text", text: "s" }],
+			},
+			{ role: "user", message_id: "u", content: [{ type: "text", text: "u" }] },
+		],
+		tools: [],
+	});
+
+	test("开着推理时发 adaptive 和 effort，做前缀校验的模型显式要求校验失败时报错", () => {
+		expect(
+			anthropicRequestBody(model("claude-haiku-5-5"), request("low")),
+		).toMatchObject({
+			thinking: { type: "adaptive" },
+			output_config: { effort: "low" },
+			prefix_mismatch_behavior: "error",
+		});
+	});
+
+	test("关闭推理时不设前缀校验的字段", () => {
+		const body = anthropicRequestBody(
+			model("claude-haiku-5-5"),
+			request("off"),
+		);
+		expect(body.thinking).toEqual({ type: "disabled" });
+		expect(body).not.toHaveProperty("output_config");
+		expect(body).not.toHaveProperty("prefix_mismatch_behavior");
+	});
+});

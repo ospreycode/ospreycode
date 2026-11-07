@@ -4,6 +4,7 @@ import {
 	ModelConfigError,
 	type ModelEntry,
 	type ModelFields,
+	mergeModelFields,
 	supportedProtocols,
 } from "@ospreycode/api";
 import type { ReasoningEffort } from "@ospreycode/api/protocol";
@@ -207,15 +208,8 @@ function mergeModels(
 	const result = { ...lower };
 	for (const [id, fields] of Object.entries(higher ?? {})) {
 		const previous = result[id];
-		const price =
-			previous?.price === undefined && fields.price === undefined
-				? undefined
-				: { ...previous?.price, ...fields.price };
-		result[id] = {
-			...previous,
-			...fields,
-			...(price === undefined ? {} : { price }),
-		};
+		result[id] =
+			previous === undefined ? fields : mergeModelFields(previous, fields);
 	}
 	return result;
 }

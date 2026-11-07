@@ -12,7 +12,7 @@
 | `openai.responses` | OpenAI Responses | |
 | `anthropic.messages` | Anthropic Messages | |
 
-- 协议按"服务加模型"决定，写在模型清单里（照 pi 为每个模型单独写 `api`）：OpenAI 自己服务上的模型用 Responses；经 OpenRouter 使用同样的 GPT 推理模型时用 `openai.chat`（`thinkingFormat: "openrouter"`，推理内容经 `reasoning_details` 带回）。
+- 协议按"服务加模型"决定，写在模型清单里（照 pi 为每个模型单独写 `api`）：OpenAI 自己服务上的模型用 Responses；经 OpenRouter 使用同样的 GPT 推理模型时用 `openai.chat`（`compat.thinking_format = "openrouter"`，推理内容经 `reasoning_details` 带回）。
 - OpenAI 自己的 `/v1/chat/completions` 从 GPT-5.4 起带函数工具时 `reasoning_effort` 只能是 `none`，否则返回 400；GPT-6 Astra 和 GPT-6.1 Sol 不支持 `none`，调用工具只能用 Responses。o 系列和 GPT-5 到 GPT-5.3 不受限制。
 - 以后增加协议只新增一个转换模块，内部协议和其他包不变。
 
@@ -29,7 +29,7 @@ P5 增加的服务：
 api/
   protocol/    内部协议：消息、内容块、工具声明、请求参数、流式事件、停止原因、用量、错误类别
   adapters/    各家协议和内部协议之间的转换，每个协议一个模块
-  models/      模型清单：每个模型使用的协议、服务地址、上下文长度、支持的能力和价格
+  models/      模型清单：每个模型使用的协议、服务地址、上下文长度、支持的能力和价格；内置清单 catalog.ts 由脚本生成
   client/      发出请求、解析流式响应、取消
   testing/     按脚本返回结果的模型，供测试使用
   sdk/         对外接口
@@ -75,10 +75,11 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 - **进入内部协议的参数**：模型；推理强度（`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，`off` 表示不发推理的字段）和推理预算；最大输出长度（默认取清单里的值，再按上下文长度减去估计的输入和余量截短）；采样参数（依次合并模型的默认值、按推理强度设的值和请求里的值）；`toolChoice`（只有 `auto` 和 `none`）；缓存保留（`none`、`short`、`long`）；session 标识（用作提示缓存的键，如 OpenAI 的 `prompt_cache_key`，由 Host 的模型代理按通道填写）；metadata。取消信号、凭据、请求头和超时不属于内部协议，由 Host 的模型代理处理。
 - **重试**：`api` 不重试，由 runtime 的 loop 按错误类别决定（见 agent-runtime 的[模型请求的重试](agent-runtime.md#模型请求的重试)）。流中途出错时，已收到的部分照常记入会话并作废。
-- **推理强度的映射**：清单为每个模型写 `thinkingLevelMap`，不支持的级别写 null；请求的级别不支持时先往高找，再往低找（pi 的 `clampThinkingLevel`），例如 Opus 5.5 不支持 `off` 和 `minimal`，请求 `off` 时按 `low` 发送。
-  - Anthropic 的自适应推理用 `output_config.effort`；对支持按消息设置 effort 的模型，顶层的 effort 固定为 `low`，实际的强度放在末尾追加的、内容为空的 system 消息里，中途改强度不改前缀。
-  - OpenAI Responses 用 `reasoning.effort`（同时设 `summary: "auto"`），支持中途修改的模型同样固定顶层的值，用追加的 `configuration_update` item。
-  - Chat Completions 按模型配置里的 `thinkingFormat` 选字段（`reasoning_effort`、OpenRouter 的 `reasoning.effort` 等）。
+- **推理强度的映射**：清单为每个模型写 `thinking_level_map`（照 pi 的 `thinkingLevelMap`），不支持的级别不写（TOML 没有 null）；请求的级别不支持时先往高找，再往低找（pi 的 `clampThinkingLevel`），例如 Opus 5.5 不支持 `off` 和 `minimal`，请求 `off` 时按 `low` 发送。关闭推理在 Anthropic 写 `disabled`，在 OpenAI 和兼容服务写 `none`；没有这一项的模型不发推理的字段。
+  - Anthropic 的自适应推理用 `thinking: {type: "adaptive"}` 加顶层的 `output_config.effort`，关闭推理用 `thinking: {type: "disabled"}`。
+  - OpenAI Responses 用 `reasoning.effort`（同时设 `summary: "auto"`）。
+  - 中途改推理强度时直接改顶层的值：这不算改写，推理内容照样有效，代价是提示缓存重新开始。按消息设置推理强度的写法不用，原因和加入的条件见[实施计划](../roadmap.md#不做的功能)。
+  - Chat Completions 按模型配置里的 `compat.thinking_format` 选字段（`reasoning_effort`、OpenRouter 的 `reasoning.effort` 等）。
 - **各家对参数的限制**写进清单：Anthropic 的 `thinking.type` 有 `adaptive`、`disabled`、`between_tools`、`enabled`，各自在部分模型上返回 400；effort 的默认值在 Opus 5.5 和 Haiku 5.5 上是 `medium`，其他模型是 `high`；强制调用工具的 `tool_choice` 在 Fable 5.1、Mythos 5.1、Opus 5.5 和 Sonnet 5.5 上返回 400。
 - Fable 5.1、Mythos 5.1、Opus 5.5、Sonnet 5.5 和 Fable 5 把工具调用之间写给用户的进度说明作为单独的推理块返回，默认文本为空，显示需要 beta 的 `display: "updates"`（Sonnet 5.5 也可以用 `between_tools`），这影响流式事件和界面。
 - 不用 Anthropic 的 message threads（服务端保存对话、请求只发新消息）：和下文"不依赖服务端保存的对话状态"冲突。runtime 只发模型 ID 和上面列出的请求参数；地址、协议、价格、限制和兼容配置一律取 Host 的清单，请求里带这类字段时拒绝。
@@ -87,8 +88,8 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 内置清单随 `api` 包发布，开发时由脚本生成，用户在用户级配置里补充（见 agent-host 的[配置项](agent-host.md#配置项)）。
 
-- **字段**照 pi 的 `Model`：协议、服务、地址、请求头、输入类型和限制、价格（含按输入长度分的档）、是否推理、`thinkingLevelMap`、上下文长度、最大输出长度、提示缓存的有效期、采样参数和兼容配置。费用照 pi 计算：按总输入（输入加缓存读写）选价格档，整次请求按这一档计费；1 小时的缓存写入按输入价格的 2 倍计。清单还要能写出某个服务上、某个模型的限制（如上文 Chat Completions 端点和 `tool_choice` 的限制）和分时段的价格（如 DeepSeek 工作日高峰加倍）。
-- **数据来源**：models.dev 的 v2 数据（`anomalyco/models.dev`，MIT，`https://models.dev/experimental/v2.0/api.json`），固定到某个 commit，生成脚本严格校验格式；再叠加 `api` 自己维护的修正层：协议名、`thinkingLevelMap`、端点级别的限制、`allowed_fallback_models` 和需要的 beta header。生成后抽样和官方定价页核对，models.dev 有漏项。
+- **字段**照 pi 的 `Model`，名字用 snake_case，和配置文件里 `[models.<ID>]` 的键相同：`protocol`、`service`、`base_url`、`model`、`context_window`、`max_input_tokens`、`max_output_tokens`、`price`、`images`、`thinking_level_map`、`system_updates`（能在中途追加 system 级指令）、`tool_updates`（能在中途增减工具）、`prefix_check`（Anthropic 会做前缀校验）和 `openai.chat` 的 `compat`。能力标记没写时按不支持处理；`compat` 没写的项按 OpenAI 自己的 Chat Completions 的行为。费用照 pi 计算：按总输入（输入加缓存读写）选价格档（`price.tiers`），整次请求按这一档计费；分时段的价格写成 UTC 的星期几、时段和倍数（`price.periods`，如 DeepSeek 工作日高峰加倍，节假日判断不了、按高峰价估）。某个服务上的限制写成这个服务上单独的条目，例如 OpenAI 的 Chat Completions 带工具时只能不推理，就把 `thinking_level_map` 写成只有 `off = "none"`。
+- **数据来源**：`anomalyco/models.dev`（MIT）固定 commit 下的 TOML 源文件。models.dev 发布的 v2 数据（`https://models.dev/experimental/v2.0/api.json`）就是由这些文件生成的，但它不能按 commit 取，所以生成脚本（`packages/api/scripts/generate-models.ts`）经 GitHub 的 REST 接口按 commit 读收录的服务和模型的源文件，按 models.dev 的 generate-v2 合并规范定义和服务文件，严格校验用到的字段（用了不认识的价格条件、推理 token 单独计价等表达不了的写法时报错）；再叠加 `api` 自己维护的修正层（`scripts/model-corrections.ts`）：收录哪些服务和模型、各服务的协议和地址、`openai.chat` 的兼容差异、`prefix_check`，以及和本项目核实的结论不一致的字段。只收录能调用工具、用 effort 控制推理（或不推理）的对话模型。生成后抽样和官方定价页核对，models.dev 有漏项。
 - 生成结果提交进仓库，构建不联网，价格变化直接出现在 diff 里，发布内容可以复现。
 - 清单不单独发包：它要随 `api` 的转换规则一起变，所有包也用同一个版本号。改价格或加模型就发一个所有包都升的 patch 版本，走正常的发布流程。
 - 不联网拉取清单（见 overview 的[所有包都遵守的规则](../overview.md#所有包都遵守的规则)），评测也需要固定的清单。
@@ -142,7 +143,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 | 来源 | 位置 |
 |---|---|
-| Host 和 runtime 按自己掌握的状态生成的文字：沙盒模式和审批策略的切换、工具增减和系统指令段落的补丁、换模型、预算和压缩通知 | system 级追加（Anthropic 的中途 `role: "system"` 消息、OpenAI 的 `developer` 消息），写成事实陈述，不写成压过用户的命令。推理强度的变化用内容为空的 system 消息或 `configuration_update` |
+| Host 和 runtime 按自己掌握的状态生成的文字：沙盒模式和审批策略的切换、工具增减和系统指令段落的补丁、换模型、预算和压缩通知 | system 级追加（Anthropic 的中途 `role: "system"` 消息、OpenAI 的 `developer` 消息），写成事实陈述，不写成压过用户的命令。推理强度的变化只改请求的顶层参数，不追加消息（见[请求参数](#请求参数)） |
 | 用户本人写的文字：steering、follow-up、用户级规则文件、用户要求记住的内容 | user 消息 |
 | 来自仓库、扩展、工具和网络的内容：仓库规则文件、记忆、hooks 输出、后台命令的通知、skill 内容、MCP 结果、网页 | 有对应工具调用的放工具结果；没有的由 runtime 放进 user 消息里单独的文本块，标明来源，不和用户的话放在同一块 |
 
@@ -192,7 +193,7 @@ runtime 平时自己估算，不调用计数接口。
 
 ## 上下文压缩
 
-P3 以客户端压缩为基线，所有协议共用：runtime 决定压缩的时机（不在一轮工具调用中间，先运行"上下文压缩前"的 hooks），用当前模型写出可读的摘要，追加为 session 事件，原始记录保留。之后的上下文只有系统指令、会话开头的上下文消息、摘要、已加载的 skill 内容（作为带来源的 user 文本块重新放入）和新的输入，不回放旧轮次，所以没有推理块需要通过前缀校验，换模型和换协议也不受影响。被摘要掉的 system 级追加和按消息设置的 effort 不延续：压缩后的系统指令、顶层的工具声明和会话开头的上下文消息都按当时的状态重新生成，所以中途增减的工具、替换过的规则文件和更新过的记忆索引都以当时的样子出现。
+P3 以客户端压缩为基线，所有协议共用：runtime 决定压缩的时机（不在一轮工具调用中间，先运行"上下文压缩前"的 hooks），用当前模型写出可读的摘要，追加为 session 事件，原始记录保留。之后的上下文只有系统指令、会话开头的上下文消息、摘要、已加载的 skill 内容（作为带来源的 user 文本块重新放入）和新的输入，不回放旧轮次，所以没有推理块需要通过前缀校验，换模型和换协议也不受影响。被摘要掉的 system 级追加不延续：压缩后的系统指令、顶层的工具声明和会话开头的上下文消息都按当时的状态重新生成，所以中途增减的工具、替换过的规则文件和更新过的记忆索引都以当时的样子出现。
 
 服务端的上下文管理按协议作为可选项，只有评测胜过基线才采用，采用时内部协议才增加对应的"压缩"类型。候选：
 

@@ -79,6 +79,7 @@
 | 危险命令判断覆盖强制删除以外的命令（`git reset --hard`、`git clean -f`、`find -delete` 等） | sandbox 专项评测统计出这些命令漏问时加入 | sandbox 的[内置的判断](packages/sandbox.md#内置的判断) |
 | 命令的 PTY 和内存上限 | macOS 沙盒开 PTY 会放开用户所有的终端；内存上限 macOS 设不了、Linux 容器常没有 cgroup 委派。以后加内存上限时，配置了而设置失败就报错 | agent-runtime 的[后台命令](packages/agent-runtime.md#后台命令) |
 | Codex 的 Starlark 权限规则格式 | 权限规则只是数据，用 TOML；需要时写转换工具 | sandbox 的[规则](packages/sandbox.md#规则) |
+| 按消息设置推理强度（Anthropic 末尾内容为空、带 `output_config` 的 system 消息，Responses 的 `configuration_update`） | 这条消息要作为历史的一部分保留（推理内容绑定它之前的全部内容），内部协议得为它加消息类型；不用它时中途改强度只是让提示缓存重新开始。评测显示切换推理强度频繁、缓存失效的费用明显时加入：内部协议加"推理强度改为…"的追加消息，模型清单加 `effort_updates`，顶层固定为 `low` | api 的[请求参数](packages/api.md#请求参数) |
 | 参数受语法约束的工具（OpenAI custom 工具的写法） | 工具集不随服务变化。评测表明它在 GPT 模型上明显更好时，只作为单个字符串参数的工具的发送写法加入 | api 的[内部协议](packages/api.md#内部协议) |
 | memory 自动改写规则文件 | 规则文件是团队共享的仓库内容，记忆可能含不可信来源；用户让 agent 用编辑工具改，照常经过 Permission | memory 的[和规则文件的关系](packages/memory.md#和规则文件的关系) |
 | 通过 MCP 提供的 skills | 扩展还在 Beta，和本项目的执行方式冲突。扩展进入 Stable，或 Claude Code、Codex、VS Code、Cursor 中有两家发布支持后加入：安装成本地 skill，批准绑定扩展列出的文件和 sha256 摘要，之后和本地 skill 一样确认和启用 | skills 的[通过 MCP 提供的 skills](packages/skills.md#通过-mcp-提供的-skills) |
