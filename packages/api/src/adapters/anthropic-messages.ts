@@ -121,7 +121,7 @@ function sentBlocks(
 	return message.content.flatMap((block, index) => {
 		if (block.type === "text" && block.text === "") return [];
 		if (
-			block.type === "reasoning" &&
+			(block.type === "reasoning" || block.type === "fallback") &&
 			(block.origin.protocol !== "anthropic.messages" ||
 				block.origin.service !== entry.service)
 		) {
@@ -141,6 +141,13 @@ function assistantBlock(block: AssistantContent, names: ToolNames): string {
 					? { type: "redacted_thinking", data: block.opaque }
 					: { type: "thinking", thinking: block.text, signature: block.opaque },
 			);
+		case "fallback":
+			// 分界原位带回：去掉它，两边的推理内容会被当成一段，服务端无法校验
+			return JSON.stringify({
+				type: "fallback",
+				from: { model: block.from },
+				to: { model: block.to },
+			});
 		case "tool_call":
 			return jsonObject([
 				["type", '"tool_use"'],
@@ -199,9 +206,26 @@ function messagePieces(
 /** 做前缀校验的模型在开着推理时，请求带上这个 beta，并显式要求校验失败时报错。 */
 const prefixCheckBeta = "thinking-binding-controls-2026-08-01";
 
+/** 发回退列表要带的 beta。 */
+const fallbackBeta = "server-side-fallback-2026-07-01";
+
 /** 这次请求要不要显式开启前缀校验：Haiku 5.5 关掉推理时不能设这个字段。 */
 function checksPrefix(entry: ModelEntry, effort: ResolvedEffort | undefined) {
 	return entry.prefix_check === true && effort?.value !== "disabled";
+}
+
+/** 允许回退的模型；没有时不发回退列表。 */
+function fallbacksOf(entry: ModelEntry) {
+	return entry.allowed_fallback_models ?? [];
+}
+
+function betas(entry: ModelEntry, request: ModelRequest): string[] {
+	return [
+		...(checksPrefix(entry, resolveEffort(entry, request.reasoning_effort))
+			? [prefixCheckBeta]
+			: []),
+		...(fallbacksOf(entry).length > 0 ? [fallbackBeta] : []),
+	];
 }
 
 /** 一条发出的消息：角色、内容块的原文，以及每个块对应的内部内容块（推理内容前缀不符时据此定位）。 */
@@ -380,6 +404,15 @@ function render(
 					? undefined
 					: JSON.stringify({ type: request.tool_choice }),
 			],
+			// 只给出明确的回退列表，不用由服务端选模型的 "default"：Host 要知道哪些模型可能作答
+			[
+				"fallbacks",
+				fallbacksOf(entry).length === 0
+					? undefined
+					: JSON.stringify(
+							fallbacksOf(entry).map((fallback) => ({ model: fallback.model })),
+						),
+			],
 			["stream", "true"],
 		]),
 		refs,
@@ -486,10 +519,18 @@ type BlockState =
 			name: string;
 			json: string;
 			input: unknown;
-	  };
+	  }
+	| { type: "fallback"; from: string; to: string };
 
 function toContent(block: BlockState, origin: Origin): AssistantContent {
 	switch (block.type) {
+		case "fallback":
+			return {
+				type: "fallback",
+				from: block.from,
+				to: block.to,
+				origin: { ...origin, model: block.to },
+			};
 		case "text":
 			return { type: "text", text: block.text };
 		case "thinking":
@@ -527,6 +568,8 @@ class MessagesParser implements StreamParser {
 	#names: ToolNames;
 	#model: string;
 	#usage = zeroUsage();
+	/** `usage.iterations` 里每次采样的模型和用量：回退时各次按各自模型的价格计费。 */
+	#iterations: { model: string; usage: Usage }[] | undefined;
 	#stopReason: StopReason | undefined;
 	#refusal: RefusalDetails | undefined;
 	#blocks: BlockState[] = [];
@@ -568,6 +611,9 @@ class MessagesParser implements StreamParser {
 				return this.#blocks[payload.index as number]?.type === "tool_use"
 					? [{ type: "tool_call_end", index: payload.index as number }]
 					: [];
+			case "message_stop":
+				this.#stopped = true;
+				return [];
 			case "message_delta": {
 				const delta = payload.delta as Json;
 				const reason = stopReasons[String(delta.stop_reason)];
@@ -590,11 +636,8 @@ class MessagesParser implements StreamParser {
 					};
 				}
 				this.#addUsage(payload.usage as Json);
-				return [{ type: "usage", usage: this.#withCost(this.#usage) }];
+				return [{ type: "usage", usage: this.#withCost() }];
 			}
-			case "message_stop":
-				this.#stopped = true;
-				return [];
 			case "error": {
 				const error = payload.error as Json;
 				return {
@@ -633,6 +676,17 @@ class MessagesParser implements StreamParser {
 				return [
 					{ type: "tool_call_start", index, call_id: String(block.id), name },
 				];
+			}
+			case "fallback": {
+				// 回退之后由 to 接着写：message_start 里的 model 仍是原来的模型
+				const to = String((block.to as Json).model);
+				this.#blocks[index] = {
+					type: "fallback",
+					from: String((block.from as Json).model),
+					to,
+				};
+				this.#model = to;
+				return [];
 			}
 			default:
 				throw new Error(
@@ -689,13 +743,61 @@ class MessagesParser implements StreamParser {
 					? details.thinking_tokens
 					: this.#usage.reasoning,
 		};
+		if (!Array.isArray(raw.iterations)) return;
+		// 回退时顶层的用量只含作答的那一次，各次采样的用量在 iterations 里
+		this.#iterations = (raw.iterations as Json[])
+			.filter(
+				(item) => item.type === "message" || item.type === "fallback_message",
+			)
+			.map((item) => ({
+				model: typeof item.model === "string" ? item.model : this.#entry.model,
+				usage: {
+					input: Number(item.input_tokens),
+					output: Number(item.output_tokens),
+					cache_read: Number(item.cache_read_input_tokens),
+					cache_write: Number(item.cache_creation_input_tokens),
+					reasoning: 0,
+				},
+			}));
+		const sum = (key: keyof Usage) =>
+			(this.#iterations ?? []).reduce(
+				(total, item) => total + (item.usage[key] ?? 0),
+				0,
+			);
+		this.#usage = {
+			...this.#usage,
+			input: sum("input"),
+			output: sum("output"),
+			cache_read: sum("cache_read"),
+			cache_write: sum("cache_write"),
+		};
+		// 回退之后约一小时内，后面的轮次可能直接由回退的模型回答、没有 fallback 块
+		const served = (raw.iterations as Json[]).findLast(
+			(item) => item.type === "fallback_message",
+		);
+		if (typeof served?.model === "string") this.#model = served.model;
 	}
 
-	#withCost(usage: Usage): Usage {
-		const { price } = this.#entry;
-		return price === undefined
-			? usage
-			: { ...usage, cost_usd: computeCost(price, usage, new Date()) };
+	/** 按实际作答的模型取价格：回退的模型按清单里写的它的价格。 */
+	#price(model: string) {
+		return model === this.#entry.model
+			? this.#entry.price
+			: (fallbacksOf(this.#entry).find((fallback) => fallback.model === model)
+					?.price ?? this.#entry.price);
+	}
+
+	#withCost(): Usage {
+		const now = new Date();
+		const iterations = this.#iterations ?? [
+			{ model: this.#model, usage: this.#usage },
+		];
+		let cost = 0;
+		for (const item of iterations) {
+			const price = this.#price(item.model);
+			if (price === undefined) return this.#usage;
+			cost += computeCost(price, item.usage, now);
+		}
+		return { ...this.#usage, cost_usd: cost };
 	}
 
 	#content(): AssistantContent[] {
@@ -705,6 +807,19 @@ class MessagesParser implements StreamParser {
 			model: this.#model,
 		};
 		return this.#blocks.map((block) => toContent(block, origin));
+	}
+
+	#invalidate(indices: number[], reason: "refusal" | "fallback"): StreamEvent {
+		return {
+			type: "invalidate",
+			invalidation: {
+				blocks: indices.map((index) => ({
+					message_id: this.#options.messageId,
+					index,
+				})),
+				reason,
+			},
+		};
 	}
 
 	finish() {
@@ -719,27 +834,37 @@ class MessagesParser implements StreamParser {
 				content,
 				model: this.#model,
 				stop_reason: stopReason,
-				usage: this.#usage,
+				usage: this.#withCost(),
 				...(this.#refusal === undefined ? {} : { refusal: this.#refusal }),
 			},
 		);
 		// 拒绝可能在输出部分内容之后才到，本轮的全部输出都不再发回
-		const events: StreamEvent[] =
-			stopReason === "refusal"
-				? [
-						{
-							type: "invalidate",
-							invalidation: {
-								blocks: content.map((_, index) => ({
-									message_id: this.#options.messageId,
-									index,
-								})),
-								reason: "refusal",
-							},
-						},
-					]
-				: [];
-		return { events, message };
+		if (stopReason === "refusal") {
+			return {
+				events: [
+					this.#invalidate(
+						content.map((_, index) => index),
+						"refusal",
+					),
+				],
+				message,
+			};
+		}
+		// 回退时文本和分界原位保留；最后一个分界之前的推理内容和工具调用不能再发回，工具调用也不执行
+		const boundary = content.findLastIndex(
+			(block) => block.type === "fallback",
+		);
+		const dropped = content.flatMap((block, index) =>
+			index < boundary &&
+			(block.type === "reasoning" || block.type === "tool_call")
+				? [index]
+				: [],
+		);
+		return {
+			events:
+				dropped.length === 0 ? [] : [this.#invalidate(dropped, "fallback")],
+			message,
+		};
 	}
 
 	partial(stopReason: "error" | "cancelled") {
@@ -747,7 +872,7 @@ class MessagesParser implements StreamParser {
 			content: this.#content(),
 			model: this.#model,
 			stop_reason: stopReason,
-			usage: this.#usage,
+			usage: this.#withCost(),
 		});
 	}
 }
@@ -773,7 +898,7 @@ export function streamAnthropicMessages(
 	options: StreamOptions,
 ): AsyncGenerator<StreamEvent> {
 	const { body, refs } = render(entry, request, options);
-	const effort = resolveEffort(entry, request.reasoning_effort);
+	const beta = betas(entry, request);
 	return runStream(
 		options,
 		{
@@ -783,9 +908,7 @@ export function streamAnthropicMessages(
 				accept: "text/event-stream",
 				"anthropic-version": anthropicVersion,
 				"x-api-key": options.apiKey,
-				...(checksPrefix(entry, effort)
-					? { "anthropic-beta": prefixCheckBeta }
-					: {}),
+				...(beta.length === 0 ? {} : { "anthropic-beta": beta.join(",") }),
 			},
 			body,
 		},

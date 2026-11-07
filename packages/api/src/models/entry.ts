@@ -59,6 +59,14 @@ export interface ChatCompat {
 	max_tokens_field?: "max_tokens" | "max_completion_tokens";
 }
 
+/** 服务端拒绝回答时允许接着回答的模型（Anthropic 的 `fallbacks`），按它的价格计费。 */
+export interface FallbackModel {
+	/** 发给服务的模型名。 */
+	model: string;
+	/** 条目本身有价格时必写。 */
+	price?: ModelPrice;
+}
+
 /**
  * 模型清单的一个条目：模型用哪个协议、在哪个服务上、能力和价格。runtime 只发清单里的 ID，
  * 地址、协议和价格一律以清单为准。能力标记没写时按不支持处理。
@@ -91,6 +99,11 @@ export interface ModelEntry {
 	 * `thinking-binding-controls-2026-08-01` 和 `prefix_mismatch_behavior: "error"`。
 	 */
 	prefix_check?: boolean;
+	/**
+	 * 服务端拒绝回答时允许换哪些模型接着回答（Anthropic 的 `fallbacks`，按顺序尝试）。没写或为空时不发
+	 * 回退列表：没有允许回退目标的模型收到回退列表会返回 400。
+	 */
+	allowed_fallback_models?: FallbackModel[];
 	/** `openai.chat` 的兼容差异。 */
 	compat?: ChatCompat;
 }

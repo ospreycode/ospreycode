@@ -18,6 +18,7 @@ import type {
 } from "../src/models/entry.ts";
 import type { ProtocolName, ReasoningEffort } from "../src/protocol/index.ts";
 import {
+	fallbackModels,
 	modelCorrections,
 	modelsDevCommit,
 	type ServiceSpec,
@@ -408,6 +409,20 @@ async function main(): Promise<void> {
 				toEntry(service, spec, id, await loadModel(spec.provider, id)),
 			);
 		}
+	}
+	for (const [id, fallbacks] of Object.entries(fallbackModels)) {
+		const entry = entries.find((candidate) => candidate.id === id);
+		if (entry === undefined) throw new Error(`回退表里的 ${id} 不在清单里`);
+		entry.allowed_fallback_models = fallbacks.map((fallbackId) => {
+			const fallback = entries.find((candidate) => candidate.id === fallbackId);
+			if (fallback?.service !== entry.service) {
+				throw new Error(`${id} 的回退模型 ${fallbackId} 不在同一个服务上`);
+			}
+			return {
+				model: fallback.model,
+				...(fallback.price === undefined ? {} : { price: fallback.price }),
+			};
+		});
 	}
 	writeFileSync(
 		output,

@@ -68,6 +68,16 @@ export const services: Record<string, ServiceSpec> = {
 	},
 };
 
+/**
+ * Anthropic 允许服务端拒绝后接着回答的模型，按顺序尝试；照 pi 的 `ALLOWED_FALLBACK_MODELS`
+ * （earendil-works/pi v1.5.0 的 `packages/ai/catalog/providers/anthropic.ts`）。生成时连同回退模型的
+ * 价格写进条目的 `allowed_fallback_models`。没列出的模型不发回退列表：Haiku 5.5 收到回退列表返回 400。
+ */
+export const fallbackModels: Record<string, string[]> = {
+	"claude-fable-5": ["claude-opus-4-8", "claude-opus-5"],
+	"claude-opus-5": ["claude-opus-4-8"],
+};
+
 /** 按模型的修正：models.dev 没有或和本项目核实的结论不一致的字段，覆盖生成的结果。 */
 export const modelCorrections: Record<string, ModelFields> = {
 	// Claude 5.1 起的模型检查推理内容之前的内容，见 docs/packages/api.md 的前缀校验失败

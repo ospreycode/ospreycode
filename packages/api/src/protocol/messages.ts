@@ -60,11 +60,27 @@ export interface ReasoningBlock {
 	origin: Origin;
 }
 
+/**
+ * 服务端回退的分界（Anthropic 的 `fallback` 块）：之前的内容由 `from` 写出，之后的由 `to` 接着写。
+ * 原样留在原位，只发回同一协议和服务；最后一个分界之前的推理内容和工具调用作废。
+ */
+export interface FallbackBlock {
+	type: "fallback";
+	from: string;
+	to: string;
+	/** 产生它的协议和服务，`model` 是接着回答的模型。 */
+	origin: Origin;
+}
+
 /** user 消息和工具结果里可以放的内容块。 */
 export type UserContent = TextBlock | ImageBlock;
 
 /** 模型回复里的内容块。 */
-export type AssistantContent = TextBlock | ReasoningBlock | ToolCallBlock;
+export type AssistantContent =
+	| TextBlock
+	| ReasoningBlock
+	| ToolCallBlock
+	| FallbackBlock;
 
 /**
  * system 级的指令：会话的第一条消息是系统指令，之后出现的是会话中追加的指令

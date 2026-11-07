@@ -55,6 +55,26 @@ export const builtinModels: readonly ModelEntry[] = [
 			cache_read: 1,
 			cache_write: 12.5,
 		},
+		allowed_fallback_models: [
+			{
+				model: "claude-opus-4-8",
+				price: {
+					input: 5,
+					output: 25,
+					cache_read: 0.5,
+					cache_write: 6.25,
+				},
+			},
+			{
+				model: "claude-opus-5",
+				price: {
+					input: 5,
+					output: 25,
+					cache_read: 0.5,
+					cache_write: 6.25,
+				},
+			},
+		],
 	},
 	{
 		id: "claude-opus-5-5",
@@ -106,6 +126,17 @@ export const builtinModels: readonly ModelEntry[] = [
 			cache_read: 0.5,
 			cache_write: 6.25,
 		},
+		allowed_fallback_models: [
+			{
+				model: "claude-opus-4-8",
+				price: {
+					input: 5,
+					output: 25,
+					cache_read: 0.5,
+					cache_write: 6.25,
+				},
+			},
+		],
 	},
 	{
 		id: "claude-opus-4-8",

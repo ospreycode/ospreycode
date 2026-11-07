@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type {
 	AssistantMessage,
+	BlockRef,
+	Invalidation,
 	Message,
 	ToolCallBlock,
 	ToolResultMessage,
@@ -59,6 +61,9 @@ function isCancellation(error: unknown): boolean {
 	);
 }
 
+/** 一次模型请求的结果，以及发出的 assistant 消息各留下了原消息里的哪些块。 */
+type Attempt = ModelRequestResult & { kept: Map<string, number[]> };
+
 /**
  * 推进 task：请求模型、执行工具、处理结果，直到模型给出最终回复、出错或被取消。
  * 同一时间只有一个 task；task 的开始和结束由 Host 决定，这里只报告结束。
@@ -69,6 +74,8 @@ export class AgentLoop {
 	#tools: Map<string, ToolSpec>;
 	#registry: ReadonlyMap<string, ToolSpec>;
 	#history: Message[];
+	/** 作废的块：原样留在历史里，组装之后的请求时跳过，已发出的前缀不变。 */
+	#invalidated = new Map<string, Set<number>>();
 	#task: AbortController | undefined;
 	#state: StatusResult["state"] = "idle";
 	#activeToolCalls = new Set<string>();
@@ -156,22 +163,40 @@ export class AgentLoop {
 	}
 
 	async #runTurns(signal: AbortSignal): Promise<TaskEndParams> {
+		let prefixRetried = false;
 		for (;;) {
-			const response = await this.#requestModel(signal);
-			if (response === "cancelled") return { outcome: "cancelled" };
-			const { message, error } = response;
+			const attempt = await this.#requestModel(signal);
+			if (attempt === "cancelled") return { outcome: "cancelled" };
+			const { message, error } = attempt;
 			if (error !== undefined) {
+				// 历史只追加，出现这个错误说明有缺陷或存储被改过：去掉出错的推理块起之后的推理内容，再试一次
+				if (
+					error.category === "reasoning_prefix_mismatch" &&
+					error.block !== undefined &&
+					!prefixRetried
+				) {
+					prefixRetried = true;
+					await this.#dropReasoningFrom(error.block, attempt.kept);
+					continue;
+				}
 				return {
 					outcome: "failed",
 					error: `${error.category}: ${error.message}`,
 				};
 			}
-			this.#history.push(message);
 			switch (message.stop_reason) {
-				case "tool_use":
-					this.#history.push(...(await this.#runTools(message, signal)));
+				case "tool_use": {
+					const results = await this.#runTools(message, signal);
+					if (results.length === 0) {
+						return {
+							outcome: "failed",
+							error: "回复以 tool_use 结束，但其中的工具调用都已作废",
+						};
+					}
+					this.#history.push(...results);
 					if (signal.aborted) return { outcome: "cancelled" };
 					break;
+				}
 				case "pause_turn":
 					break;
 				case "end_turn":
@@ -190,11 +215,73 @@ export class AgentLoop {
 		}
 	}
 
-	async #requestModel(
-		signal: AbortSignal,
-	): Promise<ModelRequestResult | "cancelled"> {
+	/** 发给模型的历史：跳过作废的块，作废后什么都不剩的回复整条跳过。 */
+	#sent(): { messages: Message[]; kept: Map<string, number[]> } {
+		const messages: Message[] = [];
+		const kept = new Map<string, number[]>();
+		for (const message of this.#history) {
+			const dropped = this.#invalidated.get(message.message_id);
+			if (message.role !== "assistant" || dropped === undefined) {
+				messages.push(message);
+				continue;
+			}
+			const indices = message.content.flatMap((_, index) =>
+				dropped.has(index) ? [] : [index],
+			);
+			if (indices.length === 0) continue;
+			kept.set(message.message_id, indices);
+			messages.push({
+				...message,
+				content: message.content.filter((_, index) => !dropped.has(index)),
+			});
+		}
+		return { messages, kept };
+	}
+
+	/** 记下作废的块，经 `record/append` 上报给 Host。 */
+	async #invalidate(invalidation: Invalidation): Promise<void> {
+		for (const { message_id, index } of invalidation.blocks) {
+			const set = this.#invalidated.get(message_id) ?? new Set<number>();
+			set.add(index);
+			this.#invalidated.set(message_id, set);
+		}
+		await this.#channel.notify("record/append", {
+			event_id: randomUUID(),
+			event: { type: "blocks.invalidated", data: invalidation },
+		});
+	}
+
+	/** 前缀校验失败的推理块起，之后的推理内容都不再发送；留下的前段推理块照样有效。 */
+	async #dropReasoningFrom(
+		block: BlockRef,
+		kept: Map<string, number[]>,
+	): Promise<void> {
+		const start = this.#history.findIndex(
+			(message) => message.message_id === block.message_id,
+		);
+		if (start === -1) {
+			throw new Error(`前缀校验失败的块不在历史里：${block.message_id}`);
+		}
+		const first = kept.get(block.message_id)?.[block.index] ?? block.index;
+		const blocks = this.#history
+			.slice(start)
+			.flatMap((message, offset) =>
+				message.role === "assistant"
+					? message.content.flatMap((content, index) =>
+							content.type === "reasoning" && (offset > 0 || index >= first)
+								? [{ message_id: message.message_id, index }]
+								: [],
+						)
+					: [],
+			);
+		await this.#invalidate({ blocks, reason: "reasoning_prefix_mismatch" });
+	}
+
+	async #requestModel(signal: AbortSignal): Promise<Attempt | "cancelled"> {
 		for (let attempt = 0; ; attempt++) {
 			this.#state = "model";
+			const sent = this.#sent();
+			const invalidations: Invalidation[] = [];
 			let response: ModelRequestResult;
 			try {
 				response = await this.#channel.request(
@@ -206,23 +293,46 @@ export class AgentLoop {
 							reasoning_effort: this.#config.model.reasoning_effort,
 							tool_choice: "auto",
 							cache_retention: "short",
-							messages: this.#history,
+							messages: sent.messages,
 							tools: [...this.#tools.values()].map((tool) => tool.declaration),
 						},
 					},
-					{ signal },
+					{
+						signal,
+						onStream: ({ params }) => {
+							if (params.event.type === "invalidate") {
+								invalidations.push(params.event.invalidation);
+							}
+						},
+					},
 				);
 			} catch (error) {
 				if (isCancellation(error)) return "cancelled";
 				throw error;
 			}
-			const { error } = response;
+			const { message, error } = response;
+			if (error === undefined) {
+				this.#history.push(message);
+				for (const invalidation of invalidations) {
+					await this.#invalidate(invalidation);
+				}
+			} else if (message.content.length > 0) {
+				// 流中途出错：已收到的部分照常记入会话并作废
+				this.#history.push(message);
+				await this.#invalidate({
+					blocks: message.content.map((_, index) => ({
+						message_id: message.message_id,
+						index,
+					})),
+					reason: "stream_error",
+				});
+			}
 			if (
 				error === undefined ||
 				(error.category !== "rate_limit" && error.category !== "overloaded") ||
 				attempt === maxRetries
 			) {
-				return response;
+				return { ...response, kept: sent.kept };
 			}
 			try {
 				await sleep(error.retry_after_ms ?? 1000 * 2 ** attempt, undefined, {
@@ -235,14 +345,16 @@ export class AgentLoop {
 		}
 	}
 
+	/** 执行这条回复里的工具调用；作废的不执行，也不补结果，它们不会再发给模型。 */
 	async #runTools(
 		message: AssistantMessage,
 		signal: AbortSignal,
 	): Promise<ToolResultMessage[]> {
 		this.#state = "tools";
+		const dropped = this.#invalidated.get(message.message_id);
 		const results: ToolResultMessage[] = [];
-		for (const block of message.content) {
-			if (block.type !== "tool_call") continue;
+		for (const [index, block] of message.content.entries()) {
+			if (block.type !== "tool_call" || dropped?.has(index)) continue;
 			// 取消后剩下的调用不再执行，补上结果，否则下一次模型请求格式不合法
 			results.push(
 				signal.aborted

@@ -413,6 +413,13 @@ export class HostSession implements ChannelHandlers {
 		if (run.runtimeEventIds.has(params.event_id)) return;
 		run.runtimeEventIds.add(params.event_id);
 		this.#events.runtime(run, params.event);
+		if (params.event.data.reason === "reasoning_prefix_mismatch") {
+			this.#events.session({
+				type: "warning",
+				message:
+					"模型服务报告推理内容的前缀校验失败：之后的推理内容不再发回，再试一次请求。这说明会话历史被改动过或有缺陷。",
+			});
+		}
 	}
 
 	/** 当前的 run。session 空闲或 run 已取消后，需要进行中 task 的请求以 `no_active_task` 拒绝。 */

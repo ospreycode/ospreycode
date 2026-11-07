@@ -1,6 +1,7 @@
 import type { ProtocolName, ReasoningEffort } from "../protocol/index.js";
 import type {
 	ChatCompat,
+	FallbackModel,
 	ModelEntry,
 	ModelPrice,
 	ModelPricePeriod,
@@ -244,6 +245,28 @@ function thinkingLevelMap(value: unknown, key: string): ThinkingLevelMap {
 	return result;
 }
 
+function fallbackModels(value: unknown, key: string): FallbackModel[] {
+	if (!Array.isArray(value)) throw new ModelConfigError(key, "要是表的数组");
+	return value.map((item, i) => {
+		const itemKey = `${key}[${i}]`;
+		const fields = table(item, itemKey);
+		const unknown = Object.keys(fields).find(
+			(name) => name !== "model" && name !== "price",
+		);
+		if (unknown !== undefined) {
+			throw new ModelConfigError(joinKey(itemKey, unknown), "不认识的键");
+		}
+		const model = nonEmptyString(fields.model, joinKey(itemKey, "model"));
+		if (fields.price === undefined) return { model };
+		const priceKey = joinKey(itemKey, "price");
+		const parsed = price(fields.price, priceKey);
+		return {
+			model,
+			price: { ...parsed, ...completeRates(parsed, priceKey) },
+		};
+	});
+}
+
 function boolean(value: unknown, key: string): boolean {
 	if (typeof value !== "boolean")
 		throw new ModelConfigError(key, "要是 true 或 false");
@@ -328,6 +351,9 @@ export function parseModelFields(value: unknown, key: string): ModelFields {
 			case "compat":
 				fields.compat = compat(field, fieldKey);
 				break;
+			case "allowed_fallback_models":
+				fields.allowed_fallback_models = fallbackModels(field, fieldKey);
+				break;
 			default:
 				if ((flags as readonly string[]).includes(name)) {
 					fields[name as (typeof flags)[number]] = boolean(field, fieldKey);
@@ -386,6 +412,19 @@ export function completeModel(
 	}
 	if (fields.price !== undefined) {
 		completeRates(fields.price, joinKey(key, "price"));
+		// 回退的模型作答时按它的价格计费，没有价格就算不出这次请求的费用
+		const unpriced = (entry.allowed_fallback_models ?? []).findIndex(
+			(fallback) => fallback.price === undefined,
+		);
+		if (unpriced !== -1) {
+			throw new ModelConfigError(
+				joinKey(
+					`${joinKey(key, "allowed_fallback_models")}[${unpriced}]`,
+					"price",
+				),
+				"模型有价格时，回退的模型也要写价格",
+			);
+		}
 	}
 	return entry;
 }

@@ -24,7 +24,7 @@
 | 受保护的路径和占位登记表、构建工具的缓存 | P1 | 未开始 | sandbox 的[受保护的路径](packages/sandbox.md#受保护的路径)和[构建工具的缓存](packages/sandbox.md#构建工具的缓存) |
 | 网络访问的审批 | P1 | 未开始 | sandbox 的[网络访问的审批](packages/sandbox.md#网络访问的审批) |
 | agent 进程的重启：从 session 记录重建发给模型的历史（切换沙盒模式、取消超时、异常退出、Linux 上发现新仓库） | P1 | 未开始 | agent-host 的 [agent 进程的重启](packages/agent-host.md#agent-进程的重启) |
-| 三种模型协议的转换、模型清单、原样重放、拒绝和回退的作废事件、前缀校验失败的恢复 | P1 | 进行中 | [api](packages/api.md) |
+| 三种模型协议的转换、模型清单、原样重放、拒绝和回退的作废事件、前缀校验失败的恢复 | P1 | 已完成 | [api](packages/api.md) |
 | token 估算（算 `max_tokens`、判断上下文超长） | P1 | 未开始 | api 的 [token 计数](packages/api.md#token-计数) |
 | 模型测试的每次运行费用账本、按 `api` 的错误类别重跑一次、不稳定测试的报告 | P1 | 未开始 | overview 的 [CI 和真实模型测试](overview.md#ci-和真实模型测试) |
 | loop，`read`、`edit`、`write`、`shell` 和 `request_permissions` 工具 | P1 | 进行中 | agent-runtime 的[工具执行](packages/agent-runtime.md#工具执行) |

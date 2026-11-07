@@ -68,3 +68,58 @@ test("不认识的字段、不合规的值和不全的定义都报出位置", ()
 		"models.m",
 	);
 });
+
+test("回退的模型写成表的数组；模型有价格时回退的模型也要写价格", () => {
+	const price = { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 };
+	const base = {
+		protocol: "anthropic.messages",
+		service: "anthropic",
+		base_url: "https://api.anthropic.com/v1",
+		model: "claude-opus-5",
+		context_window: 1_000_000,
+		max_output_tokens: 128_000,
+		price,
+	};
+	const fields = parseModelFields(
+		{
+			...base,
+			allowed_fallback_models: [{ model: "claude-opus-4-8", price }],
+		},
+		"models.m",
+	);
+	expect(
+		completeModel("m", fields, "models.m").allowed_fallback_models,
+	).toEqual([{ model: "claude-opus-4-8", price }]);
+	// 写空数组就不发回退列表
+	expect(parseModelFields({ allowed_fallback_models: [] }, "models.m")).toEqual(
+		{ allowed_fallback_models: [] },
+	);
+	expect(
+		keyOf(() =>
+			completeModel(
+				"m",
+				parseModelFields(
+					{ ...base, allowed_fallback_models: [{ model: "claude-opus-4-8" }] },
+					"models.m",
+				),
+				"models.m",
+			),
+		),
+	).toBe("models.m.allowed_fallback_models[0].price");
+	expect(
+		keyOf(() =>
+			parseModelFields(
+				{ allowed_fallback_models: [{ model: "x", tier: 1 }] },
+				"models.m",
+			),
+		),
+	).toBe("models.m.allowed_fallback_models[0].tier");
+	expect(
+		keyOf(() =>
+			parseModelFields(
+				{ allowed_fallback_models: [{ model: "x", price: { input: 1 } }] },
+				"models.m",
+			),
+		),
+	).toBe("models.m.allowed_fallback_models[0].price");
+});

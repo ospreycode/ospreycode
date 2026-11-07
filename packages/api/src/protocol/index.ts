@@ -2,6 +2,7 @@ export type { ErrorCategory, ModelErrorInfo } from "./errors.js";
 export type {
 	AssistantContent,
 	AssistantMessage,
+	FallbackBlock,
 	ImageBlock,
 	Message,
 	Origin,

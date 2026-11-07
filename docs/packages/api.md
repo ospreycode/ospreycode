@@ -88,7 +88,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 内置清单随 `api` 包发布，开发时由脚本生成，用户在用户级配置里补充（见 agent-host 的[配置项](agent-host.md#配置项)）。
 
-- **字段**照 pi 的 `Model`，名字用 snake_case，和配置文件里 `[models.<ID>]` 的键相同：`protocol`、`service`、`base_url`、`model`、`context_window`、`max_input_tokens`、`max_output_tokens`、`price`、`images`、`thinking_level_map`、`system_updates`（能在中途追加 system 级指令）、`tool_updates`（能在中途增减工具）、`prefix_check`（Anthropic 会做前缀校验）和 `openai.chat` 的 `compat`。能力标记没写时按不支持处理；`compat` 没写的项按 OpenAI 自己的 Chat Completions 的行为。费用照 pi 计算：按总输入（输入加缓存读写）选价格档（`price.tiers`），整次请求按这一档计费；分时段的价格写成 UTC 的星期几、时段和倍数（`price.periods`，如 DeepSeek 工作日高峰加倍，节假日判断不了、按高峰价估）。某个服务上的限制写成这个服务上单独的条目，例如 OpenAI 的 Chat Completions 带工具时只能不推理，就把 `thinking_level_map` 写成只有 `off = "none"`。
+- **字段**照 pi 的 `Model`，名字用 snake_case，和配置文件里 `[models.<ID>]` 的键相同：`protocol`、`service`、`base_url`、`model`、`context_window`、`max_input_tokens`、`max_output_tokens`、`price`、`images`、`thinking_level_map`、`system_updates`（能在中途追加 system 级指令）、`tool_updates`（能在中途增减工具）、`prefix_check`（Anthropic 会做前缀校验）、`allowed_fallback_models`（拒绝时允许接着回答的模型和它们的价格，见[拒绝和回退](#拒绝和回退)）和 `openai.chat` 的 `compat`。能力标记没写时按不支持处理；`compat` 没写的项按 OpenAI 自己的 Chat Completions 的行为。费用照 pi 计算：按总输入（输入加缓存读写）选价格档（`price.tiers`），整次请求按这一档计费；分时段的价格写成 UTC 的星期几、时段和倍数（`price.periods`，如 DeepSeek 工作日高峰加倍，节假日判断不了、按高峰价估）。某个服务上的限制写成这个服务上单独的条目，例如 OpenAI 的 Chat Completions 带工具时只能不推理，就把 `thinking_level_map` 写成只有 `off = "none"`。
 - **数据来源**：`anomalyco/models.dev`（MIT）固定 commit 下的 TOML 源文件。models.dev 发布的 v2 数据（`https://models.dev/experimental/v2.0/api.json`）就是由这些文件生成的，但它不能按 commit 取，所以生成脚本（`packages/api/scripts/generate-models.ts`）经 GitHub 的 REST 接口按 commit 读收录的服务和模型的源文件，按 models.dev 的 generate-v2 合并规范定义和服务文件，严格校验用到的字段（用了不认识的价格条件、推理 token 单独计价等表达不了的写法时报错）；再叠加 `api` 自己维护的修正层（`scripts/model-corrections.ts`）：收录哪些服务和模型、各服务的协议和地址、`openai.chat` 的兼容差异、`prefix_check`，以及和本项目核实的结论不一致的字段。只收录能调用工具、用 effort 控制推理（或不推理）的对话模型。生成后抽样和官方定价页核对，models.dev 有漏项。
 - 生成结果提交进仓库，构建不联网，价格变化直接出现在 diff 里，发布内容可以复现。
 - 清单不单独发包：它要随 `api` 的转换规则一起变，所有包也用同一个版本号。改价格或加模型就发一个所有包都升的 patch 版本，走正常的发布流程。
@@ -109,9 +109,9 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 **同一个模型继续对话时，原样带回各家特有的内容**（Anthropic 推理内容的签名、OpenAI Responses 的加密推理内容），作为不透明的数据附在消息上，记下来自哪个协议和模型。
 
-- 模型以实际回答的模型为准：服务端的拒绝回退（Anthropic 的 beta 参数 `fallbacks`）可能换一个模型回答，用量计价、推理内容的归属和 Host 的模型检查都按实际的模型。
-- 流式响应中途回退时 `message_start` 里的 `model` 仍是原来的模型，实际的模型从 `fallback` 块或 `usage.iterations` 读；费用按 `usage.iterations` 逐次计算，顶层的 usage 只含作答的那一次。回退之后约一小时内，后面的轮次可能直接由回退的模型回答且没有 `fallback` 块，要从 `usage.iterations` 里的 `fallback_message` 和响应的 `model` 字段识别。
-- 只给出明确的回退模型列表（要在该模型的 `allowed_fallback_models` 里），不用由服务端选模型的 `fallbacks: "default"`，因为 Host 要检查模型。
+- 模型以实际回答的模型为准：服务端的拒绝回退（Anthropic 的 beta 参数 `fallbacks`，beta header `server-side-fallback-2026-07-01`）可能换一个模型回答，用量计价、推理内容的归属和 Host 的模型检查都按实际的模型。
+- 流式响应中途回退时 `message_start` 里的 `model` 仍是原来的模型，实际的模型从 `fallback` 块或 `usage.iterations` 读；费用按 `usage.iterations` 逐次用各次的模型的价格计算，顶层的 usage 只含作答的那一次。回退之后约一小时内，后面的轮次可能直接由回退的模型回答且没有 `fallback` 块，要从 `usage.iterations` 里的 `fallback_message` 和响应的 `model` 字段识别。`message` 条目可能不带 `model`（经中转服务实测），这时按请求的模型计。
+- 只给出明确的回退模型列表，不用由服务端选模型的 `fallbacks: "default"`，因为 Host 要检查模型。列表照 pi 写在修正层（`scripts/model-corrections.ts` 的 `fallbackModels`，取自 pi v1.5.0 的 `ALLOWED_FALLBACK_MODELS`），生成时连同回退模型的价格写进条目的 `allowed_fallback_models`；用户级配置可以按条目覆盖，写空数组就不发。模型有价格时，回退的模型也要写价格，否则算不出这次请求的费用。
 
 **换了模型或协议时，按固定规则处理带不过去的内容。** 文本、工具调用和工具结果照常转换，工具调用编号按目标协议改写并保留对应关系。推理内容按协议处理，处理都记入事件，不悄悄丢弃：
 
@@ -167,9 +167,9 @@ Anthropic 的拒绝可能在输出部分内容之后才到，这部分输出要�
 
 - session 照常追加原始输出，再追加作废事件，原始内容保留供显示和审计，组装下一次请求时跳过被作废的块。被作废的都是本轮输出，从未作为输入发过，已发出的前缀不变。
 - **拒绝**时作废本轮全部输出，task 以 `refused` 结束，带上 `stop_details` 里的类别、说明和建议的模型。继续之前要去掉或改写触发拒绝的那条输入，否则会接连被拒：P3 起 CLI 提示用户回退到那条输入之前、修改后重发；P3 之前没有回退，提示用户新开 session、改写请求后重试。不自动分叉，也不改写已有记录。
-- **回退**时文本和 `fallback` 块原位保留，部分输出里的文本由回退模型接着写；最后一个 `fallback` 块之前的上述内容作废。工具调用在回复完整结束后才执行，被作废的不会执行。Haiku 5.5 没有回退：给出回退列表会返回 400，清单要标明。
+- **回退**时文本和 `fallback` 块原位保留，部分输出里的文本由回退模型接着写；最后一个 `fallback` 块之前的上述内容作废。工具调用在回复完整结束后才执行，被作废的不会执行。Haiku 5.5 没有回退：给出回退列表会返回 400，清单里不给它回退列表。pi 遇到中途回退直接报错，这里按作废处理，回复照常可用。
 - OpenAI 的 `refusal` 内容块和 Chat 的 `message.refusal` 是模型写出的拒绝说明，照常保留；`incomplete_details.reason` 和 Chat 的 `finish_reason` 为 `content_filter` 时是过滤器截断了输出，按拒绝处理并作废本轮输出。
-- 中途拒绝、中途回退、回退模型被限流后返回拒绝这三种流用 `testing` 的脚本模型覆盖，真实模型难以稳定触发。
+- 中途拒绝、中途回退、回退模型被限流后返回拒绝这三种流用 `testing` 的脚本模型覆盖，真实模型难以稳定触发。脚本模型按和转换模块相同的规则发出作废事件。
 
 ## 前缀校验失败
 
@@ -224,7 +224,7 @@ P1：
 - 用 `input_tokens` 对比实测 `openai.responses` 换模型后被略去的推理是否计入 `input_tokens`、GPT-6 各型号之间能否复用推理、换成另一个组织的密钥后是被略去还是报错。
 - 用便宜的模型实测工具结果里的图片在 `openai.chat`、Responses 和 Anthropic `is_error` 为真这三种情况下的处理。
 - 实测纯工具循环中途产生的 Host 通知放在 `tool_result` 之后，会不会被 Sonnet 5.5 和 Haiku 5.5 忽略。
-- 用 Haiku 5.5 故意改动历史，核对前缀校验失败的错误体里有没有错误码、请求下标能否准确映射回内部的块。
+- 用 Haiku 5.5 故意改动历史，核对前缀校验失败的错误体里有没有错误码、请求下标能否准确映射回内部的块。经中转服务实测（2026-11-07）做不到：改动推理块之前的 user 消息照常返回 200，也没有 `input_transformations`，中转服务可能没有转发 beta header 或 `prefix_mismatch_behavior`；签名被改坏时返回 400，错误信息末尾被加上 `(request id: …)`，`error.type` 为 `<nil>`。要在能直连 Anthropic 的账号上核对；映射本身由脚本模型的测试覆盖。
 - 用测试密钥在 Opus 5.5、Haiku 5.5 和 GPT-6.1 Sol 上，对代码、JSON 格式的工具输出、中文和日志核对按 UTF-8 字节除以 3 的估算是否偏低。
 
 P3：

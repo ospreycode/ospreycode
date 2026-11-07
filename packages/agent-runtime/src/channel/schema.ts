@@ -78,6 +78,16 @@ const ReasoningBlock = Type.Object(
 	closed,
 );
 
+const FallbackBlock = Type.Object(
+	{
+		type: Type.Literal("fallback"),
+		from: Type.String(),
+		to: Type.String(),
+		origin: Origin,
+	},
+	closed,
+);
+
 const UserContent = Type.Union([TextBlock, ImageBlock]);
 
 const Usage = Type.Object(
@@ -134,7 +144,9 @@ const AssistantMessage = Type.Object(
 	{
 		role: Type.Literal("assistant"),
 		message_id: Id,
-		content: Type.Array(Type.Union([TextBlock, ReasoningBlock, ToolCallBlock])),
+		content: Type.Array(
+			Type.Union([TextBlock, ReasoningBlock, ToolCallBlock, FallbackBlock]),
+		),
 		protocol: ProtocolName,
 		service: Type.String(),
 		requested_model: Type.String(),

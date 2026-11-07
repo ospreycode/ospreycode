@@ -113,6 +113,8 @@ function assistantItems(
 					arguments: block.arguments,
 				}),
 			];
+		case "fallback":
+			return [];
 	}
 }
 
