@@ -1,8 +1,5 @@
-import type {
-	ProtocolName,
-	Usage,
-	UserContent,
-} from "@ospreycode/api/protocol";
+import type { RawPart } from "@ospreycode/api";
+import type { Usage, UserContent } from "@ospreycode/api/protocol";
 import type {
 	ApprovalAnswer,
 	NetworkRequest,
@@ -98,18 +95,8 @@ export interface ProcessExited {
 }
 
 /**
- * `protocol.raw` 的内容：一次请求的 `system`、`tools` 或一条消息在目标协议里的原始 JSON 文本。
- * 同一协议、服务和 API 版本上继续对话时按它原样重放；存原文而不存解析后的对象，
- * JSON 往返会改变键的顺序和数字的写法。
+ * `protocol.raw` 的内容：一次请求的系统指令、工具声明或一条消息在目标协议里的原文，按片段保存
+ * （每段是一个 JSON 值的原文）。同一协议、服务和 API 版本上继续对话时按它原样重放；存原文而不存
+ * 解析后的对象，JSON 往返会改变键的顺序和数字的写法。不发给前端。
  */
-export interface ProtocolRaw {
-	part: "system" | "tools" | "message";
-	/** `part` 为 `message` 时对应的消息。 */
-	message_id?: string;
-	/** 对应的内部内容的 SHA-256，内部消息变了就重新转换。 */
-	content_sha256: string;
-	protocol: ProtocolName;
-	service: string;
-	api_version: string;
-	raw: string;
-}
+export type ProtocolRaw = RawPart;

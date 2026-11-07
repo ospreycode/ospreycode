@@ -14,6 +14,7 @@ import type {
 import type { LoadedCredential } from "../credentials/sources.js";
 import type { EventSink } from "../sessions/emitter.js";
 import { addUsage, emptyUsage, type Run } from "../sessions/run.js";
+import { RawCache } from "./raws.js";
 
 /** 模型代理用到的依赖。 */
 export interface ModelProxyOptions {
@@ -43,6 +44,7 @@ interface Attempt {
  */
 export class ModelProxy {
 	#options: ModelProxyOptions;
+	#raws = new RawCache();
 
 	constructor(options: ModelProxyOptions) {
 		this.#options = options;
@@ -107,6 +109,7 @@ export class ModelProxy {
 					fetch: this.#options.fetch,
 					signal,
 					cacheKey: this.#options.sessionId,
+					raws: this.#raws.store((part) => events.protocolRaw(run, part)),
 				},
 			)) {
 				if (event.type === "end") {

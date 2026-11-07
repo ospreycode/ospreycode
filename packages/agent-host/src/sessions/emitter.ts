@@ -9,7 +9,7 @@ import {
 } from "@ospreycode/session-store";
 import type { DiagnosticLog } from "../diagnostics/log.js";
 import type { EventBase, HostEvent, Stored, TaskScope } from "../sdk/events.js";
-import { recordFormatVersion } from "./events.js";
+import { type ProtocolRaw, recordFormatVersion } from "./events.js";
 import { newId } from "./ids.js";
 import type { Run } from "./run.js";
 
@@ -163,6 +163,11 @@ export class EventSink {
 	/** runtime 经通道上报的事件，Host 核实来源后写进 session 记录，不发给前端。 */
 	runtime(run: Run, event: RuntimeEvent): void {
 		this.#store(run, event.type, contractsVersion, event.data, "runtime");
+	}
+
+	/** 消息在目标协议里的原文：写进 session 记录，供原样重放，不发给前端。 */
+	protocolRaw(run: Run, raw: ProtocolRaw): void {
+		this.#store(run, "protocol.raw", recordFormatVersion, raw);
 	}
 
 	/** 只用于实时显示的流式增量，不存储。 */
