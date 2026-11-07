@@ -56,7 +56,10 @@ export {
 	type ToolCallRunResult,
 	type ToolCallStartedParams,
 } from "./channel/protocol.js";
-export { createRuntimeMessageValidator } from "./channel/schema.js";
+export {
+	createRuntimeMessageValidator,
+	protocolSchemas,
+} from "./channel/schema.js";
 export {
 	contractsVersion,
 	type DenialReason,

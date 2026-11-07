@@ -459,10 +459,11 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 - 事件类型：`session.started`、`session.ended`；`task.started`、`task.ended`；`run.started`（子 agent 带父字段）；`message.completed`；`tool_call.started`、`tool_call.completed`（结果的状态见[工具调用的处理](#工具调用的处理)）；`approval.requested`、`approval.decided`（被策略拒绝时 `decision` 为 `denied_by_policy`）；`elicitation.requested`、`elicitation.answered`；`memory.candidates`（task 结束时列出候选）、`memory.updated`；后台命令、压缩、hooks、进程和输入插入的事件；`warning`、`error`。
 - 需要前端回答的请求都作为 `approval.requested` 发出，用 `kind` 区分：`tool_call`（工具调用和权限申请）、`network`（未放行的域名）、`budget`（超出预算后是否追加，见[预算](#预算)）、`resume_uncertain`（恢复时结果不确定的调用跳过还是重新执行，见[中断后的恢复](#中断后的恢复)）、`extension_changed`（扩展内容变了要重新确认）。`session.respond` 接受这些请求的决定和 elicitation 的表单答复。
 - `message.completed` 带这条回复的用量和费用，`task.ended` 和 `session.ended` 带合计，脚本和评测不用读存储文件。
-- 流式增量（文本、工具参数和输出）只发给 `sdk/` 的订阅方，不存储，也不写进 CLI 的 JSON 输出。
+- 流式增量（文本、工具参数和输出）是 `model.delta`（带 api 的流式事件，`end` 除外）和 `tool_call.output`，只发给 `sdk/` 的订阅方，不存储，也不写进 CLI 的 JSON 输出。
 - 每个 task 以 `task.ended` 结束，带 `outcome`：`completed`、`failed`、`budget_exceeded`、`cancelled`、`refused`（模型拒绝回答，见 api 的[拒绝和回退](api.md#拒绝和回退)）。
-- 任何模式下关闭 session 时都发 `session.ended`，带关闭原因；session 打开之前就失败（配置错误、工作区锁冲突、会话开始的 hooks 阻止、`initialize` 超时）时，只写一条带 `format_version` 的 `error` 事件，退出码按上文。
-- 非交互模式最后一条是 `session.ended`，另带主任务的 `outcome` 和退出码：`completed` 为 0，`failed` 和 `refused` 为 1，`budget_exceeded` 为 3，`cancelled` 按信号为 130（SIGINT）或 143（SIGTERM）；2 留给参数或配置错误，超出预算不用它，因为脚本常把 2 当作参数错误。第一个信号取消任务并写出 `task.ended` 和 `session.ended`，第二个信号立即退出。
+- 任何模式下关闭 session 时都发 `session.ended`，带关闭原因（`closed`、`agent_exited`、`error`）；session 打开之前就失败（配置错误、工作区锁冲突、会话开始的 hooks 阻止、`initialize` 超时）时，只写一条带 `format_version`、不带 `session_id` 的 `error` 事件，退出码按上文：参数、配置、凭据和工作区的错误为 2，其余为 1。
+- 格式由本包的 `sdk/` 定义：事件的类型、退出码（`exitCodeFor`、`startupExitCode`）、JSON 输出的一行（`toJsonLine`）和哪些事件写进 JSON 输出（`inJsonOutput`），CLI 照此输出。对外事件、api 的流式事件和 agent-runtime 的工具事件写在同一份 schema（`hostEventSchema`）里，内部协议和工具调用的部分取通道检查用的那份。schema 描述当前版本，Host 的测试按它检查发出的每个事件；消费方仍按上文忽略不认识的部分。
+- 非交互模式最后一条是 `session.ended`，另带主任务的 `outcome` 和退出码 `exit_code`：`completed` 为 0，`failed` 和 `refused` 为 1，`budget_exceeded` 为 3，`cancelled` 按信号为 130（SIGINT）或 143（SIGTERM）；2 留给参数或配置错误，超出预算不用它，因为脚本常把 2 当作参数错误。第一个信号取消任务并写出 `task.ended` 和 `session.ended`，第二个信号立即退出。
 
 ### 交互界面
 
@@ -483,7 +484,6 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 
 - P0：用真实模型验证批准、取消、事件、模型代理和 MCP 工具调用。
 - P0：在 Linux（bwrap）上重复 fd 3 的继承检查，以及 `ptrace_scope` 为 0 和 1 时同一沙盒的进程能否用 `pidfd_getfd` 复制它。
-- P0：把对外事件和 api 的流式事件、agent-runtime 的工具事件写进同一份 schema。
 - P1：在 Linux 上实测根目录的布局（tmpfs 加绑定回子目录，符号链接和硬链接读不到 `data/`）。
 - P1：用真实任务的请求次数和费用分布核对默认预算。
 - P1：检查 Terminal.app、iTerm2、Ghostty、VS Code 终端和 tmux 上 Enter 和 Alt+Enter 能否区分，中文输入法和宽字符是否正常。

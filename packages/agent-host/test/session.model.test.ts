@@ -55,4 +55,5 @@ test("真实模型经通道请求模型、由 Host 执行 shell，完成任务",
 		event.type === "tool_call.completed" ? [event.result.status] : [],
 	);
 	expect(results).toContain("succeeded");
+	expect(log.invalid).toEqual([]);
 });

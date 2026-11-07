@@ -58,6 +58,10 @@ export interface SessionEndedEvent extends EventBase {
 	type: "session.ended";
 	reason: SessionEndReason;
 	usage: Usage;
+	/** 非交互模式下主任务的结果。 */
+	outcome?: TaskOutcome;
+	/** 非交互模式下 CLI 的退出码。 */
+	exit_code?: number;
 }
 
 /** `task.started`。 */
@@ -130,6 +134,17 @@ export interface WarningEvent extends EventBase {
 /** `error`：导致 task 或 session 失败的问题。 */
 export interface ErrorEvent extends EventBase {
 	type: "error";
+	message: string;
+}
+
+/**
+ * session 打开之前就失败（参数或配置错误、`initialize` 超时等）时唯一的一条事件：
+ * 还没有 session，所以带 `format_version`、不带 `session_id`。
+ */
+export interface StartupErrorEvent {
+	type: "error";
+	format_version: number;
+	time: string;
 	message: string;
 }
 

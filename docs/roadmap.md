@@ -15,7 +15,7 @@
 | 标识（含 `user_id`、`agent_id` 和子 agent 的父子字段）、内部协议、工具调用、事件、权限和检查点的格式 | P0 | 已完成 | 各包文档；agent-host 的[标识](packages/agent-host.md#标识) |
 | Host 和 agent 进程之间的通道（P0 的操作、消息格式、`initialize` 握手）、agent 进程的入口 | P0 | 已完成 | agent-runtime 的[通道](packages/agent-runtime.md#通道)；agent-host 的[进程形态和通信](packages/agent-host.md#进程形态和通信) |
 | Host 的模块骨架（sdk、config、credentials、redaction、project、sessions、channel、actions、model-proxy、processes） | P0 起，随各阶段补全 | 进行中 | agent-host 的[模块](packages/agent-host.md#模块) |
-| 对外的事件格式和退出码 | P0 | 未开始 | agent-host 的[对外的事件格式](packages/agent-host.md#对外的事件格式) |
+| 对外的事件格式和退出码 | P0 | 已完成 | agent-host 的[对外的事件格式](packages/agent-host.md#对外的事件格式) |
 | 最小原型和最小评测入口 | P0 | 未开始 | overview 的[实施阶段](overview.md#实施阶段) |
 | 沙盒模式、命名权限配置、审批策略（含 `granular` 的七个类别）、权限规则（命令、域名、MCP 工具三种）、越界申请（含 `unix_sockets`、`local_binding`） | P1 | 未开始 | [sandbox](packages/sandbox.md) |
 | macOS（Seatbelt）和 Linux（bubblewrap，Ubuntu 24.04）两个沙盒后端，辅助进程（离线、命令、按需单独启动的）；CI 上四个 runner 的真实沙盒测试 | P1 | 未开始 | sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)；overview 的[支持的平台](overview.md#支持的平台) |

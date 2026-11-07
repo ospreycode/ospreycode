@@ -7,16 +7,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HostEvent } from "@ospreycode/agent-host";
+import { type HostEvent, isHostEvent } from "@ospreycode/agent-host";
 import type { ModelEntry } from "@ospreycode/api";
 
-/** 收集一个 session 的事件，可以等某一类事件出现。 */
+/** 收集一个 session 的事件，可以等某一类事件出现；不符合对外事件 schema 的事件另记一份。 */
 export class EventLog {
 	readonly events: HostEvent[] = [];
+	readonly invalid: unknown[] = [];
 	#waiters: { match: (event: HostEvent) => boolean; resolve: () => void }[] =
 		[];
 
 	readonly push = (event: HostEvent): void => {
+		// 对外的事件要能序列化成 JSON，按 JSON 往返之后的值检查
+		if (!isHostEvent(JSON.parse(JSON.stringify(event))))
+			this.invalid.push(event);
 		this.events.push(event);
 		for (const waiter of this.#waiters.filter((w) => w.match(event))) {
 			waiter.resolve();

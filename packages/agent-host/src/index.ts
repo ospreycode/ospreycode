@@ -23,6 +23,7 @@ export type {
 	SessionEndedEvent,
 	SessionEndReason,
 	SessionStartedEvent,
+	StartupErrorEvent,
 	Stored,
 	TaskEndedEvent,
 	TaskScope,
@@ -34,12 +35,25 @@ export type {
 } from "./sdk/events.js";
 export { eventFormatVersion } from "./sdk/events.js";
 export {
+	type CancelSignal,
+	exitCodeFor,
+	inJsonOutput,
+	startupErrorEvent,
+	startupExitCode,
+	toJsonLine,
+} from "./sdk/format.js";
+export {
 	createHost,
 	type Host,
 	type HostOptions,
 	type OpenSessionOptions,
 	type Session,
 } from "./sdk/host.js";
+export {
+	hostEventSchema,
+	isHostEvent,
+	startupErrorEventSchema,
+} from "./sdk/schema.js";
 export type {
 	ApprovalDecided,
 	ApprovalRequested,

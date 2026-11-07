@@ -19,15 +19,19 @@ import {
 
 let dirs: TestDirectories;
 let session: Session | undefined;
+let logs: EventLog[];
 
 beforeEach(() => {
 	dirs = testDirectories();
 	session = undefined;
+	logs = [];
 });
 
 afterEach(async () => {
 	await session?.close();
 	dirs.cleanup();
+	// Host 发出的每个事件都要符合对外事件的 schema
+	for (const log of logs) expect(log.invalid).toEqual([]);
 });
 
 async function open(
@@ -35,6 +39,7 @@ async function open(
 	host: Partial<HostOptions> & { script?: Script } = {},
 ): Promise<Session> {
 	const { script, ...options } = host;
+	logs.push(log);
 	session = await createHost({
 		root: dirs.root,
 		env: dirs.env,

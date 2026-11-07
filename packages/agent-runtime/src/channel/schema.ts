@@ -304,6 +304,112 @@ const RuntimeEvent = Type.Object(
 	closed,
 );
 
+const ModelErrorInfo = Type.Object(
+	{
+		category: Type.Union([
+			Type.Literal("authentication"),
+			Type.Literal("permission"),
+			Type.Literal("billing"),
+			Type.Literal("rate_limit"),
+			Type.Literal("overloaded"),
+			Type.Literal("context_overflow"),
+			Type.Literal("request_too_large"),
+			Type.Literal("invalid_request"),
+			Type.Literal("reasoning_prefix_mismatch"),
+			Type.Literal("network"),
+		]),
+		message: Type.String(),
+		retry_after_ms: Type.Optional(Count),
+	},
+	closed,
+);
+
+const StreamDelta = Type.Union([
+	Type.Object({ type: Type.Literal("start"), model: Type.String() }, closed),
+	Type.Object(
+		{ type: Type.Literal("text_delta"), index: Count, text: Type.String() },
+		closed,
+	),
+	Type.Object(
+		{
+			type: Type.Literal("reasoning_delta"),
+			index: Count,
+			text: Type.String(),
+		},
+		closed,
+	),
+	Type.Object(
+		{
+			type: Type.Literal("tool_call_start"),
+			index: Count,
+			call_id: Type.String(),
+			name: Type.String(),
+		},
+		closed,
+	),
+	Type.Object(
+		{
+			type: Type.Literal("tool_call_delta"),
+			index: Count,
+			arguments: Type.String(),
+		},
+		closed,
+	),
+	Type.Object({ type: Type.Literal("tool_call_end"), index: Count }, closed),
+	Type.Object({ type: Type.Literal("usage"), usage: Usage }, closed),
+	Type.Object(
+		{ type: Type.Literal("invalidate"), invalidation: Invalidation },
+		closed,
+	),
+]);
+
+const StreamEvent = Type.Union([
+	...StreamDelta.anyOf,
+	Type.Object(
+		{
+			type: Type.Literal("end"),
+			message: AssistantMessage,
+			error: Type.Optional(ModelErrorInfo),
+		},
+		closed,
+	),
+]);
+
+const ToolCallStarted = Type.Object(
+	{
+		tool_call_id: Id,
+		call_id: Type.String(),
+		message_id: Id,
+		name: Type.String(),
+		arguments: Type.String(),
+		executor: Type.Union([Type.Literal("runtime"), Type.Literal("host")]),
+	},
+	closed,
+);
+
+const ToolCallCompleted = Type.Object(
+	{ tool_call_id: Id, result: ToolResult, duration_ms: Count },
+	closed,
+);
+
+/**
+ * 内部协议和工具调用格式的 schema，供组合别的 schema 使用：Host 的对外事件用它们，
+ * 和通道上的检查是同一份。
+ */
+export const protocolSchemas = {
+	userContent: UserContent,
+	message: Message,
+	assistantMessage: AssistantMessage,
+	usage: Usage,
+	modelErrorInfo: ModelErrorInfo,
+	streamEvent: StreamEvent,
+	/** `end` 以外的流式事件：只用于实时显示的增量。 */
+	streamDelta: StreamDelta,
+	toolResult: ToolResult,
+	toolCallStarted: ToolCallStarted,
+	toolCallCompleted: ToolCallCompleted,
+};
+
 const Empty = Type.Record(Type.String(), Type.Never());
 
 const ToolCallFields = {
@@ -388,6 +494,13 @@ sameType<Static<typeof Message>, Api.Message>(true);
 sameType<Static<typeof ModelRequest>, Api.ModelRequest>(true);
 sameType<Static<typeof ToolResult>, Contracts.ToolResult>(true);
 sameType<Static<typeof RuntimeEvent>, Contracts.RuntimeEvent>(true);
+sameType<Static<typeof ModelErrorInfo>, Api.ModelErrorInfo>(true);
+sameType<Static<typeof StreamEvent>, Api.StreamEvent>(true);
+sameType<Static<typeof StreamDelta>, Exclude<Api.StreamEvent, { type: "end" }>>(
+	true,
+);
+sameType<Static<typeof ToolCallStarted>, Contracts.ToolCallStarted>(true);
+sameType<Static<typeof ToolCallCompleted>, Contracts.ToolCallCompleted>(true);
 sameType<
 	{ [M in keyof typeof requestParams]: Static<(typeof requestParams)[M]> },
 	{
