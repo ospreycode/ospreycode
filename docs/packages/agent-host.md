@@ -46,6 +46,7 @@ agent-host/
 首版 Host 和 CLI 在同一个进程里，不常驻后台。
 
 - `sdk/` 按消息设计：调用的参数和返回值、事件、Host 发给前端的请求都能序列化成 JSON。批准和 elicitation 作为事件到达，前端用 `session.respond(requestId, decision)` 回复，不要求调用方传回调函数，SDK 的调用方因此可以在另一个进程里。
+- `createHost({root, env, fetch, streamModel, agentEntry})`：根目录和 Host 的环境变量由调用方传入，SDK 不读进程级的状态；`fetch`、`streamModel`（发起模型请求的函数，测试传入 `api` 的脚本模型）和 agent 进程的入口不传时用默认的。`openSession` 的选项里带接收事件的 `onEvent`，第一条事件 `session.started` 不会错过。
 - Host 用单独的进程组（`detached`）启动全部子进程：agent 进程、辅助进程、命令沙盒、本地 MCP server 和 hooks。终端的 Ctrl+C 只到 Host，由 Host 决定取消当前动作还是退出（见 [CLI](#cli)），子进程由 Host 按各自的结束方式收尾。
 
 ### 通道的连接
@@ -239,7 +240,9 @@ task 的开始和结束都由 Host 决定，runtime 只报告 task 结束。新�
 - **结果的状态**：成功、失败、运行中（转入后台）、已取消、超时、`interrupted`（结果不确定：异常退出时核对不上的文件工具、恢复时选择跳过的调用）、`denied`。`denied` 带 `reason`（`policy`、`user`、`hook`、`forbidden_rule`）和 `message`（用户或 hook 写的原文）；批准对话框允许用户在拒绝时输入一句话给模型。
 - **询问**：Host 把权限申请作为事件交给前端，再把用户的决定交给 Permission 重新检查。等待批准期间，同一轮里已获准、互不影响的调用可以继续。批准和取消只作用于对应的 run 和 tool call。
 - **切换审批策略**时重新评估全部挂起的询问，新策略下不该问的立即答为 `denied_by_policy`。
-- **前台命令的输出**：完整输出由 Host 写到 `output/<session>/<tool_call_id>`，经通道只流回上限以内的部分，结果带文件路径和总长度，模型用读文件工具续读，和后台命令同一套。
+- **前台命令的输出**：完整输出由 Host 写到 `output/<session>/<tool_call_id>`，经通道只流回上限以内的部分，结果带文件路径和总长度，模型用读文件工具续读，和后台命令同一套。交给模型的输出上限 32 KiB，超出时保留开头和结尾各一半，中间写明省略的字节数和文件路径。
+- **前台命令的进程**：命令退出、超时或被取消时，Host 结束它的整个进程组，留在后台的进程不跟着这条命令继续运行；要一直运行的进程用后台命令启动。
+- runtime 请求配置之外的模型按协议错误处理：它只会请求启动配置里的模型。转换模块抛出的错误（响应里出现没有列出的内容）让这次模型请求以"请求格式错误"失败，不让通道失效。
 - 单条命令的沙盒启动失败记 `failed`、原因 `sandbox_launch`；只有后端能力检查失败才关闭 session。
 - MCP 工具的声明属性由 Host 决定：按不只读、不能安全重复、不能和其他调用同时执行处理，不采信 server 的标注。
 

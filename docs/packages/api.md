@@ -99,6 +99,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 不用官方 SDK，`client/` 自己发请求：`fetch` 由调用方传入（Host 传 Node 内置的，或带代理的版本），SSE 按 WHATWG 的规则手写解析，`api` 不增加运行时依赖。
 
 - 不用 SDK 的原因：Anthropic 和 OpenAI 的 TS SDK 都会读环境变量和凭据文件、关不干净，并附带暴露系统和运行时版本的 `x-stainless-*` 头；它们自带的重试会和 loop 的重试叠加，让请求次数上限算错；剩下的累加和序列化功能不需要它们。
+- 对外的入口是 `streamModel(entry, request, {messageId, apiKey, fetch, signal})`，产出内部协议的流式事件，以唯一的 `end` 结束：服务报错、网络中断和取消都体现在 `end` 里（`stop_reason` 为 `error` 或 `cancelled`，前者另带错误类别），不抛出；只有转换模块的缺陷和没有列出的内容才抛出。`testing/` 的脚本模型用法相同。
 - `anthropic-version` 由 adapter 显式发送，P1 固定为 `2026-10-21`，换版本按破坏性改动处理。这个版本里发送 `temperature`、`top_p` 或 `top_k`，在 assistant 消息里直接放 `document` 块，或在 user 消息的文本上带 `citations`，都返回 400。
 - 代理不在 `api` 里处理，由 Host 传入的 `fetch` 决定（见 overview 的[语言和运行环境](../overview.md#语言和运行环境)）。
 - 流的空闲超时 300 秒，归入"网络中断和超时"。解析器用录制的真实流测试，包括兼容服务的非标准事件（没有 `event:` 的错误、注释心跳）。

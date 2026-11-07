@@ -17,6 +17,10 @@
 		"./protocol": {
 			"types": "./dist/protocol/index.d.ts",
 			"import": "./dist/protocol/index.js"
+		},
+		"./testing": {
+			"types": "./dist/testing/index.d.ts",
+			"import": "./dist/testing/index.js"
 		}
 	},
 	"files": [
@@ -28,5 +32,8 @@
 	},
 	"engines": {
 		"node": "^24.15.0 || >=26.0.0"
+	},
+	"devDependencies": {
+		"vitest": "5.0.5"
 	}
 }

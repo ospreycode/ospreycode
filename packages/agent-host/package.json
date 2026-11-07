@@ -30,7 +30,8 @@
 		"@ospreycode/memory": "0.1.0",
 		"@ospreycode/sandbox": "0.1.0",
 		"@ospreycode/session-store": "0.1.0",
-		"@ospreycode/skills": "0.1.0"
+		"@ospreycode/skills": "0.1.0",
+		"typebox": "1.4.3"
 	},
 	"devDependencies": {
 		"vitest": "5.0.5"

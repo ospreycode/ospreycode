@@ -261,7 +261,10 @@ export class ChannelPeer<
 					params: { request_id: id, ...notification.params },
 				}),
 		};
-		handler(params as never, context as HandlerContext<never>)
+		// 处理函数同步抛出的错误也要变成错误响应，不能让通道失效
+		new Promise<unknown>((resolve) =>
+			resolve(handler(params as never, context as HandlerContext<never>)),
+		)
 			.then(
 				(result) => this.#send({ id, result }),
 				(error: unknown) => {

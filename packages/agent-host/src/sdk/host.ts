@@ -1,0 +1,112 @@
+import { fileURLToPath } from "node:url";
+import { type StreamModel, streamModel } from "@ospreycode/api";
+import type { ApprovalAnswer } from "@ospreycode/sandbox";
+import {
+	ConfigError,
+	resolveSessionConfig,
+	type SessionOptions,
+} from "../config/session-config.js";
+import { readCredential } from "../credentials/sources.js";
+import { directLauncher } from "../processes/launchers.js";
+import {
+	checkSeparate,
+	prepareRoot,
+	resolveWorkspace,
+} from "../project/workspace.js";
+import { HostSession } from "../sessions/host-session.js";
+import type { HostEvent } from "./events.js";
+
+/** 创建 Host 的选项。SDK 不改进程级的状态，依赖都由调用方传入。 */
+export interface HostOptions {
+	/** Host 根目录，CLI 用 `~/.ospreycode`；不存在时以 0700 创建。 */
+	root: string;
+	/** Host 启动时的环境变量：传给沙盒的白名单变量和环境变量来源的凭据从这里取。 */
+	env: Readonly<Record<string, string | undefined>>;
+	/** 发模型请求用的 `fetch`，需要代理时传入带代理的版本；不传时用 Node 内置的。 */
+	fetch?: typeof globalThis.fetch;
+	/** 发起模型请求的函数；不传时按模型清单的协议发出真实请求。 */
+	streamModel?: StreamModel;
+	/** agent 进程的入口文件；不传时从 `@ospreycode/agent-runtime` 的 exports 找到，`cli` 打包后传入打包的文件。 */
+	agentEntry?: string;
+}
+
+/** 打开 session 的选项。 */
+export interface OpenSessionOptions extends SessionOptions {
+	/** 接收这个 session 的全部事件，第一条是 `session.started`，最后一条是 `session.ended`。 */
+	onEvent: (event: HostEvent) => void;
+}
+
+/** 一个打开的 session。 */
+export interface Session {
+	readonly id: string;
+	/** session 关闭后兑现，包括 agent 进程意外退出。 */
+	readonly ended: Promise<void>;
+	/** 在 session 空闲时开始一个 task，返回 `task_id`。 */
+	submit(input: string): Promise<string>;
+	/** 回答 `approval.requested`；询问已经有了结果时返回 false。 */
+	respond(requestId: string, answer: ApprovalAnswer): boolean;
+	/** 取消当前的 run，task 以 `cancelled` 结束。 */
+	cancel(): Promise<void>;
+	/** 关闭 session，结束其中的全部进程。 */
+	close(): Promise<void>;
+}
+
+/** 本地后端。CLI 和评测都只通过它使用 Host。 */
+export interface Host {
+	/**
+	 * 新建一个 session：检查配置和凭据，启动 agent 进程并完成握手。参数或配置有错时抛出
+	 * `ConfigError`、`CredentialError` 或 `WorkspaceError`，agent 进程没能启动时抛出 `AgentStartError`。
+	 */
+	openSession(options: OpenSessionOptions): Promise<Session>;
+}
+
+/** 创建 Host。 */
+export function createHost(options: HostOptions): Host {
+	const root = prepareRoot(options.root);
+	const agentEntry =
+		options.agentEntry ??
+		fileURLToPath(import.meta.resolve("@ospreycode/agent-runtime/agent"));
+	return {
+		async openSession(sessionOptions) {
+			const config = resolveSessionConfig(sessionOptions);
+			const workspace = resolveWorkspace(config.workspace);
+			checkSeparate(root, workspace);
+			if (config.sandboxMode !== "danger-full-access") {
+				throw new ConfigError(
+					`沙盒模式 ${config.sandboxMode} 需要的沙盒后端还没有接入，现在只能用 danger-full-access`,
+				);
+			}
+			const apiKey = readCredential(
+				config.credential.id,
+				config.credential.source,
+				{
+					workspace,
+					env: options.env,
+					platform: process.platform,
+				},
+			);
+			const session = await HostSession.open({
+				root,
+				config,
+				workspace,
+				apiKey,
+				hostEnv: options.env,
+				fetch: options.fetch ?? globalThis.fetch,
+				streamModel: options.streamModel ?? streamModel,
+				launch: (bash) => ({
+					agentArgv: [process.execPath, agentEntry],
+					commands: directLauncher(bash),
+				}),
+				onEvent: sessionOptions.onEvent,
+			});
+			return {
+				id: session.sessionId,
+				ended: session.ended,
+				submit: (input) => session.submit(input),
+				respond: (requestId, answer) => session.respond(requestId, answer),
+				cancel: () => session.cancel(),
+				close: () => session.close(),
+			};
+		},
+	};
+}
