@@ -12,6 +12,8 @@ export interface SandboxPolicy {
 	readOnly: string[];
 	/** 禁止读取的路径：Host 根目录、凭据文件和额外禁止的路径。 */
 	denyRead: string[];
+	/** 可写范围里额外禁止写入的路径。 */
+	denyWrite: string[];
 	/** 用户的主目录，常见的密钥位置相对它。 */
 	home: string;
 }
@@ -62,7 +64,7 @@ export function filesystemRules(policy: SandboxPolicy): FilesystemRules {
 		// sandbox-runtime 的 allowRead 优先于 denyRead，用它在 Host 根目录里放开 session 的子目录
 		allowRead: [policy.tmpdir, ...policy.readOnly],
 		allowWrite: writableRoots(policy),
-		denyWrite: ["/tmp/claude", "/private/tmp/claude"],
+		denyWrite: [...policy.denyWrite, "/tmp/claude", "/private/tmp/claude"],
 	};
 }
 

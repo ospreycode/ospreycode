@@ -64,8 +64,6 @@ export class AgentStartError extends Error {
 export interface HostSessionOptions {
 	root: string;
 	config: SessionConfig;
-	/** 工作区的真实路径。 */
-	workspace: string;
 	/** 模型服务的凭据。 */
 	apiKey: string;
 	hostEnv: Readonly<Record<string, string | undefined>>;
@@ -143,7 +141,8 @@ export class HostSession implements ChannelHandlers {
 	}
 
 	async #start(): Promise<void> {
-		const { config, root, workspace, hostEnv } = this.#options;
+		const { config, root, hostEnv } = this.#options;
+		const { workspace } = config;
 		const directories = createSessionDirectories(root, this.sessionId);
 		this.#tmpdir = directories.tmp;
 		const bash = findBash(hostEnv.PATH);
@@ -151,6 +150,7 @@ export class HostSession implements ChannelHandlers {
 			tmpdir: directories.tmp,
 			workspace,
 			bash,
+			extra: config.environment,
 		});
 		this.#sandbox = await this.#options.createSandbox({
 			bash,
@@ -208,6 +208,9 @@ export class HostSession implements ChannelHandlers {
 			sandbox_mode: config.sandboxMode,
 			approval_policy: config.approvalPolicy,
 		});
+		for (const message of config.warnings) {
+			this.#events.session({ type: "warning", message });
+		}
 	}
 
 	/** 在 session 空闲时开始一个 task，返回 `task_id`。 */
@@ -284,7 +287,8 @@ export class HostSession implements ChannelHandlers {
 			throw new ProtocolError(message);
 		}
 		this.#initialized.resolve();
-		const { config, workspace } = this.#options;
+		const { config } = this.#options;
+		const { workspace, budget } = config;
 		const writableRoots = {
 			"read-only": [this.#tmpdir],
 			"workspace-write": [workspace, this.#tmpdir],
@@ -295,7 +299,7 @@ export class HostSession implements ChannelHandlers {
 			writable_roots: writableRoots,
 			model: {
 				id: config.model.id,
-				reasoning_effort: "off",
+				reasoning_effort: config.reasoningEffort,
 				context_window: config.model.context_window,
 				max_output_tokens: config.model.max_output_tokens,
 			},
@@ -305,7 +309,11 @@ export class HostSession implements ChannelHandlers {
 			user_instructions: null,
 			date: localDate(),
 			os: `${process.platform} ${release()} (${arch()})`,
-			budget: { max_cost_usd: null, max_requests: null, max_duration_ms: null },
+			budget: {
+				max_cost_usd: budget.maxCostUsd,
+				max_requests: budget.maxRequests,
+				max_duration_ms: budget.maxDurationMs,
+			},
 		};
 	}
 

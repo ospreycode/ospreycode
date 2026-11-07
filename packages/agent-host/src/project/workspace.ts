@@ -15,16 +15,22 @@ export function resolveWorkspace(path: string): string {
 	return realpathSync(path);
 }
 
+/** 项目根目录，以及它是不是 git 仓库。 */
+export interface ProjectRoot {
+	root: string;
+	git: boolean;
+}
+
 /**
  * 项目根目录：从工作区逐级向上找到的第一个 `.git`（目录或文件）所在的目录，不是 git 仓库时就是
  * 工作区。只看 `.git` 在不在，识别时不运行 git、不读仓库里的文件。
  */
-export function findProjectRoot(workspace: string): string {
+export function findProjectRoot(workspace: string): ProjectRoot {
 	for (let dir = workspace; ; dir = dirname(dir)) {
 		if (lstatSync(join(dir, ".git"), { throwIfNoEntry: false }) !== undefined) {
-			return dir;
+			return { root: dir, git: true };
 		}
-		if (dirname(dir) === dir) return workspace;
+		if (dirname(dir) === dir) return { root: workspace, git: false };
 	}
 }
 

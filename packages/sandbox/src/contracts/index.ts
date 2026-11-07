@@ -1,6 +1,13 @@
 export type { BackendCapabilities } from "./backend.js";
+export { PermissionConfigError, parsePermissionProfile } from "./config.js";
+export {
+	InvalidHostError,
+	isLocalOrPrivateHost,
+	normalizeHostPattern,
+} from "./hosts.js";
 export {
 	type ApprovalPolicy,
+	approvalPolicies,
 	type BuiltinSandboxMode,
 	builtinSandboxModes,
 	type GranularApproval,

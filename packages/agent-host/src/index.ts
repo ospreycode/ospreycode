@@ -1,6 +1,8 @@
 export { SandboxUnavailableError } from "@ospreycode/sandbox/backends";
 export {
+	type BudgetOptions,
 	ConfigError,
+	type RunLimits,
 	type SessionConfig,
 	type SessionOptions,
 } from "./config/session-config.js";

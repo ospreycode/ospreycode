@@ -16,9 +16,9 @@ import { type Script, scriptedModel } from "@ospreycode/api/testing";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
 	EventLog,
-	scriptedEntry,
 	type TestDirectories,
 	testDirectories,
+	testModel,
 } from "./harness.js";
 
 let dirs: TestDirectories;
@@ -52,8 +52,8 @@ async function open(
 		...hostOptions,
 	}).openSession({
 		workspace: dirs.workspace,
-		model: scriptedEntry.id,
-		models: [scriptedEntry],
+		model: "scripted",
+		models: { scripted: testModel },
 		credentials: { test: { file: dirs.credentialFile } },
 		sandboxMode: "danger-full-access",
 		approvalPolicy: "never",
@@ -209,8 +209,8 @@ describe("打开 session 之前的检查", () => {
 		const host = createHost({ root: dirs.root, env: dirs.env });
 		const base = {
 			workspace: dirs.workspace,
-			model: scriptedEntry.id,
-			models: [scriptedEntry],
+			model: "scripted",
+			models: { scripted: testModel },
 			credentials: { test: { file: dirs.credentialFile } },
 			sandboxMode: "danger-full-access",
 			approvalPolicy: "never",
@@ -235,8 +235,8 @@ describe("打开 session 之前的检查", () => {
 		await expect(
 			host.openSession({
 				workspace: dirs.home,
-				model: scriptedEntry.id,
-				models: [scriptedEntry],
+				model: "scripted",
+				models: { scripted: testModel },
 				credentials: { test: { file: dirs.credentialFile } },
 				sandboxMode: "danger-full-access",
 				approvalPolicy: "never",

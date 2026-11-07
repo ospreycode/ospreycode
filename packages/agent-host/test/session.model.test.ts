@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHost, type Session } from "@ospreycode/agent-host";
-import type { ModelEntry } from "@ospreycode/api";
+import type { ModelFields } from "@ospreycode/api";
 import { afterEach, beforeEach, expect, inject, test } from "vitest";
 import { EventLog, type TestDirectories, testDirectories } from "./harness.js";
 
@@ -20,8 +20,7 @@ afterEach(async () => {
 test("真实模型经通道请求模型、由 Host 执行 shell，完成任务", {
 	tags: ["model"],
 }, async () => {
-	const entry: ModelEntry = {
-		id: "claude-haiku-5-5",
+	const entry: ModelFields = {
 		protocol: "anthropic.messages",
 		service: "anthropic",
 		base_url: inject("modelBaseUrl"),
@@ -32,8 +31,9 @@ test("真实模型经通道请求模型、由 Host 执行 shell，完成任务",
 	const log = new EventLog();
 	session = await createHost({ root: dirs.root, env: dirs.env }).openSession({
 		workspace: dirs.workspace,
-		model: entry.id,
-		models: [entry],
+		model: "claude-haiku-5-5",
+		models: { "claude-haiku-5-5": entry },
+		reasoningEffort: "off",
 		credentials: {
 			anthropic: { file: join(inject("modelKeysDir"), "anthropic") },
 		},

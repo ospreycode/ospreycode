@@ -150,14 +150,14 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 
 同一项配置按启动参数、仓库配置、用户级配置、内置默认值的顺序取值。SDK 调用方传入的选项和运行中用户在 CLI 里的切换等同于启动参数。
 
-- 表按键递归合并，数组和标量由高层整体替换（照 Codex 的 `config/src/merge.rs`）；禁止读写的路径、禁止的域名和权限规则在各层取并集，任何一层都去不掉。
+- 表按键递归合并，数组和标量由高层整体替换（照 Codex 的 `config/src/merge.rs`）；同一个凭据 ID 的来源整体替换，不按字段合并。禁止读写的路径、禁止的域名和权限规则在各层取并集，任何一层都去不掉。
 - 项目配置目录 `.ospreycode/` 只取项目根目录下的那一个，不逐级查找、不合并。工作区是仓库子目录时同样读它；它在可写范围之外，只读。
 - 仓库配置里的键分三类，每个键在 schema 里标明属于哪一类（见下文[配置项](#配置项)）：
-  - **只认用户级配置和启动参数**：模型和模型服务的定义与选用、凭据来源、代理、放行的路径和域名、额外的可读写目录、命名的权限配置、环境变量。session 的保存期限只认用户级配置，启动参数也不能改。这些键出现在仓库配置里时忽略，并在启动时列出。选用哪个模型也在这一类：仓库一旦选了云端服务，代码就发到了别处。
-  - **只能收紧**：沙盒模式（只能改成 `read-only`）、审批策略（`on-request` 最松，`granular` 按关闭的类别逐项收紧，`never` 最严）、权限规则（只能有 `prompt` 和 `forbidden`）、禁止的路径和域名、费用和次数上限（只能调低）、服务端工具（只能关闭）。更松的值忽略并提示。
+  - **只认用户级配置和启动参数**：模型和模型服务的定义与选用、凭据来源、代理、放行的路径和域名、额外的可读写目录、命名的权限配置、环境变量。session 的保存期限只认用户级配置，启动参数也不能改。这些键出现在仓库配置里时忽略、不检查它们的值，并在启动时列出。选用哪个模型也在这一类：仓库一旦选了云端服务，代码就发到了别处。
+  - **只能收紧**：沙盒模式（只能改成 `read-only`）、审批策略（`on-request` 最松，`granular` 按关闭的类别逐项收紧，`never` 最严）、权限规则（只能有 `prompt` 和 `forbidden`）、禁止的路径和域名、费用和次数上限（只能调低）、服务端工具（只能关闭）。更松的值忽略并提示。审批策略和用户级配置比较时，`on-request` 相当于七个类别都询问、`never` 相当于都不询问，仓库配置的 `[approval_granular]` 只能把类别设为 `false`；仓库从 `on-request` 收紧到 `granular` 时，没写的类别照常询问。
   - **普通键**（推理强度、可选工具、显示设置等）可以覆盖用户级配置。
-- 仓库配置里出现的路径只能指向仓库之内。
-- 配置文件或权限规则文件加载出错（不认识的键、类型不对、仓库里写了 `allow`）：Host 拒绝打开 session，退出码 2，输出文件路径和出错的键或规则序号，不提供跳过选项，否则仓库作者想加的限制可能被悄悄丢掉。用户级和仓库的文件都这样处理。
+- 仓库配置里的路径相对项目根目录，只能指向仓库之内；用户级配置的路径写绝对路径或以 `~/` 开头。
+- 配置文件或权限规则文件加载出错（不认识的键、类型不对、仓库里写了 `allow`）：Host 拒绝打开 session，退出码 2，输出文件路径和出错的键或规则序号，不提供跳过选项，否则仓库作者想加的限制可能被悄悄丢掉。用户级和仓库的文件都这样处理。TOML 语法错误只报行号和列号：smol-toml 的错误信息带着出错位置附近的原文。
 - 仓库配置不能放宽权限，所以加载它不需要"信任项目"这一步；仓库自带的 MCP server、skills 和 hooks 按扩展的信任确认处理。
 - 不设管理员层和通用的 `-c key=value` 覆盖。
 - Host 读取仓库里的配置时不跟随指向工作区之外的符号链接（见 overview 的[所有包都遵守的规则](../overview.md#所有包都遵守的规则)）。runtime 需要的配置由 Host 读取后交给它。
@@ -175,20 +175,20 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 
 | 键 | 内容 | 仓库配置 |
 |---|---|---|
-| `model` | 默认模型，取模型清单里的 ID | 忽略 |
-| `reasoning_effort` | 推理强度：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` | 可以覆盖 |
+| `model` | 默认模型，取模型清单里的 ID；没有内置默认值，各层都没写时报错 | 忽略 |
+| `reasoning_effort` | 推理强度：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，默认 `medium` | 可以覆盖 |
 | `sandbox_mode` | `read-only`、`workspace-write`、`danger-full-access` 或命名权限配置的名字；`danger-full-access` 只能由启动参数指定 | 只能设 `read-only` |
 | `approval_policy` | `on-request`、`never`、`granular` | 只能改严 |
-| `[approval_granular]` | `granular` 下七个类别各自是否询问（见 sandbox 的[审批策略](sandbox.md#审批策略)） | 只能关闭类别 |
+| `[approval_granular]` | `granular` 下七个类别各自是否询问（见 sandbox 的[审批策略](sandbox.md#审批策略)），合并后要写全 | 只能关闭类别 |
 | `[permissions.<名字>]` | 命名权限配置（见 sandbox 的[沙盒模式](sandbox.md#沙盒模式)） | 忽略 |
-| `[environment]` | 额外传给沙盒的环境变量 | 忽略 |
-| `[budget]` | `max_cost_usd`、`max_requests`、`max_duration`（见[预算](#预算)）；启动参数 `--max-cost`、`--max-requests` 覆盖前两项 | 只能调低 |
+| `[environment]` | 额外传给沙盒的环境变量；不能设 Host 自己设置的 `HOME`、`SHELL`、`TMPDIR`、`TERM`、`NO_COLOR`、`OSPREYCODE_WORKSPACE` 和缓存变量 | 忽略 |
+| `[budget]` | `max_cost_usd`、`max_requests`、`max_duration`（写成 `"30m"` 这样的时长，单位 `s`、`m`、`h`），写 `"none"` 表示不设（见[预算](#预算)）；启动参数 `--max-cost`、`--max-requests` 覆盖前两项 | 只能调低 |
 | `deny_read`、`deny_write` | 额外禁止读、写的路径，各层取并集 | 可以设，路径只能在仓库之内 |
 | `[models.<ID>]` | 新增模型或按字段覆盖内置清单（见 api 的[模型清单](api.md#模型清单)） | 忽略 |
 | `[credentials]` | 凭据的文件或环境变量来源，写成 `"<ID>" = { file = "<路径>" }` 或 `{ env = "<变量名>" }`（见[凭据和登录](#凭据和登录)） | 忽略 |
-| `[mcp_clients.<标签>]` | 预先注册的 MCP OAuth 客户端：`client_id`，可选的 `callback_port`（见 mcp 的[授权](mcp.md#授权)） | 忽略 |
+| `[mcp_clients.<标签>]` | 预先注册的 MCP OAuth 客户端：`client_id`，可选的 `callback_port`（P2，见 mcp 的[授权](mcp.md#授权)） | 忽略 |
 | `proxy` | 访问模型服务和远程 MCP server 用的 HTTP 代理；不设时取 Host 启动环境里的 `HTTPS_PROXY`；由 CLI 入口应用（见 overview 的[语言和运行环境](../overview.md#语言和运行环境)） | 忽略 |
-| `session_retention_days` | session 记录的保存天数，默认 30，最小 1（见 session-store 的[保存期限](session-store.md#保存期限)）；启动参数也不能改 | 忽略 |
+| `session_retention_days` | session 记录的保存天数，默认 30，最小 1（P3，见 session-store 的[保存期限](session-store.md#保存期限)）；启动参数也不能改 | 忽略 |
 | `[tools]` | 可选工具的开关（如 `grep`、`ls`） | 可以覆盖 |
 | `[ui]` | 显示设置 | 可以覆盖 |
 | `[server_tools]` | 模型服务自带的服务端工具（P5，见 api 的[在系统中的位置](api.md#在系统中的位置)） | 只能关闭 |

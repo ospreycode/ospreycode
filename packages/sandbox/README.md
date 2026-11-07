@@ -12,6 +12,8 @@ npm install @ospreycode/sandbox
 
 权限的格式（沙盒模式、审批策略、命名权限配置、权限请求、Permission 的判断、用户的回答和权限规则），以及 Permission 的判断：`decideCommand` 按沙盒模式和审批策略决定一条 shell 命令直接执行、询问还是拒绝。
 
+配置的校验：`parsePermissionProfile(value, key)` 校验一个命名权限配置，出错时抛出 `PermissionConfigError`，`key` 是出错的键路径；`normalizeHostPattern` 规范化域名的写法，`isLocalOrPrivateHost` 判断本机和私有网段的地址。TOML 文件由调用方解析后传入。
+
 ```ts
 import { type CommandRequest, decideCommand } from "@ospreycode/sandbox";
 

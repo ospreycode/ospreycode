@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { type HostEvent, isHostEvent } from "@ospreycode/agent-host";
-import type { ModelEntry } from "@ospreycode/api";
+import type { ModelFields } from "@ospreycode/api";
 
 /** 收集一个 session 的事件，可以等某一类事件出现；不符合对外事件 schema 的事件另记一份。 */
 export class EventLog {
@@ -86,9 +86,8 @@ export function testDirectories(): TestDirectories {
 	};
 }
 
-/** 脚本模型用的模型清单条目，地址不会被访问。 */
-export const scriptedEntry: ModelEntry = {
-	id: "scripted",
+/** 脚本模型用的模型清单条目（ID 为 `scripted`），地址不会被访问。 */
+export const testModel: ModelFields = {
 	protocol: "anthropic.messages",
 	service: "test",
 	base_url: "https://scripted.invalid/v1",

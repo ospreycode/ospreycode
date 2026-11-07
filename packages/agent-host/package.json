@@ -31,6 +31,7 @@
 		"@ospreycode/sandbox": "0.1.0",
 		"@ospreycode/session-store": "0.1.0",
 		"@ospreycode/skills": "0.1.0",
+		"smol-toml": "1.9.1",
 		"typebox": "1.4.3"
 	},
 	"devDependencies": {

@@ -6,6 +6,7 @@ import { checkSandboxSupport } from "@ospreycode/sandbox/backends";
 import {
 	ConfigError,
 	resolveSessionConfig,
+	type SessionConfig,
 	type SessionOptions,
 } from "../config/session-config.js";
 import { readCredential } from "../credentials/sources.js";
@@ -15,6 +16,7 @@ import {
 } from "../processes/sandboxed.js";
 import {
 	checkSeparate,
+	findProjectRoot,
 	prepareRoot,
 	resolveWorkspace,
 } from "../project/workspace.js";
@@ -23,7 +25,7 @@ import type { HostEvent } from "./events.js";
 
 /** 创建 Host 的选项。SDK 不改进程级的状态，依赖都由调用方传入。 */
 export interface HostOptions {
-	/** Host 根目录，CLI 用 `~/.ospreycode`；不存在时以 0700 创建。 */
+	/** Host 根目录，CLI 用 `~/.ospreycode`；不存在时以 0700 创建。用户级配置是它下面的 `config.toml`。 */
 	root: string;
 	/** Host 启动时的环境变量：传给沙盒的白名单变量和环境变量来源的凭据从这里取。 */
 	env: Readonly<Record<string, string | undefined>>;
@@ -39,7 +41,10 @@ export interface HostOptions {
 
 /** 打开 session 的选项。 */
 export interface OpenSessionOptions extends SessionOptions {
-	/** 接收这个 session 的全部事件，第一条是 `session.started`，最后一条是 `session.ended`。 */
+	/**
+	 * 接收这个 session 的全部事件，第一条是 `session.started`，最后一条是 `session.ended`；
+	 * 仓库配置里被忽略的键和更松的值紧跟在 `session.started` 之后作为 `warning` 发出。
+	 */
 	onEvent: (event: HostEvent) => void;
 }
 
@@ -61,9 +66,16 @@ export interface Session {
 /** 本地后端。CLI 和评测都只通过它使用 Host。 */
 export interface Host {
 	/**
-	 * 新建一个 session：检查配置和凭据，启动 agent 进程并完成握手。参数或配置有错时抛出
-	 * `ConfigError`、`CredentialError` 或 `WorkspaceError`；当前平台没有沙盒后端时抛出
-	 * `SandboxUnavailableError`；agent 进程没能启动时抛出 `AgentStartError`。
+	 * 按启动参数、仓库配置、用户级配置和内置默认值的顺序合并配置并检查，不打开 session：
+	 * CLI 用它在打开 session 之前取代理设置，`doctor` 用它检查配置能否加载。参数或配置有错时
+	 * 抛出 `ConfigError` 或 `WorkspaceError`。
+	 */
+	resolveConfig(options: SessionOptions): SessionConfig;
+	/**
+	 * 新建一个 session：按启动参数、仓库配置、用户级配置和内置默认值的顺序合并配置，检查凭据，
+	 * 启动 agent 进程并完成握手。参数或配置有错时抛出 `ConfigError`、`CredentialError` 或
+	 * `WorkspaceError`；当前平台没有沙盒后端时抛出 `SandboxUnavailableError`；agent 进程没能启动时
+	 * 抛出 `AgentStartError`。
 	 */
 	openSession(options: OpenSessionOptions): Promise<Session>;
 }
@@ -78,13 +90,32 @@ export function createHost(options: HostOptions): Host {
 	const agentEntry =
 		options.agentEntry ?? resolveEntry("@ospreycode/agent-runtime/agent");
 	const agentCommand = [process.execPath, agentEntry];
+	const resolveConfig = (sessionOptions: SessionOptions): SessionConfig => {
+		const workspace = resolveWorkspace(sessionOptions.workspace);
+		checkSeparate(root, workspace);
+		const project = findProjectRoot(workspace);
+		return resolveSessionConfig(sessionOptions, {
+			root,
+			workspace,
+			projectRoot: project.root,
+			git: project.git,
+			home: options.env.HOME,
+			catalog: [],
+		});
+	};
 	return {
+		resolveConfig,
 		async openSession(sessionOptions) {
-			const config = resolveSessionConfig(sessionOptions);
-			const workspace = resolveWorkspace(config.workspace);
-			checkSeparate(root, workspace);
-			const { credential } = config;
-			const apiKey = readCredential(credential.id, credential.source, {
+			const config = resolveConfig(sessionOptions);
+			const { workspace } = config;
+			const credentialId = config.model.service;
+			const source = config.credentials[credentialId];
+			if (source === undefined) {
+				throw new ConfigError(
+					`没有模型服务 ${credentialId} 的凭据来源：用启动参数或用户级配置的 [credentials] 指定`,
+				);
+			}
+			const apiKey = readCredential(credentialId, source, {
 				workspace,
 				env: options.env,
 				platform: process.platform,
@@ -97,7 +128,6 @@ export function createHost(options: HostOptions): Host {
 			const session = await HostSession.open({
 				root,
 				config,
-				workspace,
 				apiKey,
 				hostEnv: options.env,
 				fetch: options.fetch ?? globalThis.fetch,
@@ -120,11 +150,10 @@ export function createHost(options: HostOptions): Host {
 							readOnly: [directories.output],
 							denyRead: [
 								root,
-								...("file" in credential.source
-									? [realpathSync(credential.source.file)]
-									: []),
+								...("file" in source ? [realpathSync(source.file)] : []),
 								...config.denyRead,
 							],
+							denyWrite: [...config.denyWrite],
 							home: env.HOME,
 						},
 						env,

@@ -32,6 +32,7 @@ describe.runIf(process.platform === "darwin")(
 							context_window: 200_000,
 							max_output_tokens: 2_000,
 						},
+						reasoningEffort: "off",
 						credential: { file: join(keys, "anthropic") },
 						// 密钥目录里还有别家的密钥，沙盒都不能读
 						denyRead: [keys],

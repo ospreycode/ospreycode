@@ -33,6 +33,7 @@ test("临时目录太深、放不下沙盒后端的 Unix socket 时报错", asyn
 				tmpdir: deep,
 				readOnly: [],
 				denyRead: [],
+				denyWrite: [],
 				home: "/tmp",
 			},
 			env: {},
@@ -91,6 +92,7 @@ describe.runIf(onMac)("macOS 的沙盒后端（真实沙盒）", () => {
 			tmpdir: paths.tmp,
 			readOnly: [paths.output],
 			denyRead: [paths.root, paths.credential],
+			denyWrite: [],
 			home: paths.home,
 		};
 		env = { PATH: process.env.PATH ?? "", HOME: paths.home, TMPDIR: paths.tmp };

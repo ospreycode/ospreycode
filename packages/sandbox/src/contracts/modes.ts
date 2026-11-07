@@ -11,8 +11,11 @@ export type BuiltinSandboxMode = (typeof builtinSandboxModes)[number];
 /** 沙盒模式：内置的三种之一，或用户级配置里命名权限配置的名字。 */
 export type SandboxMode = string;
 
+/** 审批策略，从松到严排列。 */
+export const approvalPolicies = ["on-request", "granular", "never"] as const;
+
 /** 审批策略：需要越出沙盒时是否停下来问用户。 */
-export type ApprovalPolicy = "on-request" | "never" | "granular";
+export type ApprovalPolicy = (typeof approvalPolicies)[number];
 
 /** `granular` 审批策略的七个类别，名字照 Codex 的 `approval_policy.granular`，另加后两个。 */
 export const granularCategories = [

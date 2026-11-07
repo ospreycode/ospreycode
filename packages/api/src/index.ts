@@ -10,4 +10,10 @@ export {
 	streamModel,
 	supportedProtocols,
 } from "./client/stream.js";
+export {
+	completeModel,
+	ModelConfigError,
+	type ModelFields,
+	parseModelFields,
+} from "./models/config.js";
 export type { ModelEntry, ModelPrice } from "./models/entry.js";

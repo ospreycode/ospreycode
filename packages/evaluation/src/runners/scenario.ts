@@ -10,7 +10,7 @@ import {
 	type TaskOutcome,
 } from "@ospreycode/agent-host";
 import type { ModelEntry } from "@ospreycode/api";
-import type { Usage } from "@ospreycode/api/protocol";
+import type { ReasoningEffort, Usage } from "@ospreycode/api/protocol";
 import type {
 	ApprovalAnswer,
 	ApprovalPolicy,
@@ -20,6 +20,7 @@ import type {
 /** 运行评测的环境：被测的模型和凭据由运行评测的人给出。 */
 export interface EvaluationEnvironment {
 	model: ModelEntry;
+	reasoningEffort: ReasoningEffort;
 	/** 模型服务的凭据来源。 */
 	credential: CredentialSource;
 	/** 额外禁止沙盒读取的绝对路径，如测试密钥所在的目录。 */
@@ -114,15 +115,17 @@ export async function runScenario(
 		}
 		if (scenario.cancelWhen?.(event) === true) void session.cancel();
 	};
+	const { id, ...model } = environment.model;
 	try {
 		session = await createHost({
 			root: join(dirs.home, ".ospreycode"),
 			env: { ...environment.env, HOME: dirs.home },
 		}).openSession({
 			workspace: dirs.workspace,
-			model: environment.model.id,
-			models: [environment.model],
-			credentials: { [environment.model.service]: environment.credential },
+			model: id,
+			models: { [id]: model },
+			reasoningEffort: environment.reasoningEffort,
+			credentials: { [model.service]: environment.credential },
 			sandboxMode: scenario.sandboxMode,
 			approvalPolicy: scenario.approvalPolicy,
 			denyRead: environment.denyRead,
