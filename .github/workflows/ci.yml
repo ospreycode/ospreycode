@@ -11,25 +11,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  debug:
+  monitor:
     strategy:
       fail-fast: false
       matrix:
-        part: [sandbox, eval, host]
-    runs-on: ubuntu-24.04
+        os: [macos-15]
+        node: [24.15.0, 26.13.0]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 26.13.0
-      - uses: ./.github/actions/linux-sandbox
+          node-version: ${{ matrix.node }}
       - run: npm ci --ignore-scripts
       - run: npm run build
-      - if: matrix.part == 'sandbox'
-        run: npx vitest run packages/sandbox/test/backend.test.ts packages/sandbox/test/profile.test.ts --reporter=verbose --tags-filter='!model' 2>&1 | tee out.log || true
-      - if: matrix.part == 'eval'
-        run: npx vitest run packages/evaluation/test/sandbox-suite.test.ts --reporter=verbose --tags-filter='!model' 2>&1 | tee out.log || true
-      - if: matrix.part == 'host'
-        run: npx vitest run packages/agent-host/test/restart.test.ts packages/agent-host/test/sandbox-run.test.ts --reporter=verbose --tags-filter='!model' 2>&1 | tee out.log || true
+      - run: |
+          which -a bash; bash --version | head -1
+          for i in $(seq 1 15); do
+            echo "=== round $i"
+            npx vitest run packages/agent-host/test/background-commands.test.ts --reporter=dot 2>&1 | grep -E "DEBUG-NOTICES|Tests|FAIL|AssertionError" || true
+          done

@@ -288,6 +288,11 @@ test("监视一次输出很多行时只留最近的 100 行，过长的行截断
 		(sum, notice) => sum + (notice.monitor?.dropped ?? 0),
 		0,
 	);
+	if (lines.length + dropped !== 152) {
+		console.log(
+			`DEBUG-NOTICES many ${JSON.stringify(notices.map((n) => ({ text: n.text.slice(0, 60), lines: n.monitor?.lines.map((l) => l.slice(0, 20)), dropped: n.monitor?.dropped })))}`,
+		);
+	}
 	// 留下的行和丢掉的行数加起来是全部 152 行，最后几行原样在
 	expect(lines.length + dropped).toBe(152);
 	expect(lines.at(-1)).toBe("tail");
@@ -318,6 +323,11 @@ test("监视到期时通知一次，告诉模型可以重新开始", async () =>
 	expect(ended).toMatchObject([
 		{ background_id: id, reason: "time_limit", exit_code: null },
 	]);
+	if (notices.length !== 2) {
+		console.log(
+			`DEBUG-NOTICES limit ${JSON.stringify(notices.map((n) => ({ text: n.text.slice(0, 60), lines: n.monitor?.lines, dropped: n.monitor?.dropped })))}`,
+		);
+	}
 	expect(notices.map((notice) => notice.text.split("\n")[0])).toEqual([
 		`Monitor ${id} printed:`,
 		`Monitor ${id} reached its time limit of 300 ms and was stopped. Start it again if you still need it.`,
