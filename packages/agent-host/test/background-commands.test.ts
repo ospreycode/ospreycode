@@ -97,7 +97,8 @@ function start(
 			command: await runCommand({
 				argv: ["bash", "-c", command],
 				cwd: directory,
-				env: { PATH: process.env.PATH ?? "" },
+				// stdin 是 socketpair 时 bash 当成远程登录，读 ~/.bashrc：主目录换成临时目录
+				env: { PATH: process.env.PATH ?? "", HOME: directory },
 				outputFile,
 				tracker: { add: async () => {}, remove: async () => {} },
 				reaper: false,

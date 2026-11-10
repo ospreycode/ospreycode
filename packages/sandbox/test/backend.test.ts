@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
 	existsSync,
@@ -46,6 +46,13 @@ function alive(pid: number): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/** 本机有没有命令行匹配 `pattern` 的进程，也看得到 PID 命名空间里的。 */
+function running(pattern: string): boolean {
+	const { status } = spawnSync("pgrep", ["-f", pattern]);
+	if (status !== 0 && status !== 1) throw new Error(`pgrep 退出码 ${status}`);
+	return status === 0;
 }
 
 test("临时目录太深、放不下沙盒后端的 Unix socket 时报错", async () => {
@@ -266,22 +273,36 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 		).toBe("secret");
 	});
 
-	test("写权限可以限定到单个文件：能改它、能新建它，写不了旁边的文件和工作区", async () => {
+	test("写权限可以限定到单个文件：能改它、能新建它，写不了旁边的文件和工作区；Linux 上新建文件放开它所在的目录", async () => {
 		const sandbox = await helper();
 		const existing = join(paths.outside, "only-this.txt");
 		const created = join(paths.outside, "created.txt");
+		const sibling = join(paths.outside, "sibling.txt");
 		writeFileSync(existing, "old");
-		const only: SandboxScope = { kind: "edits", files: [existing, created] };
-		const exit = async (script: string) =>
-			(await run(sandbox, script, only)).status;
-		expect(await exit(`echo new > '${existing}'`)).toBe(0);
-		expect(readFileSync(existing, "utf8")).toBe("new\n");
-		expect(await exit(`echo new > '${created}'`)).toBe(0);
-		expect(readFileSync(created, "utf8")).toBe("new\n");
-		expect(await exit(`echo x > '${paths.outside}/sibling.txt'`)).not.toBe(0);
-		expect(existsSync(join(paths.outside, "sibling.txt"))).toBe(false);
-		expect(await exit("echo x > in-workspace.txt")).not.toBe(0);
-		expect(existsSync(join(paths.workspace, "in-workspace.txt"))).toBe(false);
+		const exit = async (script: string, files: string[]) =>
+			(await run(sandbox, script, { kind: "edits", files })).status;
+		try {
+			expect(await exit(`echo new > '${existing}'`, [existing])).toBe(0);
+			expect(readFileSync(existing, "utf8")).toBe("new\n");
+			expect(await exit(`echo x > '${sibling}'`, [existing])).not.toBe(0);
+			expect(existsSync(sibling)).toBe(false);
+			const withNew = [existing, created];
+			// sandbox-runtime 在 Linux 上跳过不存在的可写路径，新建文件只能放开整个目录
+			expect((await exit(`echo x > '${sibling}'`, withNew)) === 0).toBe(!onMac);
+			expect(existsSync(sibling)).toBe(!onMac);
+			// 放开的目录里受保护的名字照样只读
+			expect(
+				await exit(`echo x > '${paths.outside}/.envrc'`, withNew),
+			).not.toBe(0);
+			expect(await exit(`echo new > '${created}'`, withNew)).toBe(0);
+			expect(readFileSync(created, "utf8")).toBe("new\n");
+			expect(await exit("echo x > in-workspace.txt", withNew)).not.toBe(0);
+			expect(existsSync(join(paths.workspace, "in-workspace.txt"))).toBe(false);
+		} finally {
+			for (const path of [existing, created, sibling]) {
+				rmSync(path, { force: true });
+			}
+		}
 	});
 
 	describe("受保护的路径", () => {
@@ -303,18 +324,48 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 				".vscode/tasks.json",
 				".devcontainer.json",
 			];
-			for (const path of denied) {
-				const result = await run(
-					sandbox,
-					`mkdir -p "$(dirname '${path}')" && echo x > '${path}'`,
-				);
-				expect(result.status, path).not.toBe(0);
-				// Linux 上根目录的占位在命令结束后删除，这里只看有没有写进内容
+			// Linux 上只有包装时已存在的和根目录下的名字受保护（见设计文档的"受保护的路径"）：
+			// 更深处的先在宿主上建好，看它们改不了
+			const nested = onMac
+				? []
+				: [
+						"sub/.envrc",
+						"sub/deep/.envrc",
+						"sub/.cursor/rules/a.mdc",
+						"sub/project.code-workspace",
+						"sub/.mise.local.toml",
+						".github/hooks/hook.json",
+					];
+			for (const path of nested) {
 				const file = join(paths.workspace, path);
-				expect(
-					existsSync(file) && readFileSync(file, "utf8") !== "",
-					path,
-				).toBe(false);
+				mkdirSync(dirname(file), { recursive: true });
+				writeFileSync(file, "kept");
+			}
+			try {
+				for (const path of denied) {
+					const result = await run(
+						sandbox,
+						`mkdir -p "$(dirname '${path}')" && echo x > '${path}'`,
+					);
+					expect(result.status, path).not.toBe(0);
+					const file = join(paths.workspace, path);
+					if (nested.includes(path)) {
+						expect(readFileSync(file, "utf8"), path).toBe("kept");
+						continue;
+					}
+					// Linux 上根目录的占位在命令结束后删除，这里只看有没有写进内容
+					expect(
+						existsSync(file) && readFileSync(file, "utf8") !== "",
+						path,
+					).toBe(false);
+				}
+			} finally {
+				for (const path of nested) {
+					rmSync(join(paths.workspace, path), { force: true });
+				}
+				for (const dir of ["sub/.cursor", ".github/hooks"]) {
+					rmSync(join(paths.workspace, dir), { recursive: true, force: true });
+				}
 			}
 			for (const path of ["sub/promise.toml", ".github/workflows/ci.yml"]) {
 				const result = await run(
@@ -367,22 +418,37 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 			}
 		});
 
-		test("之后新建的仓库也受保护：工作区里不能 git init，子目录里的 .git 写不进去", async () => {
+		test("之后新建的仓库也受保护：macOS 上工作区里不能 git init，Linux 上从下一条命令起子目录里的 .git 写不进去", async () => {
 			const sandbox = await helper();
 			const declared: SandboxScope = {
 				...command,
 				write: [join(paths.workspace, ".git")],
 			};
-			for (const scope of [command, declared]) {
-				const result = await run(
-					sandbox,
-					"mkdir -p sub/repo && git init -q sub/repo",
-					scope,
-				);
-				expect(result.status).not.toBe(0);
-				expect(existsSync(join(paths.workspace, "sub/repo/.git/HEAD"))).toBe(
-					false,
-				);
+			const init = "mkdir -p sub/repo && git init -q sub/repo";
+			if (onMac) {
+				for (const scope of [command, declared]) {
+					const result = await run(sandbox, init, scope);
+					expect(result.status).not.toBe(0);
+					expect(existsSync(join(paths.workspace, "sub/repo/.git/HEAD"))).toBe(
+						false,
+					);
+				}
+				return;
+			}
+			// Linux 上子目录里还不存在的 .git 没有占位，是设计文档里写明的缺口
+			const hook = join(paths.workspace, "sub/repo/.git/hooks/pre-commit");
+			try {
+				expect((await run(sandbox, init)).status).toBe(0);
+				for (const scope of [command, declared]) {
+					const result = await run(sandbox, `echo x > '${hook}'`, scope);
+					expect(result.status).not.toBe(0);
+				}
+				expect(existsSync(hook)).toBe(false);
+			} finally {
+				rmSync(join(paths.workspace, "sub/repo"), {
+					recursive: true,
+					force: true,
+				});
 			}
 		});
 
@@ -462,18 +528,30 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 				join(paths.home, ".bashrc"),
 				join(paths.home, ".zshenv"),
 				join(paths.home, ".gitconfig"),
-				join(paths.home, ".cursor", "mcp.json"),
-				join(paths.home, "project", ".ospreycode", "config.toml"),
+				// Linux 上主目录里只保护已存在的受保护名字，不放占位（见设计文档的"受保护的路径"）
+				...(onMac
+					? [
+							join(paths.home, ".cursor", "mcp.json"),
+							join(paths.home, "project", ".ospreycode", "config.toml"),
+						]
+					: []),
 				join(paths.workspace, ".envrc"),
 				join(paths.workspace, ".git", "hooks", "pre-commit"),
 			];
+			// Linux 上禁止读取的目录换成空的 tmpfs、文件绑上 /dev/null：写入不报错，只是写不到宿主上
+			const readDenied = (path: string) =>
+				!onMac && policy.denyRead.some((denied) => path.startsWith(denied));
 			for (const path of denied) {
+				const before = existsSync(path) && readFileSync(path, "utf8");
 				const result = await run(
 					sandbox,
 					`mkdir -p '${dirname(path)}' 2>/dev/null; echo x >> '${path}'`,
 					escalated,
 				);
-				expect(result.status, path).not.toBe(0);
+				if (!readDenied(path)) expect(result.status, path).not.toBe(0);
+				expect(existsSync(path) && readFileSync(path, "utf8"), path).toBe(
+					before,
+				);
 			}
 			expect(readFileSync(paths.credential, "utf8")).toBe("secret");
 			expect(
@@ -741,6 +819,14 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 			);
 			try {
 				await instance.exited;
+				// exit 事件可能先于最后的输出到达
+				for (
+					let waited = 0;
+					waited < 3_000 && instance.output() === "";
+					waited += 10
+				) {
+					await sleep(10);
+				}
 				expect(instance.output().trim()).toBe("done");
 				const leftover = readFileSync(pidFile, "utf8")
 					.trim()
@@ -751,11 +837,19 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 					// 主命令退出后，后台进程还在，直到 Host 关闭管道
 					expect(leftover.map(alive)).toEqual([true, true]);
 					expect(instance.pipeClosed()).toBe(false);
-				}
-				await instance.end();
-				if (onMac) {
+					await instance.end();
 					expect(leftover.map(alive)).toEqual([false, false]);
 					expect(instance.pipeClosed()).toBe(true);
+				} else {
+					// 主命令一退出，PID 命名空间里的进程就一起结束，进程组也不在了；文件里的是命名空间里的 pid
+					for (
+						let waited = 0;
+						waited < 3_000 && running("sleep 30[12]");
+						waited += 10
+					) {
+						await sleep(10);
+					}
+					expect(running("sleep 30[12]")).toBe(false);
 				}
 				expect(alive(other.child.pid as number)).toBe(true);
 				expect(alive(outside.pid as number)).toBe(true);

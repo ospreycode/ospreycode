@@ -1,4 +1,4 @@
-import { type Dirent, existsSync, lstatSync } from "node:fs";
+import { type Dirent, existsSync, lstatSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 
@@ -66,6 +66,21 @@ const files = [
 	"devenv.lock",
 ];
 
+/**
+ * Linux 上带通配的名字放不了占位，根目录下换成 mise 默认读取的这几个名字；`mise.<环境>.toml`
+ * 和 `*.code-workspace` 这类列不全的名字不放。
+ */
+const standIns = [
+	"mise.toml",
+	"mise.local.toml",
+	".mise.toml",
+	".mise.local.toml",
+	".config/mise.toml",
+	".config/mise.local.toml",
+	"mise/config.toml",
+	"mise/config.local.toml",
+];
+
 /** 工作区里有 `.envrc` 时才保护：nix-direnv 在它们变化后的下一个提示符重新求值。 */
 const nixFiles = [
 	"flake.nix",
@@ -120,12 +135,22 @@ const directoryMatchers = matchers(directories);
 const fileMatchers = matchers(files);
 const nixMatchers = matchers(nixFiles);
 
-/** 根目录的状态决定的名单：有 `.envrc` 时加上 nix 的文件，没有 `.git` 时加上裸仓库的三项。 */
+/**
+ * 根目录的状态决定的名单：有 `.envrc` 时加上 nix 的文件，没有 `.git` 时加上裸仓库的三项。
+ * 空的 `.envrc` 什么也不加载，空的 `.git` 文件和没有 `HEAD` 的 `.git` 目录 git 不认，都按没有算：
+ * Linux 上的占位在宿主上就是空目录，不能因为它以为有了 `.envrc` 或仓库。
+ */
 function rootState(root: string): { envrc: boolean; git: boolean } {
+	const envrc = statSync(join(root, ".envrc"), { throwIfNoEntry: false });
+	const dotGit = join(root, ".git");
+	// 悬空的符号链接也算有：lstat 不跟随
+	const git = lstatSync(dotGit, { throwIfNoEntry: false });
 	return {
-		envrc: existsSync(join(root, ".envrc")),
-		// 悬空的符号链接也算有：lstat 不跟随
-		git: lstatSync(join(root, ".git"), { throwIfNoEntry: false }) !== undefined,
+		envrc: envrc?.isFile() === true && envrc.size > 0,
+		git:
+			git !== undefined &&
+			(git.isSymbolicLink() ||
+				(git.isFile() ? git.size > 0 : existsSync(join(dotGit, "HEAD")))),
 	};
 }
 
@@ -254,7 +279,7 @@ const skipped = new Set(["node_modules"]);
 export interface ProtectedScan {
 	/** 已存在的受保护路径（绝对路径）。 */
 	paths: string[];
-	/** 根目录下还不存在、要放占位的受保护名字（绝对路径），不含带通配的名字。 */
+	/** 根目录下还不存在、要放占位的受保护名字（绝对路径）；带通配的名字换成 mise 默认读取的几个名字。 */
 	missing: string[];
 	/** 扫描超时：没扫到的位置不受保护。 */
 	timedOut: boolean;
@@ -341,6 +366,7 @@ export async function scanProtected(
 	const fixed = [
 		...directories,
 		...files,
+		...standIns,
 		...(state.envrc ? nixFiles : []),
 		...(state.git ? [] : bareRepository),
 	].filter((name) => !name.includes("*"));

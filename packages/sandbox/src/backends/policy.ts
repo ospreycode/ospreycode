@@ -1,5 +1,5 @@
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { realPath } from "../permission/paths.js";
 import type { ResolvedProfile } from "../permission/profile.js";
 import {
@@ -90,15 +90,18 @@ export type SandboxScope =
 	 * 主目录里会被自动执行的文件和受保护的路径仍然不可写。
 	 */
 	| { kind: "command"; read: string[]; write: string[]; escalated: boolean }
-	/** apply-edits：写权限只给批准的文件，工作区也不给。 */
+	/**
+	 * apply-edits：写权限只给批准的文件，工作区也不给。Linux 上 sandbox-runtime 跳过不存在的可写路径，
+	 * 要新建的文件放开它所在的目录，目录里的受保护名字照样禁止写入。
+	 */
 	| { kind: "edits"; files: string[] };
 
 /** 一个沙盒的文件规则。 */
 export interface SandboxFilesystem {
 	rules: FilesystemRules;
 	/**
-	 * Linux 上包装时还不存在、sandbox-runtime 会在用户目录里放占位的路径。Host 把它们记进占位登记表，
-	 * 进程被强制结束后留下的空文件和空目录按登记表删除。macOS 上为空。
+	 * Linux 上包装时还不存在、sandbox-runtime 会在用户目录里放占位（空目录）的路径。Host 把它们记进
+	 * 占位登记表，进程被强制结束后留下的空目录按登记表删除。macOS 上为空。
 	 */
 	placeholders: string[];
 	/** Linux 上对受保护名字的扫描超时了：没扫到的位置不受保护。 */
@@ -149,8 +152,57 @@ interface ProtectedRoot {
 const scan = { depth: 3, timeoutMs: 10_000 };
 
 /**
+ * sandbox-runtime 的占位落在禁止路径第一个不存在的那一级：下面还有禁止的路径时是只读的空目录，
+ * 否则在宿主上留一个空文件、在沙盒里绑上 `/dev/null`。每个占位下面都多禁止这一级，占位一律是空目录：
+ * 字符设备让 `git add -A` 失败，空目录 git 不管。
+ */
+const placeholderChild = ".placeholder";
+
+/** 一个不存在的受保护路径交给 sandbox-runtime 的禁止写入路径：占位成空目录。 */
+function placeholderPaths(path: string): string[] {
+	return [path, join(path, placeholderChild)];
+}
+
+/** 宿主上实际放占位的位置：路径上第一个不存在的那一级。 */
+function placeholderAt(path: string): string {
+	const parent = dirname(path);
+	return lstatSync(parent, { throwIfNoEntry: false }) === undefined
+		? placeholderAt(parent)
+		: path;
+}
+
+/**
+ * sandbox-runtime 只以工作区为根强制保护的这两个目录里的子路径。目录已存在、整个禁止写入时，
+ * 它仍为不存在的子路径放占位；排在目录前面的禁止路径先放好占位，否则工作区在禁止读取的目录里时，
+ * 占位落进只读的目录，bwrap 不启动。
+ */
+const runtimeChildren: Record<string, string[]> = {
+	".claude": ["commands", "agents"],
+	".git": ["hooks", "config"],
+};
+
+/** 工作区里 sandbox-runtime 强制保护、还不存在、要先放占位的子路径。 */
+function missingRuntimeChildren(
+	workspace: string,
+	gitWritable: boolean,
+): string[] {
+	return Object.entries(runtimeChildren).flatMap(([name, children]) => {
+		const dir = join(workspace, name);
+		if (name === ".git" && gitWritable) return [];
+		if (lstatSync(dir, { throwIfNoEntry: false })?.isDirectory() !== true) {
+			return [];
+		}
+		return children
+			.map((child) => join(dir, child))
+			.filter(
+				(path) => lstatSync(path, { throwIfNoEntry: false }) === undefined,
+			);
+	});
+}
+
+/**
  * 一个沙盒的文件规则。受保护的路径在每个可写的根目录里都加上：macOS 上写成通配，
- * Linux 上写入规则不支持通配，包装前扫描出已存在的位置，不存在的只在根目录放占位。
+ * Linux 上写入规则不支持通配，包装前扫描出已存在的位置，不存在的只在根目录放占位（空目录）。
  */
 export async function sandboxFilesystem(
 	policy: SandboxPolicy,
@@ -161,9 +213,17 @@ export async function sandboxFilesystem(
 	const escalated = command?.escalated === true;
 	const granted = command?.write ?? [];
 	const { profile } = policy;
+	// Linux 上 sandbox-runtime 跳过不存在的可写路径：要新建的文件放开它所在的目录
+	const created =
+		scope.kind === "edits" && platform === "linux"
+			? scope.files.filter(
+					(path) => lstatSync(path, { throwIfNoEntry: false }) === undefined,
+				)
+			: [];
+	const opened = [...new Set(created.map((path) => dirname(path)))];
 	const allowWrite =
 		scope.kind === "edits"
-			? [...scope.files]
+			? [...scope.files.filter((path) => !created.includes(path)), ...opened]
 			: [
 					...writableRoots(policy),
 					...(command === undefined ? [] : [policy.cache]),
@@ -212,7 +272,7 @@ export async function sandboxFilesystem(
 	);
 	const roots: ProtectedRoot[] =
 		scope.kind === "edits"
-			? []
+			? opened.map((root) => ({ root, options: {}, missing: true }))
 			: [
 					{ root: policy.workspace, options: workspaceOptions, missing: true },
 					...outside.map((root) => ({ root, options: {}, missing: true })),
@@ -223,15 +283,31 @@ export async function sandboxFilesystem(
 				];
 	const placeholders: string[] = [];
 	let scanTimedOut = false;
+	if (platform === "linux" && scope.kind !== "edits") {
+		const ahead = missingRuntimeChildren(
+			policy.workspace,
+			workspaceOptions.gitWritable === true,
+		);
+		denyWrite.push(...ahead.flatMap(placeholderPaths));
+		placeholders.push(...ahead);
+	}
 	for (const { root, options, missing } of roots) {
 		if (platform === "darwin") {
 			denyWrite.push(...protectedGlobs(root, options));
 			continue;
 		}
 		const found = await scanProtected(root, { ...options, ...scan });
-		denyWrite.push(...found.paths);
+		// 声明了写 `.git` 时列出的 hooks、config 和 info/attributes 可能还不存在
+		const absent = found.paths.filter(
+			(path) => lstatSync(path, { throwIfNoEntry: false }) === undefined,
+		);
+		denyWrite.push(
+			...found.paths.filter((path) => !absent.includes(path)),
+			...absent.flatMap(placeholderPaths),
+		);
+		placeholders.push(...absent.map(placeholderAt));
 		if (missing) {
-			denyWrite.push(...found.missing);
+			denyWrite.push(...found.missing.flatMap(placeholderPaths));
 			placeholders.push(...found.missing);
 		}
 		scanTimedOut ||= found.timedOut;

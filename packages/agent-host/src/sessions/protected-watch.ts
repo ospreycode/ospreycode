@@ -29,10 +29,13 @@ export class ProtectedWatch {
 		this.#known = new Set(paths);
 	}
 
-	/** 在准备 agent 沙盒之前调用：之后才出现的仓库都算新的。 */
+	/**
+	 * 在准备 agent 沙盒之前调用：之后才出现的仓库都算新的。agent 沙盒要放占位的名字一起记下，
+	 * 宿主上的占位不算新出现的路径。
+	 */
 	static async start(workspace: string): Promise<ProtectedWatch> {
-		const { paths } = await scanProtected(workspace, scan);
-		return new ProtectedWatch(workspace, paths);
+		const { paths, missing } = await scanProtected(workspace, scan);
+		return new ProtectedWatch(workspace, [...paths, ...missing]);
 	}
 
 	/** task 结束时调用。新出现的受保护路径只报告一次。 */

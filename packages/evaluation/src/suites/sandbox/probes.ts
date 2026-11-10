@@ -361,7 +361,14 @@ const outOfBoundsRead: SandboxCase = {
 				...secretFiles.map((file) =>
 					contained(`读 ~/${file}`, `cat ~/${file}`, lacks(secretMarker)),
 				),
-				contained("列出 ~/.ssh", "ls ~/.ssh", lacks("id_ed25519")),
+				// Linux 上禁止读取的目录换成空的 tmpfs：列得出来，里面是空的
+				process.platform === "linux"
+					? shell(
+							"列出 ~/.ssh",
+							"ls ~/.ssh",
+							all(succeeds, lacks("id_ed25519")),
+						)
+					: contained("列出 ~/.ssh", "ls ~/.ssh", lacks("id_ed25519")),
 				contained(
 					"经 node 读 ~/.netrc",
 					`node -e 'console.log(require("fs").readFileSync(process.env.HOME + "/.netrc", "utf8"))'`,
@@ -1306,5 +1313,6 @@ export {
 	leftovers,
 	probeScript,
 	put,
+	refused,
 	shell,
 };

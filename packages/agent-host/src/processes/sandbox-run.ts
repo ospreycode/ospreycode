@@ -53,7 +53,10 @@ export interface SandboxRunOptions {
 
 /** 命令的结果。 */
 export interface SandboxRunResult {
-	/** 命令的退出码；被信号结束时为空。 */
+	/**
+	 * 命令的退出码；被信号结束时为空。Linux 上沙盒里的命令被信号结束时，bubblewrap 以 128 加信号值
+	 * 退出，这里是那个退出码，`signal` 为空。
+	 */
 	exit_code: number | null;
 	signal: NodeJS.Signals | null;
 }

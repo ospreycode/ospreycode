@@ -51,7 +51,7 @@
   - 越界申请：批准的 `require_escalated` 放开这条命令的文件写入（Host 根目录、安装目录、主目录里会被自动执行的文件和受保护的路径仍然不可写），网络照常经代理；批准的 `unix_sockets` 和 `local_binding` 由为这条命令单独启动的辅助进程放开，只在 macOS 上支持。Docker 的 socket 只能逐条命令批准。申请写得不对（没有带 `additional_permissions`、socket 是目录、平台不支持）时不询问，直接告诉模型。
   - macOS 上每个沙盒实例带一个收尾进程，命令结束、取消或 session 关闭时结束实例里的全部进程，包括以后台、`nohup` 和两次 fork 启动的。收尾进程提前退出时发一条 `warning`，并在命令的结果里注明。
   - 沙盒的环境变量按白名单从 Host 的环境里取，`HOME`、`TMPDIR` 和构建工具的缓存变量（`npm_config_cache`、`CARGO_HOME`、`GOCACHE`、`XDG_CACHE_HOME` 等）由 Host 设置，缓存放在根目录的 `cache/<project_id>/` 下，只有命令沙盒可写。
-  - 受保护的路径在每个可写的根目录里都禁止写入；Linux 上放的占位记进占位登记表（`data/placeholders.json`），进程被强制结束后留下的空文件和空目录在下次打开 session 时删除。
+  - 受保护的路径在每个可写的根目录里都禁止写入；Linux 上放的占位记进占位登记表（`data/placeholders.json`），进程被强制结束后留下的空目录在下次打开 session 时删除。
 - 权限规则：打开 session 时加载用户级的 `rules/*.toml`、启动参数 `rules`（`SessionOptions.rules`，绝对路径的列表，`SessionConfig.ruleFiles`）和仓库的 `.ospreycode/rules/*.toml`（只能写 `prompt` 和 `forbidden`），文件有错时抛出 `ConfigError`。`forbidden` 规则命中的命令直接拒绝，`prompt` 规则命中的询问（`granular` 的类别 `rules`），`allow` 规则让强制删除和它声明的额外权限不再询问。没有沙盒时规则照常起作用。
   - 保存为规则：模型用 `prefix_rule` 建议的规则通过检查时，命令的询问带 `suggested_rule`，回答 `scope: "rule"` 就把它写进用户级的 `rules/default.toml`（批准存 `allow`，带上这次批准的权限；拒绝存同一前缀的 `forbidden`），马上对这个 session 生效。只有 `with_additional_permissions` 的询问带它：`require_escalated` 和 Docker socket 的询问不能保存为规则。写文件时持有 `data/locks/rules.lock`。
 - 网络访问的审批：沙盒里的程序连接权限规则没有放行的域名时连接挂起，发 `kind` 为 `network` 的 `approval.requested`（`request` 是 `{kind: "network", host, port}`；能确定是哪个工具调用发起的带 `tool_call_id`；有几个工具调用或有后台命令在运行时分不出来，带正在运行命令的 `running_tool_calls` 和后台命令的 `running_background`，供前端参考）。回答 `once` 只放行等待中的连接，`task` 本任务内放行这个域名，`rule` 保存为域名规则（批准存 `allow`，拒绝存 `forbidden`）。本机和私有网段的地址、`forbidden` 规则的域名直接拒绝；审批策略为 `never` 或 `granular` 关闭了 `network` 时不询问，直接拒绝。拒绝的原因经代理交给发起连接的程序。没有 task 在运行时（后台命令的连接）不询问：规则放行的和启动它的 task 批准过的域名照常放行，其余的拒绝。归属不到工具调用的拒绝发一条 `warning`，并作为通知告诉模型。
@@ -76,7 +76,7 @@
   - `host.listSessions({directory?})`：列出 session（`SessionInfo`：`session_id`、`project_id`、`workspace`、`created_at`、`last_written_at`、`title`），最近写过的在前；给了目录只列它所在项目的。只读 session 记录，不取工作区锁，也不登记项目。
   - `host.clearCache({directory?})`：清空构建缓存（根目录下的 `cache/<project_id>/`），返回清空了的项目的 `project_id`；给了目录只清它所在项目的。只删目录里的内容，不检查有没有打开的 session。
   - `host.defaultService()`：用户级配置选用的默认模型所属的服务，没有时为空。`host.credentialStatus({credentials?})`：内置清单和用户级配置里的模型用到的各个服务的凭据取自哪一层（`CredentialStatus`：`source` 为 `startup`、`user_config` 或 `store`，来源是文件或环境变量时带 `file` 或 `env`），不返回凭据的值。
-  - `host.runInSandbox({workspace, permissions?, command, stdio, signal?, onWarning})`：用和 session 的命令沙盒同一套策略运行一条命令，不询问，权限规则没有放行的域名直接拒绝，标准输入输出直通，返回 `{exit_code, signal}`（`SandboxRunOptions`、`SandboxRunResult`、`SandboxStdio`）。`danger-full-access` 下直接运行。
+  - `host.runInSandbox({workspace, permissions?, command, stdio, signal?, onWarning})`：用和 session 的命令沙盒同一套策略运行一条命令，不询问，权限规则没有放行的域名直接拒绝，标准输入输出直通，返回 `{exit_code, signal}`（`SandboxRunOptions`、`SandboxRunResult`、`SandboxStdio`；Linux 上被信号结束的命令是退出码 128 加信号值）。`danger-full-access` 下直接运行。
   - `doctor({root, env, workspace})`：检查运行环境，逐项返回 `DoctorCheck`（`id`、`ok`、`message`）：Node 版本、沙盒后端、登录钥匙串（只在 macOS 上）、git 版本、根目录的属主和权限、socket 路径长度、配置和权限规则文件能否加载。是单独的函数，不是 `Host` 的方法：根目录有问题时 `createHost` 就会抛出错误。
 - 入口另外导出 `Session` 和 `SessionOptions` 的签名里用到的类型：`ApprovalAnswer`、`ApprovalPolicy`、`GranularApproval`、`SandboxMode`（来自 `@ospreycode/sandbox`）和 `ReasoningEffort`（来自 `@ospreycode/api`），前端只依赖本包就能写出这些类型。
 - `session.config()`：session 当前生效的配置（`SessionConfig`），会话中换过的模型、推理强度、沙盒模式和审批策略已经并在里面，配置文件的改动要到 `reload()` 之后才在里面。前端显示当前的设置时用它：自己再调 `resolveConfig` 会把还没生效的改动带出来。

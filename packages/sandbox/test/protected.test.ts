@@ -39,9 +39,22 @@ function dir(...segments: string[]): string {
 	return path;
 }
 
+/** git 认得的 `.git` 目录：要有 `HEAD`。 */
+function repository(): string {
+	writeFileSync(join(dir(".git"), "HEAD"), "ref: refs/heads/main\n");
+	return join(root, ".git");
+}
+
+/** direnv 会加载的 `.envrc`：不是空的。 */
+function envrc(): string {
+	const path = join(root, ".envrc");
+	writeFileSync(path, "use flake\n");
+	return path;
+}
+
 describe("protectedName：文件工具写入前的检查", () => {
 	test("受保护的名字在任意深度都算，路径不存在也算", () => {
-		dir(".git");
+		repository();
 		for (const [path, name] of [
 			[".git/hooks/pre-commit", ".git"],
 			["packages/app/.git", ".git"],
@@ -61,7 +74,7 @@ describe("protectedName：文件工具写入前的检查", () => {
 	});
 
 	test("只在构建、安装或提交时执行的配置和只是模型输入的文件不保护", () => {
-		dir(".git");
+		repository();
 		for (const path of [
 			"src/index.ts",
 			".husky/pre-commit",
@@ -79,13 +92,29 @@ describe("protectedName：文件工具写入前的检查", () => {
 	});
 
 	test("根目录有 .envrc 时才保护 nix 的文件", () => {
-		dir(".git");
+		repository();
 		expect(protectedName(join(root, "flake.nix"), root)).toBeUndefined();
-		file(".envrc");
+		envrc();
 		expect(protectedName(join(root, "flake.nix"), root)).toBe("flake.nix");
 		expect(protectedName(join(root, "sub", "shell.nix"), root)).toBe(
 			"shell.nix",
 		);
+	});
+
+	test("空的 .envrc、空的 .git 文件和没有 HEAD 的 .git 目录按没有算：Linux 上的占位就是空目录", () => {
+		dir(".envrc");
+		dir(".git");
+		expect(protectedName(join(root, "flake.nix"), root)).toBeUndefined();
+		expect(protectedName(join(root, "HEAD"), root)).toBe("HEAD");
+		rmSync(join(root, ".envrc"), { recursive: true });
+		rmSync(join(root, ".git"), { recursive: true });
+		file(".envrc");
+		file(".git");
+		expect(protectedName(join(root, "flake.nix"), root)).toBeUndefined();
+		expect(protectedName(join(root, "HEAD"), root)).toBe("HEAD");
+		// 指向别处的 .git 文件算有仓库
+		writeFileSync(join(root, ".git"), "gitdir: ../elsewhere\n");
+		expect(protectedName(join(root, "HEAD"), root)).toBeUndefined();
 	});
 
 	test("根目录没有 .git 时保护 HEAD、objects、refs：凑齐就是能执行命令的裸仓库", () => {
@@ -97,7 +126,7 @@ describe("protectedName：文件工具写入前的检查", () => {
 	});
 
 	test("声明了对 .git 的写入时 .git 可写，hooks、config 和 info/attributes 仍然受保护", () => {
-		dir(".git");
+		repository();
 		const allowed = { gitWritable: true };
 		for (const path of [".git/index", ".git/objects/ab/cd", ".git/HEAD"]) {
 			expect(
@@ -135,7 +164,7 @@ describe("scanProtected：Linux 上包装前的扫描", () => {
 
 	test("找出三层以内已存在的受保护名字，更深的和 node_modules 里的不找", async () => {
 		const found = [
-			dir(".git"),
+			repository(),
 			file("sub", ".envrc"),
 			dir("a", "b", ".vscode"),
 			file("a", "team.code-workspace"),
@@ -161,10 +190,11 @@ describe("scanProtected：Linux 上包装前的扫描", () => {
 		expect(paths).not.toContain(join(vscode, ".envrc"));
 	});
 
-	test("根目录下还不存在的名字列为要放占位的；两段的名字只在上一级已存在时列出；带通配的不列", async () => {
-		dir(".git");
-		file(".envrc");
+	test("根目录下还不存在的名字列为要放占位的；两段的名字只在上一级已存在时列出；带通配的换成 mise 默认读取的名字", async () => {
+		repository();
+		envrc();
 		dir(".github");
+		dir("mise");
 
 		const { missing } = await scanProtected(root, scan);
 
@@ -176,12 +206,16 @@ describe("scanProtected：Linux 上包装前的扫描", () => {
 				join(root, ".github", "hooks"),
 				// 有 .envrc 时加上 nix 的文件
 				join(root, "flake.nix"),
+				join(root, "mise.toml"),
+				join(root, ".mise.local.toml"),
+				join(root, "mise", "config.toml"),
 			]),
 		);
 		expect(missing).not.toContain(join(root, ".git"));
 		expect(missing).not.toContain(join(root, ".envrc"));
 		// 上一级 .config 不存在：占位不替用户新建目录
 		expect(missing).not.toContain(join(root, ".config", "mise"));
+		expect(missing).not.toContain(join(root, ".config", "mise.toml"));
 		expect(missing.filter((path) => path.includes("*"))).toEqual([]);
 		// 有 .git 时不保护裸仓库的三项
 		expect(missing).not.toContain(join(root, "HEAD"));
@@ -205,6 +239,7 @@ describe("scanProtected：Linux 上包装前的扫描", () => {
 	});
 
 	test("声明了对 .git 的写入时只保护其中的 hooks、config 和 info/attributes", async () => {
+		repository();
 		dir(".git", "hooks");
 		const nested = dir("sub", ".git");
 

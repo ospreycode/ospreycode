@@ -518,7 +518,8 @@ describe.runIf(supported)(
 				);
 				const written =
 					existsSync(path) && readFileSync(path, "utf8") === "x\n";
-				expect(status === 0, path).toBe(written);
+				// Linux 上禁止读取的目录是空的 tmpfs：写入不报错，只是写不到宿主上
+				if (platform === "darwin") expect(status === 0, path).toBe(written);
 				results.push(written);
 				rmSync(path, { force: true });
 			}
@@ -547,7 +548,13 @@ describe.runIf(supported)(
 				false,
 			);
 			const listed = await run(sandbox, config, `ls '${home}'`, command);
-			expect(listed.status).not.toBe(0);
+			if (platform === "darwin") {
+				expect(listed.status).not.toBe(0);
+			} else {
+				// Linux 上禁止读取的目录换成空的 tmpfs，只列得出重新放开的路径
+				expect(listed.status).toBe(0);
+				expect(listed.stdout).not.toContain("notes");
+			}
 			const temporary = await run(
 				sandbox,
 				config,
@@ -635,9 +642,9 @@ describe.runIf(supported)(
 				(await run(sandbox, config, script, escalated)).status;
 			expect(await exit(`cat '${home}/notes/private.txt'`)).not.toBe(0);
 			expect(await exit(`cat '${home}/tools/internal/secret.txt'`)).not.toBe(0);
-			expect(await exit(`echo x > '${home}/tools/internal/new.txt'`)).not.toBe(
-				0,
-			);
+			const internal = await exit(`echo x > '${home}/tools/internal/new.txt'`);
+			// Linux 上 deny 的目录是空的 tmpfs，写入不报错；下面看宿主上没有这个文件
+			if (platform === "darwin") expect(internal).not.toBe(0);
 			expect(await exit(`echo x > '${home}/scratch/frozen/new.txt'`)).not.toBe(
 				0,
 			);

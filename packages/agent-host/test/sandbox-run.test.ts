@@ -152,12 +152,13 @@ test = { file = "${dirs.credentialFile}" }
 		expect(result.stdout).toBe("");
 	});
 
-	test("退出码和结束命令的信号照原样返回", async () => {
+	test("退出码和结束命令的信号照原样返回；Linux 上 bubblewrap 把信号换成 128 加信号值", async () => {
 		expect(await run("exit 7")).toMatchObject({ exit_code: 7, signal: null });
-		expect(await run("kill -TERM $$")).toMatchObject({
-			exit_code: null,
-			signal: "SIGTERM",
-		});
+		expect(await run("kill -TERM $$")).toMatchObject(
+			process.platform === "linux"
+				? { exit_code: 143, signal: null }
+				: { exit_code: null, signal: "SIGTERM" },
+		);
 	});
 
 	test("权限规则没有放行的域名直接拒绝，不询问", async () => {

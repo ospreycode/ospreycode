@@ -33,13 +33,13 @@
   - `decideNetwork(request, context)` 判断一次网络访问（本机和私有网段的地址、`forbidden` 规则拒绝，`allow` 规则放行，其余按类别 `network` 询问），`networkLists(rules)` 把域名规则编译成 sandbox-runtime 的名单。
   - `decideMcpTool(request, context)` 判断一次 MCP 工具调用：默认每次询问（类别 `mcp_tools`），`allow` 规则放行没有标注破坏性的工具。
 - 越界申请的询问理由说明后果：`local_binding` 会放开本机所有端口并能在所有网卡上监听，Docker 的 socket 等于完全访问。
-- 受保护的路径：`protectedName(path, root, options)` 判断一个路径是不是落在可写根目录里受保护的位置（`.git` 里的 `hooks` 和 `config`、`.vscode`、`.idea`、`.envrc` 等，名单见设计文档），`protectedAncestors(path, root)` 给出路径上名字受保护的上级目录，`protectedGlobs(root, options)` 给出 macOS 上的 `denyWrite` 通配，`scanProtected(root, {depth, timeoutMs})` 在 Linux 上扫出已存在的位置和要放占位的名字。
+- 受保护的路径：`protectedName(path, root, options)` 判断一个路径是不是落在可写根目录里受保护的位置（`.git` 里的 `hooks` 和 `config`、`.vscode`、`.idea`、`.envrc` 等，名单见设计文档），`protectedAncestors(path, root)` 给出路径上名字受保护的上级目录，`protectedGlobs(root, options)` 给出 macOS 上的 `denyWrite` 通配，`scanProtected(root, {depth, timeoutMs})` 在 Linux 上扫出已存在的位置和要放占位的名字（带通配的 mise 名字换成它默认读取的几个具体名字）。空的 `.envrc`、空的 `.git` 文件和没有 `HEAD` 的 `.git` 目录按不存在算。
 - `StdinRequest`：向运行中的后台命令的 stdin 写入、需要重新批准时的申请。
 - `decideFileEdits` 判断可写范围之外的文件改动（类别 `sandbox_approval`），`decidePermissions` 判断 `request_permissions` 的申请（类别 `request_permissions`，`danger-full-access` 下直接放行）。
 - 批准的回答 `ApprovalAnswer` 可以带 `granted`（`GrantedPermissions`）：回答 `request_permissions` 的询问时只批准申请里的一部分。
 - `@ospreycode/sandbox/backends`：macOS（Seatbelt）和 Linux（bubblewrap，x64 和 arm64）的沙盒后端，基于 `@anthropic-ai/sandbox-runtime` 0.0.81。Linux 后端还没有在真机上验证。
   - `startSandboxHelper` 启动加载 sandbox-runtime 的辅助进程（`pid` 是它的进程组，`children` 是 Linux 上它启动的 socat），为一组沙盒生成启动命令。网络名单、批准的 Unix socket 和本地端口只能按进程设置（`HelperScope`）；`scope.network` 不给时沙盒完全不能联网，给了以后名单之外的域名经 `ask` 回调询问，连接挂起到回答为止（`NetworkAnswer`）。辅助进程自己退出时调用 `onExit`。
-  - `sandboxFilesystem(policy, scope, platform)` 生成一个沙盒的文件规则：Host 根目录、凭据和常见密钥位置不可读；命令沙盒另可写构建缓存和批准的路径；越界执行（`escalated`）放开文件写入，Host 根目录、安装目录、主目录里会被自动执行的文件和受保护的路径仍然不可写；apply-edits 只能写批准的文件。受保护的路径在每个可写的根目录里都禁止写入。
+  - `sandboxFilesystem(policy, scope, platform)` 生成一个沙盒的文件规则：Host 根目录、凭据和常见密钥位置不可读；命令沙盒另可写构建缓存和批准的路径；越界执行（`escalated`）放开文件写入，Host 根目录、安装目录、主目录里会被自动执行的文件和受保护的路径仍然不可写；apply-edits 只能写批准的文件（Linux 上要新建的文件放开它所在的目录）。受保护的路径在每个可写的根目录里都禁止写入；Linux 上不存在的受保护名字的占位一律是空目录。
   - macOS 上 `wrap` 的 `reaper`（`ReaperOptions`）在沙盒实例里加上收尾进程：调用方关闭管道时它结束实例里的全部进程，包括以后台、`nohup` 和两次 fork 启动的。
   - Linux 上辅助进程初始化时检查依赖（bubblewrap、socat、ripgrep、seccomp 组件）齐全，bubblewrap 是 0.8.0 以上并且不是 setuid 安装，不满足时 `startSandboxHelper` 抛出 `SandboxUnavailableError`。
   - `verifySandboxBackend` 在沙盒里实际运行一条空命令，后端启动不了命令时抛出 `SandboxUnavailableError`；`checkSandboxSupport` 在没有后端的平台上抛出它；临时目录太深、放不下 sandbox-runtime 的 Unix socket 的路径时，`startSandboxHelper` 同样抛出它。

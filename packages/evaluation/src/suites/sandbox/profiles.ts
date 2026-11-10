@@ -10,6 +10,7 @@ import {
 	leftovers,
 	prints,
 	put,
+	refused,
 	type SandboxRun,
 	shell,
 	succeeds,
@@ -132,7 +133,10 @@ const profileDenyNotApprovable: SandboxCase = {
 					label: "文件工具写禁止的目录",
 					tool: "write",
 					arguments: { path: target, content: "written by the evaluation\n" },
-					check: denied("forbidden_rule"),
+					// Linux 上禁止读取的目录在 agent 沙盒里是空的 tmpfs，文件工具看不到上一级目录，
+					// 不登记就失败
+					check:
+						process.platform === "linux" ? refused : denied("forbidden_rule"),
 				},
 				shell(
 					"命令申请写可写目录里设成只读的子目录",

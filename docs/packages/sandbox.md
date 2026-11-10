@@ -88,7 +88,7 @@ sandbox/
 - 沙盒内能读到的内容，都可能被发给模型服务。
 - macOS 上，同一用户其他进程（包括启动 Host 的 shell）的启动参数和环境变量在沙盒内都能读到，在 shell 里导出的密钥会因此泄露。
 - 工作区子目录里新建的裸仓库和 `.git` 文件不受保护（保护它们就不能在子目录里 `git init`），之后在这些目录里运行的 git 会读取其中的配置。提示用户设置 `safe.bareRepository=explicit`。
-- Linux 上受保护的路径靠包装时的扫描发现，有缺口：子目录里还不存在的受保护名字（如 `sub/.envrc`）能被命令新建，只有工作区根目录放了占位；同一条命令里先新建再写入的（如先建仓库再写 hooks）；扫描深度以外或超时没扫到的位置；被攻破的 runtime 在同一个 task 里绕过文件工具、直接写进 agent 进程启动之后才出现的位置（见[命令的执行](#命令的执行)）。
+- Linux 上受保护的路径靠包装时的扫描发现，有缺口：子目录里还不存在的受保护名字（如 `sub/.envrc`、`sub/.git`）能被命令新建，只有工作区根目录放了占位；根目录里带通配的名字只给 mise 默认读取的几个放占位，`mise.<环境>.toml`、`*.code-workspace` 这类能被新建；同一条命令里先新建再写入的（如先建仓库再写 hooks）；扫描深度以外或超时没扫到的位置；被攻破的 runtime 在同一个 task 里绕过文件工具、直接写进 agent 进程启动之后才出现的位置（见[命令的执行](#命令的执行)）。
 - 沙盒外事先建好的硬链接能被沙盒内写穿：写进已有的硬链接会改到工作区外的原文件。Linux 上 pnpm 和 uv 默认用硬链接安装依赖，沙盒可以经工作区改写用户的全局 store。
 - macOS 上批准 `local_binding` 的命令能连接本机的所有端口，包括本机上的数据库、Docker 这类服务和其他沙盒的代理（可以借用它们已放行的域名）；它还能在所有网卡上监听，局域网里的其他机器也能连进来。
 - `require_escalated` 的命令仍能写主目录里其他会被自动执行的位置（如 `~/Library/LaunchAgents`、crontab、编辑器的全局配置），批准前要看清命令。
@@ -158,15 +158,16 @@ sandbox-runtime 写不出"最具体的一条生效"的全部情形，写不出�
 
 实现：
 
-- sandbox-runtime 自带的强制名单保留，多出的项由 Host 加进 `denyWrite`。macOS 上写成以 `**/` 开头的通配，任意深度生效，之后新建的路径也受保护，路径不存在时 Seatbelt 直接拒绝创建。Linux 上写入规则不支持通配，Host 在每次包装前用和强制保护相同的扫描（深度 3，最多 10 秒）找出这些名字已存在的位置，以绝对路径加入；不存在的只在工作区根目录用 sandbox-runtime 的占位（空的只读文件，目录类的名字用空目录；`.git` 不存在时它不放占位，要显式加上）。
+- sandbox-runtime 自带的强制名单保留，多出的项由 Host 加进 `denyWrite`。macOS 上写成以 `**/` 开头的通配，任意深度生效，之后新建的路径也受保护，路径不存在时 Seatbelt 直接拒绝创建。Linux 上写入规则不支持通配，Host 在每次包装前用和强制保护相同的扫描（深度 3，最多 10 秒）找出这些名字已存在的位置，以绝对路径加入；不存在的只在工作区根目录用 sandbox-runtime 的占位（`.git` 不存在时它不放占位，要显式加上）。占位一律是只读的空目录：sandbox-runtime 给文件类的名字在宿主上放空文件、在沙盒里绑上 `/dev/null`，`git add -A` 遇到这个字符设备就失败，空目录 git 不管；Host 在每个不存在的名字下面多禁止一级（`<名字>/.placeholder`），它就改放空目录。带通配的名字放不了占位，mise 的换成它默认读取的 `mise.toml`、`mise.local.toml`、`.mise.toml`、`.mise.local.toml`、`.config/mise.toml`、`.config/mise.local.toml`、`mise/config.toml` 和 `mise/config.local.toml`。
 - 占位在沙盒存在期间对沙盒外的工具也可见，进程被强制结束后还会留在用户的目录里，所以 Host 把占位记进 `data/placeholders.json`（加锁写入），在 session 结束和下次打开同一工作区时删除仍为空的残留。
 - 工作区以外批准的可写路径（`request_permissions`、`file_system.write` 批下来的目录）里，Host 以每个可写路径为根同样加上这些名字：sandbox-runtime 的强制保护只以工作区为根。申请写入的路径本身（或它的某一级上级）叫这些名字时直接拒绝，不拿去问用户；工作区以外的路径从根目录起逐级判断。
 - nix 的那几个文件只看可写根目录下有没有 `.envrc`：任意深度的 `.envrc` 要在每次包装前扫描整个工作区才知道。
+- 空的 `.envrc`、空的 `.git` 文件和没有 `HEAD` 的 `.git` 目录按不存在算：Linux 上 agent 沙盒的占位在宿主上就是这样的空目录，算作存在的话，之后的命令沙盒会多保护 nix 的文件，又不再保护根目录的 `HEAD`、`objects`、`refs`。按不存在算是安全的：空的 `.envrc` 不让 nix-direnv 求值，没有 `HEAD` 的目录 git 不当成仓库。
 - Linux 上两段的名字（如 `.github/hooks`、`.config/mise`）只在上一级目录已经存在时放占位：占位不替用户新建目录。
 - `require_escalated` 的命令整个文件系统可写，Host 把主目录也作为根加上这些名字；Linux 上不在主目录里放占位（名单很长，用户看得到），只禁止扫描到的已有位置。工作区、临时目录或缓存目录位于主目录里某个受保护名字的目录下面时（如 `~/.cursor/worktrees/x`），它们保持可写，那个目录里已有的其他条目按路径禁止；之后新建的名字拦不住：sandbox-runtime 的写入规则写不出"除了某个名字以外"。
 - 文件工具写进这些路径的请求在登记时直接拒绝（见[命令的执行](#命令的执行)）。越界的命令和 apply-edits 同样不能写它们，批准也不行：sandbox-runtime 的强制保护在越界执行时照样生效，Host 加的这部分也一起加上。拒绝的原因告诉模型，由用户在沙盒外修改。
 - 唯一的例外是工作区里的 `.git` 目录：越界申请或 `allow` 规则声明了对它的写入（声明的可写路径就是工作区的 `.git` 或在它里面）时可以写，`git add`、`git commit`、`git push` 要用。其中的 `.git/hooks`、`.git/config` 和 `.git/info/attributes` 仍然只读，所以 `git remote add`、`git push -u` 这类会改 `.git/config` 的命令由用户在沙盒外做。
-- 代价是 agent 改不了这些文件，工作区里也不能 `git init`、`git clone`，这些都由用户在沙盒外做。
+- 代价是 agent 改不了这些文件，工作区里也不能 `git init`、`git clone`（Linux 上只有工作区根目录不能），这些都由用户在沙盒外做。
 
 ## 构建工具的缓存
 
@@ -255,7 +256,7 @@ Host 代为执行的越界动作只有命令和文件改动两类；网络访问
 - CLI 显示 Host 按磁盘上的旧内容算出的统一 diff，批准的就是将要写入的字节。哈希对不上直接报错，不做模糊匹配。用户选"本任务内允许"时，这个任务里对同一路径的改动不再询问。
 - 执行：Host 经 `sandbox` 以 `apply-edits` 角色启动 agent-runtime 的入口，写权限只给批准的路径（工作区也不给），不能联网，时限 30 秒。申请作为一份 JSON 经 stdin 传入，结果一份 JSON 经 stdout 返回：`succeeded`，或 `failed` 加 `written: [path]`（部分写入算 `failed`）。它先核对全部哈希，有一个不符就什么都不写，再不跟随符号链接地打开文件（macOS 用 `O_NOFOLLOW_ANY`，Node 的 `fs.constants` 里没有，按数值 `0x20000000` 传入；Linux 上逐级 `lstat`，最后一级用 `O_NOFOLLOW`），在同一个文件描述符上读、核对、截断和写入。不写临时文件再改名：改名需要整个目录的写权限。
 - 不提供目录级的编辑批准，需要时用 `request_permissions`。
-- sandbox-runtime 在 macOS 上能把写权限限定到单个文件（`/tmp` 这类路径要先规范化成 `/private/tmp`）。Linux 上不存在的写入路径会被悄悄跳过，对单个文件的绑定挂载也可能删不掉；新增和删除需要放开所在目录时，询问里写明。
+- sandbox-runtime 在 macOS 上能把写权限限定到单个文件（`/tmp` 这类路径要先规范化成 `/private/tmp`）。Linux 上不存在的写入路径被悄悄跳过，所以 `add` 放开文件所在的目录，以这个目录为根照样禁止写[受保护的路径](#受保护的路径)并放占位。询问里不另外说明：这个沙盒里只运行 apply-edits，它只写申请里的文件，放开目录只是少了一层防护。Linux 上对单个文件的绑定挂载是挂载点，删不掉也改不了名（`EBUSY`），以后支持删除时同样要放开目录。
 
 ### 建议的规则
 
@@ -379,6 +380,9 @@ sandbox-runtime 的 `SandboxManager` 是进程级单例：初始化之后再调�
 - **强制写保护的名单**：sandbox-runtime 自带一组（`.bashrc`、`.bash_profile`、`.zshrc`、`.zprofile`、`.profile`、`.gitconfig`、`.gitmodules`、`.ripgreprc`、`.mcp.json`、`.vscode/`、`.idea/`、`.claude/commands`、`.claude/agents`、`.git/hooks`、`.git/config`），其余[受保护的路径](#受保护的路径)要另外加上（包括 `.git/info/attributes` 和 `.claude/settings.json`）。不设置 `filesystem.allowGitConfig`：它会把 `.git/config` 从名单里去掉。
 - **macOS 上的强制保护**是以当前目录为根、任意深度的正则规则，对之后新建的路径同样生效；它还拒绝在受保护路径的上级目录创建这些名字，所以工作区里任何位置的 `git init`、`git clone` 都会失败，按越界方式放开 `allowWrite: ['/']` 也一样。
 - **Linux 上策略在包装时固定**：强制保护靠包装时的 ripgrep 扫描发现，实际只覆盖到危险文件 `a/b/.bashrc`、危险目录和嵌套仓库的 hooks、config 的 `a/.vscode`、`a/.git/hooks` 这一层，所以 `packages/x/.git` 这样更深的嵌套仓库不受保护（PR #569）；扫描跳过 `node_modules`，超过 10 秒没扫到的部分不受保护；`denyRead` 指向当时不存在的路径就什么也挡不住；`denyWrite` 指向不存在的路径时挂载占位；当前目录的 `.git` 是文件时保护的是这个文件。所以命令每次单独包装，占位由 Host 登记和清理。
+- **Linux 上禁止读取的位置**：`denyRead` 的目录换成一个空的 tmpfs，沙盒里列得出来、是空的，还能写进去，写进去的内容不落到宿主上，命令结束就消失；禁止读取的文件绑上 `/dev/null`。所以 Linux 上"读不到"表现为空目录和空文件，写进这些位置不报错；测试和评测核对的是宿主上的内容不变。
+- **Linux 上禁止读取的目录里的工作区**：工作区在禁止读取的目录里时（如命名权限配置的 `"~/" = "deny"`），已存在的 `.claude`、`.git` 整个只读之后，sandbox-runtime 还要在里面为强制保护的 `commands`、`agents`、`hooks`、`config` 放占位，只读的目录里建不了挂载点，bwrap 不启动。Host 把这几个还不存在的子路径排在禁止写入的路径前面，先放好占位。
+- **Linux 上被信号结束的命令**：bwrap 以 128 加信号值退出，Host 看到的是退出码（`SIGTERM` 是 143），不是信号。
 - **后端的警告按能力缺失处理**：适配层在启动前检查，有一项就当作不支持并停止。Linux 上缺少 seccomp 组件时，Unix socket 的限制、嵌套的 PID 命名空间、对 io_uring 和 AF_VSOCK 以及创建命名空间的拦截一起失效，只出现在 `checkDependencies()` 的 `warnings` 里；Linux 写入规则里的通配符会被跳过，只能从 `getLinuxGlobPatternWarnings()` 查到。
 - **始终可写的路径**：除了配置的可写范围，它始终放行 `/tmp/claude`、`/private/tmp/claude`、`/dev/stdout`、`/dev/tty` 这类设备，以及没被 `denyRead` 覆盖的 `~/.npm/_logs` 和 `~/.claude/debug`。这些目录由本机所有 sandbox-runtime 沙盒共用，会成为沙盒之间的通道，所以适配层对 `/tmp/claude` 加 `denyWrite`，把 `~/.npm/_logs` 和 `~/.claude/debug` 加进所有沙盒的 `denyRead`。
 - **沙盒里的 `TMPDIR`**：它把沙盒里的 `TMPDIR` 设成辅助进程环境里的 `CLAUDE_CODE_TMPDIR`，不设时就是上面那个共用的 `/tmp/claude`，所以 Host 启动辅助进程时把它设成 session 的临时目录。它自己的 Unix socket（`srt-mux-*.sock`）也建在辅助进程的 `TMPDIR` 里，路径长度受 Host 启动时的检查约束（见 agent-host 的[目录位置](agent-host.md#目录位置)）。
@@ -419,8 +423,7 @@ sandbox-runtime 的 `credentials` 设置有一种 mask 模式：沙盒里只看�
 P1：
 
 - Linux 上做切换沙盒模式的验收：`agent-host/test/restart.test.ts` 里"切换沙盒模式"的真实沙盒测试现在只在 macOS 上运行，放开平台限制在 Linux 上运行一遍（重启前后发给模型的请求一致），并记录重启的耗时。macOS 上的结论见[分层](#分层)。
-- Linux 上实测占位文件对 git、direnv 和编辑器的影响（如空文件出现在 `git status` 里），写进 sandbox 专项评测。
-- Linux 上实测把写权限限定到单个文件：不存在的写入路径是否被悄悄跳过，对单个文件的绑定挂载能否删掉。
+- Linux 上实测占位的空目录对 direnv 和编辑器的影响，写进 sandbox 专项评测。对 git 的影响见[受保护的路径](#受保护的路径)。
 - Linux 上实测一个沙盒连不到别的辅助进程的代理 socket，以及辅助进程的启动耗时。
 - Linux 上实测 `local_binding`：同一条命令内可用、两条命令之间和到宿主的 127.0.0.1 都不通。
 - 实测 Linux 上 Host 对受保护名字的扫描（深度 3、10 秒）和 sandbox-runtime 自己的扫描合起来的耗时。

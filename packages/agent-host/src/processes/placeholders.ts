@@ -30,7 +30,7 @@ function parseTable(text: string, path: string): Table {
 
 /**
  * Linux 上受保护路径的占位登记表（`data/placeholders.json`）。sandbox-runtime 为还不存在的受保护名字
- * 在用户的目录里放占位（空文件或空目录），命令结束后删除；Host 被强制结束时它们会留下来。
+ * 在用户的目录里放占位（空目录），命令结束后删除；Host 被强制结束时它们会留下来。
  * Host 在包装前把可能放的占位记在这里，session 结束和下次打开同一工作区时删除仍为空的残留。
  */
 export class Placeholders {
@@ -80,7 +80,11 @@ export class Placeholders {
 	async clean(): Promise<void> {
 		await withFileLock(this.#lock, this.#owner, () => {
 			const table = this.#read();
-			for (const path of table[this.#workspace] ?? []) {
+			// 从深到浅：占位可以放在另一个占位目录里，目录要先空出来
+			const paths = [...(table[this.#workspace] ?? [])].sort(
+				(a, b) => b.length - a.length,
+			);
+			for (const path of paths) {
 				// 不跟随符号链接：占位是普通的空文件或空目录
 				const stat = lstatSync(path, { throwIfNoEntry: false });
 				if (stat?.isFile() === true && stat.size === 0) unlinkSync(path);
