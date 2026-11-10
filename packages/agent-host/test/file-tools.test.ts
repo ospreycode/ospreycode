@@ -254,24 +254,28 @@ describe("登记之后没有提交结果的文件改动（假的 agent 进程）
 		);
 	});
 
-	test("改动落在可写根之外时不允许执行", async () => {
-		await open(
-			[],
-			{ sandboxMode: "workspace-write", approvalPolicy: "on-request" },
-			{ agentEntry },
-		);
-		await runTask(
-			JSON.stringify({
-				path: join(dirs.home, "escape.txt"),
-				old_sha256: null,
-				new_sha256: sha256("x"),
-			}),
-		);
+	// 只有沙盒模式下才有可写根之外的路径，现在只有 macOS 有沙盒后端
+	test.runIf(process.platform === "darwin")(
+		"改动落在可写根之外时不允许执行（macOS 真实沙盒）",
+		async () => {
+			await open(
+				[],
+				{ sandboxMode: "workspace-write", approvalPolicy: "on-request" },
+				{ agentEntry },
+			);
+			await runTask(
+				JSON.stringify({
+					path: join(dirs.home, "escape.txt"),
+					old_sha256: null,
+					new_sha256: sha256("x"),
+				}),
+			);
 
-		expect(results()).toHaveLength(1);
-		expect(results()[0]?.status).toBe("failed");
-		expect(output(results()[0])).toContain("outside the writable roots");
-	});
+			expect(results()).toHaveLength(1);
+			expect(results()[0]?.status).toBe("failed");
+			expect(output(results()[0])).toContain("outside the writable roots");
+		},
+	);
 
 	test("登记的路径不是规范化的绝对路径时按协议错误处理：结束 agent 进程，session 以 error 关闭", async () => {
 		const current = await open([], {}, { agentEntry });
