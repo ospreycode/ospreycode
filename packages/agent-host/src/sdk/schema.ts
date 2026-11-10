@@ -130,6 +130,15 @@ const ApprovalAnswer = Type.Union([
 				Type.Literal("task"),
 				Type.Literal("rule"),
 			]),
+			granted: Type.Optional(
+				Type.Object(
+					{
+						file_system: Type.Optional(FileSystem),
+						network: Type.Optional(Type.Array(Type.String())),
+					},
+					closed,
+				),
+			),
 		},
 		closed,
 	),

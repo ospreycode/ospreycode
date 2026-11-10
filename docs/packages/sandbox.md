@@ -167,6 +167,10 @@ sandbox/
 - `sandbox_permissions: "with_additional_permissions"`，配合 `additional_permissions`：只为这一条命令加上 `file_system.read`、`file_system.write`（绝对路径列表）、`unix_sockets`（socket 文件的绝对路径列表）或 `local_binding`（布尔值）。优先用这种方式。不需要额外权限时不填，即默认的 `use_default`。
 - `sandbox_permissions: "require_escalated"`：额外权限满足不了时，申请完全越出沙盒。`justification` 写一句问用户的话，还可以附一条建议保存的规则（`prefix_rule`）。
 - `request_permissions` 工具：申请本任务内之后多条命令共用的权限，包括文件路径和域名，用户可以只批准其中一部分。批准的路径按命令并入命令沙盒的可写路径；批准的域名等于对这些域名选了"本任务内允许"。
+  - 申请的路径要是已存在的绝对路径，Host 取真实路径后拿去询问和放行，之后符号链接换了指向也只到批准的位置。Host 根目录和包含它的目录不能申请，按内置的 `forbidden` 处理。
+  - 批下来的读写路径记在这个 run 上，之后每条命令的沙盒在启动时带上它们；落在可写路径里的文件改动仍由 apply-edits 执行，但不再询问。task 结束后失效。
+  - 只批准一部分时，前端在回答里用 `granted` 列出批准的那些，必须在申请的范围之内；结果告诉模型哪些批了、哪些没批。
+  - `danger-full-access` 下没有可申请的权限，直接告诉模型不需要。
 
 网络不在 `additional_permissions` 里：域名由代理在连接时按[网络访问的审批](#网络访问的审批)处理，或由 `request_permissions` 和域名规则预先放行。
 

@@ -34,6 +34,11 @@ export class Run {
 	usage = emptyUsage();
 	/** 用户选了"本任务内允许"的资源，同一资源上的同类动作不再询问。 */
 	readonly taskApprovals = new Set<string>();
+	/**
+	 * `request_permissions` 批下来的路径，本任务内有效：之后每条命令的沙盒都带上它们，
+	 * 落在可写路径里的文件改动不再询问。
+	 */
+	readonly grants = { read: new Set<string>(), write: new Set<string>() };
 	/** runtime 上报过的事件编号：Host 只在所属 run 内去重。 */
 	readonly runtimeEventIds = new Set<string>();
 	readonly budget: RunBudget;

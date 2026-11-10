@@ -1,4 +1,4 @@
-import type { ApprovalAnswer } from "@ospreycode/sandbox";
+import type { ApprovalAnswer, GrantedPermissions } from "@ospreycode/sandbox";
 import type { EventSink } from "../sessions/emitter.js";
 import type { ApprovalRequested } from "../sessions/events.js";
 import { newId } from "../sessions/ids.js";
@@ -12,7 +12,28 @@ type Question = ApprovalRequested extends infer T
 
 interface Pending {
 	run: Run;
+	question: Question;
 	resolve: (answer: ApprovalAnswer | undefined) => void;
+}
+
+/** 回答里只批准一部分时，批准的要在申请的范围之内。 */
+function checkGranted(question: Question, granted: GrantedPermissions): void {
+	const request =
+		question.kind === "tool_call" && question.request.kind === "permissions"
+			? question.request
+			: undefined;
+	if (request === undefined) {
+		throw new Error("只有 request_permissions 的询问可以只批准一部分");
+	}
+	const within = (part: string[] = [], all: string[] = []) =>
+		part.every((item) => all.includes(item));
+	if (
+		!within(granted.file_system?.read, request.file_system?.read) ||
+		!within(granted.file_system?.write, request.file_system?.write) ||
+		!within(granted.network, request.network)
+	) {
+		throw new Error("批准的权限超出了申请的范围");
+	}
 }
 
 /**
@@ -31,7 +52,7 @@ export class Approvals {
 	ask(run: Run, question: Question): Promise<ApprovalAnswer | undefined> {
 		const requestId = newId();
 		const answered = new Promise<ApprovalAnswer | undefined>((resolve) => {
-			this.#pending.set(requestId, { run, resolve });
+			this.#pending.set(requestId, { run, question, resolve });
 		});
 		const onCancel = () => this.#decide(requestId, undefined);
 		run.signal.addEventListener("abort", onCancel, { once: true });
@@ -46,10 +67,21 @@ export class Approvals {
 		);
 	}
 
-	/** 回答一次询问。询问已经有了结果（例如 run 刚被取消）时返回 false。 */
+	/**
+	 * 回答一次询问。询问已经有了结果（例如 run 刚被取消）时返回 false。回答和询问对不上
+	 * （只批准一部分时超出了申请的范围）是前端的错误，抛出。
+	 */
 	respond(requestId: string, answer: ApprovalAnswer): boolean {
 		if (answer.scope === "rule") {
 			throw new Error("把回答保存为规则要到 P1 才支持");
+		}
+		const pending = this.#pending.get(requestId);
+		if (
+			pending !== undefined &&
+			answer.decision === "approve" &&
+			answer.granted !== undefined
+		) {
+			checkGranted(pending.question, answer.granted);
 		}
 		return this.#decide(requestId, answer);
 	}

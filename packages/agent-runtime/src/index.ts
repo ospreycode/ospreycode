@@ -83,6 +83,11 @@ export {
 } from "./contracts/index.js";
 export { runAgent, toolRegistry } from "./runtime/run-agent.js";
 export {
+	type RequestPermissionsArguments,
+	requestPermissionsArgumentsSchema,
+	requestPermissionsTool,
+} from "./tools/request-permissions.js";
+export {
 	type ShellArguments,
 	shellArgumentsSchema,
 	shellTool,

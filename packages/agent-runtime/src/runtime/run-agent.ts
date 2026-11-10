@@ -7,6 +7,7 @@ import { FileRecords } from "../tool-executor/file-records.js";
 import type { LocalTool } from "../tool-executor/local-tool.js";
 import { editTool } from "../tools/edit.js";
 import { readTool } from "../tools/read.js";
+import { requestPermissionsTool } from "../tools/request-permissions.js";
 import { shellTool } from "../tools/shell.js";
 import { writeTool } from "../tools/write.js";
 import { version } from "../version.js";
@@ -16,10 +17,11 @@ const localTools: readonly LocalTool[] = [readTool, editTool, writeTool];
 
 /** runtime 提供的全部工具，Host 在启动配置里选择启用哪些。 */
 export const toolRegistry: ReadonlyMap<string, ToolSpec> = new Map(
-	[...localTools.map((tool) => tool.spec), shellTool].map((spec) => [
-		spec.declaration.name,
-		spec,
-	]),
+	[
+		...localTools.map((tool) => tool.spec),
+		shellTool,
+		requestPermissionsTool,
+	].map((spec) => [spec.declaration.name, spec]),
 );
 
 /**

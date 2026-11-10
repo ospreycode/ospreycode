@@ -160,12 +160,18 @@ test("模型用 write、edit 和 read 改工作区里的文件，调用由 runti
 	});
 });
 
-test("系统指令和工具声明里有四个默认启用的工具", async () => {
+test("系统指令里有五个默认启用的工具", async () => {
 	await open([]);
 	await runTask("你好");
 	const [system] = requests[0] ?? [];
 	const text = system?.role === "system" ? system.content[0]?.text : undefined;
-	for (const name of ["read", "edit", "write", "shell"]) {
+	for (const name of [
+		"read",
+		"edit",
+		"write",
+		"shell",
+		"request_permissions",
+	]) {
 		expect(text).toContain(`- ${name}: `);
 	}
 });

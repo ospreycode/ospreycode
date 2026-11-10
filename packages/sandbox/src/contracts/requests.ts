@@ -100,10 +100,21 @@ export type PermissionDecision =
 			message: string;
 	  };
 
+/** 批准的权限：`request_permissions` 申请的权限里的一部分。 */
+export interface GrantedPermissions {
+	file_system?: { read?: string[]; write?: string[] };
+	network?: string[];
+}
+
 /**
  * 用户对一次询问的回答。批准的范围：只这一次、本任务内同一资源上的同类动作、保存为规则；
  * 拒绝可以只这一次，或者保存为禁止的规则，`message` 是用户写给模型的话。
  */
 export type ApprovalAnswer =
-	| { decision: "approve"; scope: "once" | "task" | "rule" }
+	| {
+			decision: "approve";
+			scope: "once" | "task" | "rule";
+			/** 回答 `request_permissions` 的询问时只批准其中的这一部分；不写时批准申请的全部。 */
+			granted?: GrantedPermissions;
+	  }
 	| { decision: "deny"; scope: "once" | "rule"; message?: string };

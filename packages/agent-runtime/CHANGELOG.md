@@ -17,5 +17,6 @@
   - 每次调用先用 `tool_call/register` 登记（文件改动带路径和改动前后的 SHA-256），Host 允许后执行，再用 `tool_call/complete` 提交结果；参数不对的调用照样登记，结果记为失败。
   - 目标在可写根之外的改动不在 agent 沙盒里执行：runtime 组装成文件改动的申请（`FileEditOp`：`add` 或 `update`、规范化的绝对路径、改动前内容的 SHA-256 和完整的新内容），放进 `tool_call/run` 的 `file_edits`（`ToolCallRunParams`）交给 Host，模型不用改参数。范围外新建文件时上级目录要已经存在。
 - apply-edits 的入口 `@ospreycode/agent-runtime/apply-edits`：执行用户批准的、可写范围之外的文件改动。申请是 stdin 上的一份 JSON，结果（`ApplyEditsResult`）是 stdout 上的一份 JSON。先核对全部文件，有一个不符就什么都不写；不跟随符号链接地打开文件，在核对时打开的同一个文件描述符上截断和写入。
+- `request_permissions` 工具的声明 `requestPermissionsTool` 和参数的 schema `requestPermissionsArgumentsSchema`：申请本任务内之后的命令和编辑共用的读写路径，由 Host 执行。
 - loop 把同一轮里连续的、声明了能同时执行的调用（现在是 `read`）一起执行，其余的按顺序执行；没有启用的工具登记后由 Host 拒绝。
 - 作废：loop 把模型流里的作废事件和自己产生的作废经 `record/append` 上报为 `blocks.invalidated`，组装之后的请求时跳过作废的块（作废后什么都不剩的回复整条跳过），作废的工具调用不执行。流中途出错时已收到的部分照常记入历史并作废；推理内容前缀不符时，从出错的推理块起之后的推理内容都作废，再请求一次，仍然失败就结束 task。

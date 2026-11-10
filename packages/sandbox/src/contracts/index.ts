@@ -22,6 +22,7 @@ export type {
 	CommandRequest,
 	FileEdit,
 	FileEditsRequest,
+	GrantedPermissions,
 	McpToolRequest,
 	NetworkRequest,
 	PermissionDecision,

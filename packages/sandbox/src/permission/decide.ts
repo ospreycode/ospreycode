@@ -6,7 +6,9 @@ import type {
 } from "../contracts/modes.js";
 import type {
 	CommandRequest,
+	FileEditsRequest,
 	PermissionDecision,
+	PermissionsRequest,
 } from "../contracts/requests.js";
 
 /** 判断时用到的策略：当前的沙盒模式和审批策略。 */
@@ -79,4 +81,41 @@ export function decideCommand(
 		return { action: "allow" };
 	}
 	return askOrDeny("sandbox_approval", describeEscalation(request), context);
+}
+
+/** 判断可写范围之外的文件改动：按审批策略询问或拒绝。 */
+export function decideFileEdits(
+	request: FileEditsRequest,
+	context: PolicyContext,
+): PermissionDecision {
+	const verbs = { add: "新建", update: "修改", delete: "删除" };
+	return askOrDeny(
+		"sandbox_approval",
+		request.edits.map(({ op, path }) => `申请${verbs[op]} ${path}`),
+		context,
+	);
+}
+
+/**
+ * 判断 `request_permissions` 的申请：按审批策略询问或拒绝。`danger-full-access` 下没有沙盒，
+ * 没有可申请的权限，直接放行。
+ */
+export function decidePermissions(
+	request: PermissionsRequest,
+	context: PolicyContext,
+): PermissionDecision {
+	if (context.sandboxMode === "danger-full-access") return { action: "allow" };
+	return askOrDeny(
+		"request_permissions",
+		[
+			...(request.file_system?.read ?? []).map(
+				(path) => `申请在本任务内读取 ${path}`,
+			),
+			...(request.file_system?.write ?? []).map(
+				(path) => `申请在本任务内写入 ${path}`,
+			),
+			...(request.network ?? []).map((host) => `申请在本任务内访问 ${host}`),
+		],
+		context,
+	);
 }

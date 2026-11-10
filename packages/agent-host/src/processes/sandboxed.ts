@@ -6,7 +6,11 @@ import {
 	withAdditionalPermissions,
 	writableRoots,
 } from "@ospreycode/sandbox/backends";
-import type { CommandLauncher, EditLauncher } from "../actions/tool-calls.js";
+import type {
+	CommandLauncher,
+	EditLauncher,
+	TaskGrants,
+} from "../actions/tool-calls.js";
 import type { ProcessTracker } from "./registry.js";
 
 /**
@@ -47,6 +51,21 @@ function unsupported(
 		return `Paths in additional_permissions must be absolute: ${relative}`;
 	}
 	return undefined;
+}
+
+/** 一条命令在策略之外多出的路径：本任务内批下来的，加上这次调用申请并获准的。 */
+function extraPaths(
+	request: Parameters<CommandLauncher["argv"]>[0],
+	grants: TaskGrants,
+): { read: string[]; write: string[] } {
+	const requested =
+		request.sandbox_permissions === "with_additional_permissions"
+			? request.additional_permissions?.file_system
+			: undefined;
+	return {
+		read: [...grants.read, ...(requested?.read ?? [])],
+		write: [...grants.write, ...(requested?.write ?? [])],
+	};
 }
 
 /** `danger-full-access` 下没有沙盒：agent 进程和命令由 Host 直接启动。 */
@@ -129,24 +148,21 @@ export async function sandboxedSession(
 			agentArgv: await offline.wrap(shellQuote(options.agentCommand), bash),
 			commands: {
 				unsupported,
-				argv: (request) =>
-					commands.wrap(
+				argv: (request, grants) => {
+					const extra = extraPaths(request, grants);
+					return commands.wrap(
 						request.command,
 						bash,
-						request.sandbox_permissions === "with_additional_permissions"
-							? withAdditionalPermissions(
-									policy,
-									request.additional_permissions ?? {},
-								)
-							: undefined,
-					),
-				summary: (request) => ({
+						extra.read.length + extra.write.length === 0
+							? undefined
+							: withAdditionalPermissions(policy, { file_system: extra }),
+					);
+				},
+				summary: (request, grants) => ({
 					mode: policy.mode,
 					writable_roots: [
 						...writableRoots(policy),
-						...(request.sandbox_permissions === "with_additional_permissions"
-							? (request.additional_permissions?.file_system?.write ?? [])
-							: []),
+						...extraPaths(request, grants).write,
 					],
 					network: "denied",
 				}),

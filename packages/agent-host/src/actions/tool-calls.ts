@@ -6,7 +6,9 @@ import {
 	type FileEditOp,
 	type HandlerContext,
 	ProtocolError,
+	type RequestPermissionsArguments,
 	type RuntimeRequests,
+	requestPermissionsArgumentsSchema,
 	type SandboxSummary,
 	type ShellArguments,
 	shellArgumentsSchema,
@@ -20,13 +22,16 @@ import {
 } from "@ospreycode/agent-runtime";
 import type { UserContent } from "@ospreycode/api/protocol";
 import {
-	askOrDeny,
 	type CommandRequest,
 	decideCommand,
+	decideFileEdits,
+	decidePermissions,
+	type GrantedPermissions,
 	type PermissionRequest,
+	type PermissionsRequest,
 	type PolicyContext,
 } from "@ospreycode/sandbox";
-import { Compile } from "typebox/compile";
+import { Compile, type Validator } from "typebox/compile";
 import { ApplyEditsError, runApplyEdits } from "../processes/apply-edits.js";
 import { runCommand } from "../processes/command.js";
 import type { ProcessTracker } from "../processes/registry.js";
@@ -54,13 +59,20 @@ interface PendingCall {
 }
 
 const shellValidator = Compile(shellArgumentsSchema);
+const permissionsValidator = Compile(requestPermissionsArgumentsSchema);
 
-/** 为一条命令生成完整的启动命令，并说明它在哪个沙盒里运行。 */
+/** `request_permissions` 批下来、本任务内有效的路径。 */
+export interface TaskGrants {
+	read: readonly string[];
+	write: readonly string[];
+}
+
+/** 为一条命令生成完整的启动命令，并说明它在哪个沙盒里运行。命令的沙盒带上本任务内批下来的路径。 */
 export interface CommandLauncher {
 	/** 沙盒后端做不到的申请，返回交给模型的原因；在询问用户之前检查。 */
 	unsupported(request: CommandRequest): string | undefined;
-	argv(request: CommandRequest): Promise<readonly string[]>;
-	summary(request: CommandRequest): SandboxSummary;
+	argv(request: CommandRequest, grants: TaskGrants): Promise<readonly string[]>;
+	summary(request: CommandRequest, grants: TaskGrants): SandboxSummary;
 }
 
 /**
@@ -100,6 +112,27 @@ function text(value: string): UserContent[] {
 
 function failure(message: string): ToolResult {
 	return { status: "failed", content: text(message) };
+}
+
+/** 按工具的 schema 检查模型写出的参数；不是 JSON 或不符合 schema 时如实交回给模型。 */
+function parseArguments<Arguments>(
+	validator: Validator,
+	raw: string,
+): Arguments | ToolResult {
+	let value: unknown;
+	try {
+		value = JSON.parse(raw);
+	} catch (error) {
+		if (!(error instanceof SyntaxError)) throw error;
+		return failure("The arguments are not valid JSON.");
+	}
+	if (!validator.Check(value)) {
+		const [first] = validator.Errors(value);
+		return failure(
+			`Invalid arguments: ${first?.instancePath || "/"} ${first?.message ?? ""}`,
+		);
+	}
+	return value as Arguments;
 }
 
 /** "同一资源上的同类动作"：命令字符串、`workdir` 和申请的权限都相同。 */
@@ -274,10 +307,16 @@ export class ToolCalls {
 		if (params.file_edits !== undefined) {
 			return this.#applyEdits(params.file_edits, toolCallId, run, signal);
 		}
+		if (params.name === "request_permissions") {
+			return this.#requestPermissions(params.arguments, toolCallId, run);
+		}
 		if (params.name !== "shell") {
 			return failure(`Unknown tool: ${params.name}`);
 		}
-		const args = this.#parseShell(params.arguments);
+		const args = parseArguments<ShellArguments>(
+			shellValidator,
+			params.arguments,
+		);
 		if ("status" in args) return args;
 		const workdir = this.#workdir(args.workdir);
 		if (typeof workdir !== "string") return workdir;
@@ -310,7 +349,7 @@ export class ToolCalls {
 			decision.action === "ask" &&
 			!run.taskApprovals.has(approvalKey(request))
 		) {
-			const refused = await this.#confirm(
+			const outcome = await this.#confirm(
 				run,
 				toolCallId,
 				request,
@@ -318,7 +357,7 @@ export class ToolCalls {
 				"command",
 				[approvalKey(request)],
 			);
-			if (refused !== undefined) return refused;
+			if ("status" in outcome) return outcome;
 		}
 		return this.#runShell(
 			request,
@@ -331,7 +370,8 @@ export class ToolCalls {
 	}
 
 	/**
-	 * 询问用户。批准时返回空，选了"本任务内允许"的记下这些资源；取消或拒绝时返回交给模型的结果。
+	 * 询问用户。批准时返回用户的回答，选了"本任务内允许"的记下这些资源；取消或拒绝时返回交给
+	 * 模型的结果。
 	 */
 	async #confirm(
 		run: Run,
@@ -340,7 +380,7 @@ export class ToolCalls {
 		reasons: string[],
 		subject: string,
 		approvalKeys: readonly string[],
-	): Promise<ToolResult | undefined> {
+	): Promise<ToolResult | { granted?: GrantedPermissions }> {
 		const answer = await this.#options.approvals.ask(run, {
 			kind: "tool_call",
 			tool_call_id: toolCallId,
@@ -368,7 +408,115 @@ export class ToolCalls {
 		if (answer.scope === "task") {
 			for (const key of approvalKeys) run.taskApprovals.add(key);
 		}
-		return undefined;
+		return answer.granted === undefined ? {} : { granted: answer.granted };
+	}
+
+	/**
+	 * `request_permissions`：申请本任务内之后的命令和编辑共用的路径。用户可以只批准一部分；批下来的
+	 * 路径记在这个 run 上，之后每条命令的沙盒都带上它们，落在可写路径里的文件改动不再询问。
+	 */
+	async #requestPermissions(
+		raw: string,
+		toolCallId: string,
+		run: Run,
+	): Promise<ToolResult> {
+		const args = parseArguments<RequestPermissionsArguments>(
+			permissionsValidator,
+			raw,
+		);
+		if ("status" in args) return args;
+		if ((args.network ?? []).length > 0) {
+			return failure(
+				"Network access cannot be granted through request_permissions yet. Request only `file_system` paths.",
+			);
+		}
+		const requested = {
+			read: args.file_system?.read ?? [],
+			write: args.file_system?.write ?? [],
+		};
+		if (requested.read.length + requested.write.length === 0) {
+			return failure("Nothing was requested. List the paths in `file_system`.");
+		}
+		const resolved = { read: [] as string[], write: [] as string[] };
+		for (const access of ["read", "write"] as const) {
+			for (const path of requested[access]) {
+				if (!isAbsolute(path)) {
+					return failure(`Paths must be absolute: ${path}`);
+				}
+				if (statSync(path, { throwIfNoEntry: false }) === undefined) {
+					return failure(`${path} does not exist.`);
+				}
+				// 按真实路径批准和放行，符号链接之后换了指向也只到批准的位置
+				const real = realpathSync(path);
+				if (
+					isInside(real, this.#options.hostRoot) ||
+					isInside(this.#options.hostRoot, real)
+				) {
+					return {
+						status: "denied",
+						reason: "forbidden_rule",
+						content: text(
+							`${path} is, or contains, the Host's own directory, which the agent cannot access.`,
+						),
+					};
+				}
+				resolved[access].push(real);
+			}
+		}
+		const request: PermissionsRequest = {
+			kind: "permissions",
+			file_system: {
+				...(resolved.read.length === 0 ? {} : { read: resolved.read }),
+				...(resolved.write.length === 0 ? {} : { write: resolved.write }),
+			},
+			...(args.justification === undefined
+				? {}
+				: { justification: args.justification }),
+		};
+		const decision = decidePermissions(request, this.#options.policy);
+		if (decision.action === "allow") {
+			return {
+				status: "succeeded",
+				content: text(
+					"The sandbox is off (danger-full-access), so nothing is restricted and no permission is needed.",
+				),
+			};
+		}
+		if (decision.action === "deny") {
+			return {
+				status: "denied",
+				reason: decision.reason,
+				content: text(decision.message),
+			};
+		}
+		const outcome = await this.#confirm(
+			run,
+			toolCallId,
+			request,
+			decision.reasons,
+			"permission request",
+			[],
+		);
+		if ("status" in outcome) return outcome;
+		const granted = outcome.granted?.file_system ?? resolved;
+		const lines = ["Granted for the rest of this task:"];
+		const withheld: string[] = [];
+		for (const access of ["read", "write"] as const) {
+			for (const path of resolved[access]) {
+				if (granted[access]?.includes(path) === true) {
+					run.grants[access].add(path);
+					lines.push(`- ${access}: ${path}`);
+				} else {
+					withheld.push(`- ${access}: ${path}`);
+				}
+			}
+		}
+		if (lines.length === 1) lines.push("- nothing");
+		if (withheld.length > 0) lines.push("Not granted:", ...withheld);
+		lines.push(
+			"Commands now run with the granted paths added to their sandbox, and file edits under a granted write path are applied without asking again.",
+		);
+		return { status: "succeeded", content: text(lines.join("\n")) };
 	}
 
 	/**
@@ -438,15 +586,13 @@ export class ToolCalls {
 				);
 			}
 		}
-		const keys = edits.map(({ path }) => `file:${path}`);
-		if (!keys.every((key) => run.taskApprovals.has(key))) {
-			const decision = askOrDeny(
-				"sandbox_approval",
-				edits.map(({ op, path }) =>
-					op === "add" ? `申请新建 ${path}` : `申请修改 ${path}`,
-				),
-				policy,
-			);
+		// 用户选过"本任务内允许"的路径，和 request_permissions 批下来的可写路径里的文件，不再询问
+		const approved = ({ path }: FileEditOp) =>
+			run.taskApprovals.has(`file:${path}`) ||
+			[...run.grants.write].some((granted) => isInside(path, granted));
+		if (!edits.every(approved)) {
+			const request = { kind: "file_edits" as const, edits: [...edits] };
+			const decision = decideFileEdits(request, policy);
 			if (decision.action === "deny") {
 				return {
 					status: "denied",
@@ -455,15 +601,15 @@ export class ToolCalls {
 				};
 			}
 			if (decision.action === "ask") {
-				const refused = await this.#confirm(
+				const outcome = await this.#confirm(
 					run,
 					toolCallId,
-					{ kind: "file_edits", edits: [...edits] },
+					request,
 					decision.reasons,
 					"file change",
-					keys,
+					edits.map(({ path }) => `file:${path}`),
 				);
-				if (refused !== undefined) return refused;
+				if ("status" in outcome) return outcome;
 			}
 		}
 		try {
@@ -512,23 +658,6 @@ export class ToolCalls {
 		};
 	}
 
-	#parseShell(raw: string): ShellArguments | ToolResult {
-		let value: unknown;
-		try {
-			value = JSON.parse(raw);
-		} catch {
-			// 模型写出的参数不是 JSON：如实交回给模型
-			return failure("The arguments are not valid JSON.");
-		}
-		if (!shellValidator.Check(value)) {
-			const [first] = shellValidator.Errors(value);
-			return failure(
-				`Invalid arguments: ${first?.instancePath || "/"} ${first?.message ?? ""}`,
-			);
-		}
-		return value;
-	}
-
 	/** `workdir` 默认工作区根，相对路径按工作区根解析，解析后必须是工作区内已存在的目录。 */
 	#workdir(path: string | undefined): string | ToolResult {
 		const target = resolve(this.#options.workspace, path ?? ".");
@@ -554,9 +683,14 @@ export class ToolCalls {
 	): Promise<ToolResult> {
 		const { events, launcher } = this.#options;
 		const outputFile = join(this.#options.outputDir, toolCallId);
+		// 命令开始时批下来的路径：它的沙盒在启动时就固定了
+		const grants: TaskGrants = {
+			read: [...run.grants.read],
+			write: [...run.grants.write],
+		};
 		let argv: readonly string[];
 		try {
-			argv = await launcher.argv(request);
+			argv = await launcher.argv(request, grants);
 		} catch (error) {
 			// 单条命令的沙盒启动失败只让这次调用失败，不关闭 session
 			return {
@@ -598,7 +732,7 @@ export class ToolCalls {
 			signal: command.signal,
 			output_path: outputFile,
 			output_bytes: command.outputBytes,
-			sandbox: launcher.summary(request),
+			sandbox: launcher.summary(request, grants),
 		};
 		const header = command.timedOut
 			? `Command timed out after ${timeoutMs} ms.`

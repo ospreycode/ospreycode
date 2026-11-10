@@ -22,12 +22,12 @@
 | 命令沙盒：每条命令由 Host 单独启动沙盒，macOS 上用收尾进程结束全部进程 | P1 | 进行中 | sandbox 的[命令的执行](packages/sandbox.md#命令的执行)和[macOS 上结束全部进程](packages/sandbox.md#macos-上结束全部进程) |
 | 沙盒的环境变量白名单 | P1 | 进行中 | sandbox 的[沙盒模式](packages/sandbox.md#沙盒模式) |
 | 受保护的路径和占位登记表、构建工具的缓存 | P1 | 未开始 | sandbox 的[受保护的路径](packages/sandbox.md#受保护的路径)和[构建工具的缓存](packages/sandbox.md#构建工具的缓存) |
-| 网络访问的审批 | P1 | 未开始 | sandbox 的[网络访问的审批](packages/sandbox.md#网络访问的审批) |
+| 网络访问的审批，`request_permissions` 申请的域名 | P1 | 未开始 | sandbox 的[网络访问的审批](packages/sandbox.md#网络访问的审批) |
 | agent 进程的重启：从 session 记录重建发给模型的历史（切换沙盒模式、取消超时、异常退出、Linux 上发现新仓库） | P1 | 未开始 | agent-host 的 [agent 进程的重启](packages/agent-host.md#agent-进程的重启) |
 | 三种模型协议的转换、模型清单、原样重放、拒绝和回退的作废事件、前缀校验失败的恢复 | P1 | 已完成 | [api](packages/api.md) |
 | token 估算（算 `max_tokens`、判断上下文超长） | P1 | 已完成 | api 的 [token 计数](packages/api.md#token-计数) |
 | 模型测试的每次运行费用账本、按 `api` 的错误类别重跑一次、不稳定测试的报告 | P1 | 已完成 | overview 的 [CI 和真实模型测试](overview.md#ci-和真实模型测试) |
-| loop，`read`、`edit`、`write`、`shell` 和 `request_permissions` 工具 | P1 | 进行中 | agent-runtime 的[工具执行](packages/agent-runtime.md#工具执行) |
+| loop，`read`、`edit`、`write`、`shell` 和 `request_permissions` 工具 | P1 | 已完成 | agent-runtime 的[工具执行](packages/agent-runtime.md#工具执行) |
 | 规则文件（`AGENTS.md` 等）的加载、系统指令和会话开始的上下文消息 | P1 | 未开始 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
 | Host；CLI 的交互和非交互模式，P1 的子命令和会话内命令 | P1 | 未开始 | agent-host 的 [CLI](packages/agent-host.md#cli) |
 | task 的开始、结束和取消，工具调用的处理 | P1 | 进行中 | agent-host 的 [task 的开始、结束和取消](packages/agent-host.md#task-的开始结束和取消)和[工具调用的处理](packages/agent-host.md#工具调用的处理) |
@@ -42,7 +42,7 @@
 | 切换模型和推理强度 | P1 | 未开始 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
 | 后台命令和监视，后台通知的唤醒 | P1 | 未开始 | agent-runtime 的[后台命令](packages/agent-runtime.md#后台命令) |
 | steering 和 follow-up | P1 | 未开始 | agent-runtime 的[运行中的用户输入](packages/agent-runtime.md#运行中的用户输入) |
-| `@` 提及文件和粘贴图片 | P1 | 未开始 | agent-host 的[提及文件和附件](packages/agent-host.md#提及文件和附件) |
+| `@` 提及文件和粘贴图片，`read` 读图片 | P1 | 未开始 | agent-host 的[提及文件和附件](packages/agent-host.md#提及文件和附件) |
 | skills、MCP、插件的接入，`skill_load` 工具；插件的安装、更新和启用 | P2 | 未开始 | [skills](packages/skills.md)、[mcp](packages/mcp.md)、[agent-plugins](packages/agent-plugins.md)；agent-host 的[扩展的存放和安装来源](packages/agent-host.md#扩展的存放和安装来源) |
 | MCP 的 OAuth 授权、远程 server 的静态令牌、本地 server 密钥的 mask | P2 | 未开始 | mcp 的[授权](packages/mcp.md#授权)；agent-host 的[插件之外的 `mcp.json`](packages/agent-host.md#插件之外的-mcpjson) |
 | OAuth 客户端元数据文件在 `https://ospreycode.dev/oauth/client-metadata.json` 上线 | P2 | 未开始 | mcp 的[授权](packages/mcp.md#授权) |

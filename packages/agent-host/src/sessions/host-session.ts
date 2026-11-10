@@ -63,7 +63,7 @@ const initializeTimeoutMs = 30_000;
 const cancelGraceMs = 5_000;
 
 /** 默认启用的工具，也是它们在系统指令和工具声明里的顺序。 */
-const enabledTools = ["read", "edit", "write", "shell"];
+const enabledTools = ["read", "edit", "write", "shell", "request_permissions"];
 
 /** agent 进程没能启动：`initialize` 超时、版本不一致或提前退出（CLI 的退出码 1）。 */
 export class AgentStartError extends Error {
