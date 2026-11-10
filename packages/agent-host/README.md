@@ -28,7 +28,7 @@ max_duration = "30m"
 
 每个 run 默认最多花 10 美元、发 200 次模型请求，`budget` 选项和 `[budget]` 可以改；启用费用上限时模型要有价格。超出时，审批策略不是 `never` 就发一条 `kind` 为 `budget` 的 `approval.requested`，批准就追加一份同样的额度；拒绝或审批策略为 `never` 时 task 以 `budget_exceeded` 结束，`task.ended` 的 `limit` 写明超出的是哪一项。
 
-模型有 `read`、`edit`、`write` 和 `shell` 四个工具。文件工具由 agent 进程执行，只能改它的沙盒可写的位置（`workspace-write` 下是工作区和 session 的临时目录）；每次调用都有 `tool_call.started` 和 `tool_call.completed` 两个事件。
+模型有 `read`、`edit`、`write` 和 `shell` 四个工具。文件工具由 agent 进程执行，只能改它的沙盒可写的位置（`workspace-write` 下是工作区和 session 的临时目录）；改其他位置的文件时，Host 先发一条 `approval.requested`（`request.kind` 为 `file_edits`，带将要写入的内容），批准后在只能写这几个文件的沙盒里写入。每次调用都有 `tool_call.started` 和 `tool_call.completed` 两个事件。
 
 沙盒模式为 `read-only` 或 `workspace-write` 时，agent 进程和每条 shell 命令都在沙盒里运行，现在只支持 macOS，其他平台抛出 `SandboxUnavailableError`；`danger-full-access` 不启用沙盒，只能由启动参数指定。
 

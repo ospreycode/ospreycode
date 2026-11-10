@@ -15,7 +15,7 @@ import type {
 export type RegisteredEdit = NonNullable<ToolCallRegisterParams["edit"]>;
 
 /** 磁盘上这个文件内容的 SHA-256；不存在时为 `null`，读不了或不是普通文件时为空。 */
-function fileHash(path: string): string | null | undefined {
+export function fileHash(path: string): string | null | undefined {
 	let fd: number;
 	try {
 		// 路径来自沙盒内的 runtime：不阻塞地打开，确认是普通文件再读，不在 FIFO 上挂住

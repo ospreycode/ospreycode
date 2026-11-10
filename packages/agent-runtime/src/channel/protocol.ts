@@ -7,6 +7,7 @@ import type {
 	StreamEvent,
 	UserContent,
 } from "@ospreycode/api/protocol";
+import type { FileEditOp } from "../apply-edits/apply.js";
 import type { RuntimeEvent, ToolResult } from "../contracts/index.js";
 
 /** 审批策略。runtime 只用它写系统指令、提示模型，权限由 Host 执行。 */
@@ -120,6 +121,14 @@ export interface ToolCallParams {
 	arguments: string;
 }
 
+/**
+ * `tool_call/run` 的参数。编辑工具的目标在可写范围之外时带上 `file_edits`：runtime 组装好的
+ * 文件改动申请，Host 询问用户后交给 apply-edits 执行。
+ */
+export interface ToolCallRunParams extends ToolCallParams {
+	file_edits?: FileEditOp[];
+}
+
 /** `tool_call/started`：`tool_call/run` 的第一条通知，带 Host 分配的编号。 */
 export interface ToolCallStartedParams {
 	request_id: number;
@@ -192,7 +201,7 @@ export interface RuntimeRequests {
 		stream: { method: "model/event"; params: ModelEventParams };
 	};
 	"tool_call/run": {
-		params: ToolCallParams;
+		params: ToolCallRunParams;
 		result: ToolCallRunResult;
 		stream:
 			| { method: "tool_call/started"; params: ToolCallStartedParams }

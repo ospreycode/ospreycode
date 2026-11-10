@@ -46,7 +46,7 @@ agent-host/
 首版 Host 和 CLI 在同一个进程里，不常驻后台。
 
 - `sdk/` 按消息设计：调用的参数和返回值、事件、Host 发给前端的请求都能序列化成 JSON。批准和 elicitation 作为事件到达，前端用 `session.respond(requestId, decision)` 回复，不要求调用方传回调函数，SDK 的调用方因此可以在另一个进程里。
-- `createHost({root, env, fetch, streamModel, agentEntry, sandboxHelperEntry, credentialStore})`：根目录和 Host 的环境变量由调用方传入，SDK 不读进程级的状态；`fetch`、`streamModel`（发起模型请求的函数，测试传入 `api` 的脚本模型）、agent 进程和辅助进程的入口、系统凭据库不传时用默认的。`openSession` 的选项里带接收事件的 `onEvent`，第一条事件 `session.started` 不会错过。
+- `createHost({root, env, fetch, streamModel, agentEntry, applyEditsEntry, sandboxHelperEntry, credentialStore})`：根目录和 Host 的环境变量由调用方传入，SDK 不读进程级的状态；`fetch`、`streamModel`（发起模型请求的函数，测试传入 `api` 的脚本模型）、agent 进程、apply-edits 和辅助进程的入口、系统凭据库不传时用默认的。`openSession` 的选项里带接收事件的 `onEvent`，第一条事件 `session.started` 不会错过。
 - Host 用单独的进程组（`detached`）启动全部子进程：agent 进程、辅助进程、命令沙盒、本地 MCP server 和 hooks。终端的 Ctrl+C 只到 Host，由 Host 决定取消当前动作还是退出（见 [CLI](#cli)），子进程由 Host 按各自的结束方式收尾。
 
 ### 通道的连接

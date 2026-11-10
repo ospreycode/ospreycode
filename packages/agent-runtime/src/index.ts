@@ -1,3 +1,4 @@
+export type { ApplyEditsResult, FileEditOp } from "./apply-edits/apply.js";
 export {
 	ChannelClosedError,
 	type ChannelErrorBody,
@@ -52,6 +53,7 @@ export {
 	type ToolCallParams,
 	type ToolCallRegisterParams,
 	type ToolCallRegisterResult,
+	type ToolCallRunParams,
 	type ToolCallRunResult,
 	type ToolCallStartedParams,
 } from "./channel/protocol.js";

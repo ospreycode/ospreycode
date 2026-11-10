@@ -17,6 +17,10 @@
 		"./agent": {
 			"types": "./dist/entry/agent.d.ts",
 			"import": "./dist/entry/agent.js"
+		},
+		"./apply-edits": {
+			"types": "./dist/entry/apply-edits.d.ts",
+			"import": "./dist/entry/apply-edits.js"
 		}
 	},
 	"files": [

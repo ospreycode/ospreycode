@@ -11,9 +11,9 @@ import type {
 	TaskEndParams,
 	TaskEndResult,
 	ToolCallCompleteParams,
-	ToolCallParams,
 	ToolCallRegisterParams,
 	ToolCallRegisterResult,
+	ToolCallRunParams,
 	ToolCallRunResult,
 } from "@ospreycode/agent-runtime";
 
@@ -26,7 +26,7 @@ export interface ChannelHandlers {
 		context: HandlerContext<RuntimeRequests["model/request"]["stream"]>,
 	): Promise<ModelRequestResult>;
 	toolCallRun(
-		params: ToolCallParams,
+		params: ToolCallRunParams,
 		context: HandlerContext<RuntimeRequests["tool_call/run"]["stream"]>,
 	): Promise<ToolCallRunResult>;
 	toolCallRegister(

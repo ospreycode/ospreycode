@@ -58,6 +58,8 @@ export interface HostOptions {
 	streamModel?: StreamModel;
 	/** agent 进程的入口文件；不传时从 `@ospreycode/agent-runtime` 的 exports 找到，`cli` 打包后传入打包的文件。 */
 	agentEntry?: string;
+	/** apply-edits 的入口文件，执行批准的、可写范围之外的文件改动；不传时同样从 exports 找到。 */
+	applyEditsEntry?: string;
 	/** 沙盒辅助进程的入口文件；不传时从 `@ospreycode/sandbox` 的 exports 找到。 */
 	sandboxHelperEntry?: string;
 	/**
@@ -148,10 +150,14 @@ export function createHost(options: HostOptions): Host {
 		options.agentEntry ?? resolveEntry("@ospreycode/agent-runtime/agent");
 	const helperEntry =
 		options.sandboxHelperEntry ?? resolveEntry("@ospreycode/sandbox/helper");
+	const applyEditsEntry =
+		options.applyEditsEntry ??
+		resolveEntry("@ospreycode/agent-runtime/apply-edits");
 	const agentCommand = [process.execPath, agentEntry];
 	const programFiles = [
 		fileURLToPath(import.meta.url),
 		agentEntry,
+		applyEditsEntry,
 		helperEntry,
 		process.execPath,
 	];
@@ -302,6 +308,7 @@ export function createHost(options: HostOptions): Host {
 						env,
 						bash,
 						agentCommand,
+						applyEditsCommand: [process.execPath, applyEditsEntry],
 						tracker,
 					});
 				},

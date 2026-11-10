@@ -42,6 +42,9 @@
 			"@ospreycode/agent-runtime/agent": [
 				"./packages/agent-runtime/src/entry/agent.ts"
 			],
+			"@ospreycode/agent-runtime/apply-edits": [
+				"./packages/agent-runtime/src/entry/apply-edits.ts"
+			],
 			"@ospreycode/agent-host": [
 				"./packages/agent-host/src/index.ts"
 			],

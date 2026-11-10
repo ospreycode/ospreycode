@@ -1,17 +1,22 @@
 import { isAbsolute } from "node:path";
 import {
+	filesystemRules,
 	type SandboxPolicy,
 	startSandboxHelper,
 	withAdditionalPermissions,
 	writableRoots,
 } from "@ospreycode/sandbox/backends";
-import type { CommandLauncher } from "../actions/tool-calls.js";
+import type { CommandLauncher, EditLauncher } from "../actions/tool-calls.js";
 import type { ProcessTracker } from "./registry.js";
 
-/** 一个 session 的沙盒：agent 进程的启动命令、命令沙盒的启动方式，session 结束时停掉辅助进程。 */
+/**
+ * 一个 session 的沙盒：agent 进程的启动命令、命令沙盒和 apply-edits 的启动方式，session 结束时
+ * 停掉辅助进程。没有沙盒时没有可写范围之外的文件，也就没有 `edits`。
+ */
 export interface SessionSandbox {
 	agentArgv: readonly string[];
 	commands: CommandLauncher;
+	edits?: EditLauncher;
 	stop(): Promise<void>;
 }
 
@@ -73,13 +78,15 @@ export interface SandboxedSessionOptions {
 	bash: string;
 	/** agent 进程的完整命令：Node 加入口文件。 */
 	agentCommand: readonly string[];
+	/** apply-edits 的完整命令：Node 加入口文件。 */
+	applyEditsCommand: readonly string[];
 	/** 辅助进程记进进程登记表。 */
 	tracker: ProcessTracker;
 }
 
 /**
- * 为 session 启动两个辅助进程：离线的为 agent 进程生成启动命令，不能联网；命令的为每条 shell
- * 命令单独生成命令沙盒，批准的越界申请只加在这一条命令的沙盒上。
+ * 为 session 启动两个辅助进程：离线的为 agent 进程和 apply-edits 生成启动命令，不能联网；命令的
+ * 为每条 shell 命令单独生成命令沙盒，批准的越界申请只加在这一条命令的沙盒上。
  */
 export async function sandboxedSession(
 	options: SandboxedSessionOptions,
@@ -144,6 +151,12 @@ export async function sandboxedSession(
 					network: "denied",
 				}),
 			},
+			// 写权限只给这次批准的文件，工作区也不给
+			edits: (paths) =>
+				offline.wrap(shellQuote(options.applyEditsCommand), bash, {
+					allowRead: filesystemRules(policy).allowRead,
+					allowWrite: [...paths],
+				}),
 			stop,
 		};
 	} catch (error) {

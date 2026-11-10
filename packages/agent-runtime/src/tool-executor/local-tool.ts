@@ -1,5 +1,6 @@
 import type { UserContent } from "@ospreycode/api/protocol";
 import type { TSchema } from "typebox";
+import type { FileEditOp } from "../apply-edits/apply.js";
 import type { ToolSpec } from "../contracts/index.js";
 import type { FileRecords } from "./file-records.js";
 
@@ -19,12 +20,22 @@ export interface FileEdit {
 	new_sha256: string;
 }
 
-/** 准备好、等 Host 允许后执行的一次调用。 */
-export interface PreparedCall {
+/** 准备好、在 agent 沙盒里执行的一次调用：登记后等 Host 允许。 */
+export interface LocalCall {
 	edit?: FileEdit;
 	/** 执行，返回交给模型的内容。 */
 	run(): Promise<UserContent[]>;
 }
+
+/** 目标在可写范围之外的文件改动：交给 Host，用户批准后由 apply-edits 执行。 */
+export interface OutsideCall {
+	fileEdits: FileEditOp[];
+	/** Host 报告写入成功之后调用。 */
+	applied(): void;
+}
+
+/** 准备好的一次调用。 */
+export type PreparedCall = LocalCall | OutsideCall;
 
 /** runtime 在 agent 沙盒里执行的工具。 */
 export interface LocalTool<Arguments = never> {

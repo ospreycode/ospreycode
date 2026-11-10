@@ -1,8 +1,9 @@
 import { realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	ChannelRequestError,
 	type Empty,
+	type FileEditOp,
 	type HandlerContext,
 	ProtocolError,
 	type RuntimeRequests,
@@ -13,16 +14,20 @@ import {
 	type ToolCallParams,
 	type ToolCallRegisterParams,
 	type ToolCallRegisterResult,
+	type ToolCallRunParams,
 	type ToolCallRunResult,
 	type ToolResult,
 } from "@ospreycode/agent-runtime";
 import type { UserContent } from "@ospreycode/api/protocol";
 import {
+	askOrDeny,
 	type CommandRequest,
 	decideCommand,
+	type PermissionRequest,
 	type PolicyContext,
 } from "@ospreycode/sandbox";
 import { Compile } from "typebox/compile";
+import { ApplyEditsError, runApplyEdits } from "../processes/apply-edits.js";
 import { runCommand } from "../processes/command.js";
 import type { ProcessTracker } from "../processes/registry.js";
 import { isInside } from "../project/paths.js";
@@ -30,7 +35,7 @@ import type { EventSink } from "../sessions/emitter.js";
 import { newId } from "../sessions/ids.js";
 import type { Run } from "../sessions/run.js";
 import type { Approvals } from "./approvals.js";
-import { type RegisteredEdit, settleEdit } from "./file-edits.js";
+import { fileHash, type RegisteredEdit, settleEdit } from "./file-edits.js";
 
 /** 前台命令默认的超时。 */
 const defaultTimeoutMs = 120_000;
@@ -58,12 +63,23 @@ export interface CommandLauncher {
 	summary(request: CommandRequest): SandboxSummary;
 }
 
+/**
+ * 为 apply-edits 生成完整的启动命令：一个不能联网的沙盒，写权限只给这几个文件。
+ * `danger-full-access` 下没有可写范围之外的文件，不需要它。
+ */
+export type EditLauncher = (
+	paths: readonly string[],
+) => Promise<readonly string[]>;
+
 /** 处理工具调用用到的依赖。 */
 export interface ToolCallsOptions {
 	events: EventSink;
 	approvals: Approvals;
 	launcher: CommandLauncher;
+	editLauncher?: EditLauncher;
 	policy: PolicyContext;
+	/** Host 根目录的真实路径：agent 不能改里面的文件。 */
+	hostRoot: string;
 	/** 工作区的真实路径。 */
 	workspace: string;
 	/** agent 沙盒的可写根：文件工具登记的改动要落在里面。 */
@@ -108,12 +124,15 @@ export class ToolCalls {
 		this.#options = options;
 	}
 
-	/** Host 代为执行的工具（`tool_call/run`）。 */
+	/** Host 代为执行的工具（`tool_call/run`）：shell，以及编辑工具在可写范围之外的文件改动。 */
 	async run(
-		params: ToolCallParams,
+		params: ToolCallRunParams,
 		context: HandlerContext<RuntimeRequests["tool_call/run"]["stream"]>,
 		run: Run,
 	): Promise<ToolCallRunResult> {
+		if (params.file_edits !== undefined) {
+			this.#checkFileEdits(params.name, params.file_edits);
+		}
 		const toolCallId = newId();
 		const started = Date.now();
 		this.#started(run, toolCallId, params, "host");
@@ -243,13 +262,19 @@ export class ToolCalls {
 	}
 
 	async #execute(
-		params: ToolCallParams,
+		params: ToolCallRunParams,
 		toolCallId: string,
 		run: Run,
 		signal: AbortSignal,
 		context: HandlerContext<RuntimeRequests["tool_call/run"]["stream"]>,
 	): Promise<ToolResult> {
-		if (params.name !== "shell" || !this.#options.tools.includes("shell")) {
+		if (!this.#options.tools.includes(params.name)) {
+			return failure(`Unknown tool: ${params.name}`);
+		}
+		if (params.file_edits !== undefined) {
+			return this.#applyEdits(params.file_edits, toolCallId, run, signal);
+		}
+		if (params.name !== "shell") {
 			return failure(`Unknown tool: ${params.name}`);
 		}
 		const args = this.#parseShell(params.arguments);
@@ -285,31 +310,15 @@ export class ToolCalls {
 			decision.action === "ask" &&
 			!run.taskApprovals.has(approvalKey(request))
 		) {
-			const answer = await this.#options.approvals.ask(run, {
-				kind: "tool_call",
-				tool_call_id: toolCallId,
+			const refused = await this.#confirm(
+				run,
+				toolCallId,
 				request,
-				reasons: decision.reasons,
-			});
-			if (answer === undefined) {
-				return {
-					status: "cancelled",
-					content: text("The command was cancelled."),
-				};
-			}
-			if (answer.decision === "deny") {
-				return {
-					status: "denied",
-					reason: "user",
-					content: text(
-						answer.message === undefined
-							? "The user denied this command."
-							: `The user denied this command and said: ${answer.message}`,
-					),
-					...(answer.message === undefined ? {} : { message: answer.message }),
-				};
-			}
-			if (answer.scope === "task") run.taskApprovals.add(approvalKey(request));
+				decision.reasons,
+				"command",
+				[approvalKey(request)],
+			);
+			if (refused !== undefined) return refused;
 		}
 		return this.#runShell(
 			request,
@@ -319,6 +328,188 @@ export class ToolCalls {
 			signal,
 			context,
 		);
+	}
+
+	/**
+	 * 询问用户。批准时返回空，选了"本任务内允许"的记下这些资源；取消或拒绝时返回交给模型的结果。
+	 */
+	async #confirm(
+		run: Run,
+		toolCallId: string,
+		request: PermissionRequest,
+		reasons: string[],
+		subject: string,
+		approvalKeys: readonly string[],
+	): Promise<ToolResult | undefined> {
+		const answer = await this.#options.approvals.ask(run, {
+			kind: "tool_call",
+			tool_call_id: toolCallId,
+			request,
+			reasons,
+		});
+		if (answer === undefined) {
+			return {
+				status: "cancelled",
+				content: text(`The ${subject} was cancelled.`),
+			};
+		}
+		if (answer.decision === "deny") {
+			return {
+				status: "denied",
+				reason: "user",
+				content: text(
+					answer.message === undefined
+						? `The user denied this ${subject}.`
+						: `The user denied this ${subject} and said: ${answer.message}`,
+				),
+				...(answer.message === undefined ? {} : { message: answer.message }),
+			};
+		}
+		if (answer.scope === "task") {
+			for (const key of approvalKeys) run.taskApprovals.add(key);
+		}
+		return undefined;
+	}
+
+	/**
+	 * runtime 只为编辑工具、在有沙盒时组装文件改动的申请，路径是它解析好的规范化绝对路径，
+	 * 同一路径只出现一次；不是这样说明它有缺陷或被攻破。
+	 */
+	#checkFileEdits(name: string, edits: readonly FileEditOp[]): void {
+		if (!editingTools.has(name)) {
+			throw new ProtocolError(`${name} 不是编辑工具，不能申请文件改动`);
+		}
+		if (this.#options.editLauncher === undefined) {
+			throw new ProtocolError("没有沙盒时没有可写范围之外的文件改动");
+		}
+		const paths = new Set<string>();
+		for (const edit of edits) {
+			if (!isAbsolute(edit.path) || resolve(edit.path) !== edit.path) {
+				throw new ProtocolError("申请的文件改动要给出规范化的绝对路径");
+			}
+			if (paths.has(edit.path)) {
+				throw new ProtocolError("同一路径在一次申请里只能出现一次");
+			}
+			paths.add(edit.path);
+			if ((edit.op === "add") !== (edit.old_sha256 === null)) {
+				throw new ProtocolError("新增的文件没有旧内容，修改的文件要有");
+			}
+		}
+	}
+
+	/**
+	 * 可写范围之外的文件改动：核对路径和磁盘上的旧内容，按审批策略询问或拒绝，批准后由 apply-edits
+	 * 在只能写这几个文件的沙盒里执行。批准的就是申请里的字节，执行时 apply-edits 再核对一次旧内容。
+	 */
+	async #applyEdits(
+		edits: readonly FileEditOp[],
+		toolCallId: string,
+		run: Run,
+		signal: AbortSignal,
+	): Promise<ToolResult> {
+		const { editLauncher, hostRoot, policy } = this.#options;
+		if (editLauncher === undefined) {
+			throw new Error("没有沙盒时不会走到文件改动的申请");
+		}
+		for (const { path, old_sha256 } of edits) {
+			if (isInside(path, hostRoot)) {
+				return {
+					status: "denied",
+					reason: "forbidden_rule",
+					content: text(
+						`${path} is inside the Host's own directory, which the agent cannot change.`,
+					),
+				};
+			}
+			// 父目录取真实路径：路径的各级都不能是符号链接
+			const parent = dirname(path);
+			if (statSync(parent, { throwIfNoEntry: false })?.isDirectory() !== true) {
+				return failure(`The directory ${parent} does not exist.`);
+			}
+			const real = realpathSync(parent);
+			if (real !== parent) {
+				return failure(
+					`${path} goes through a symbolic link. Use the real path ${join(real, basename(path))}.`,
+				);
+			}
+			if (fileHash(path) !== old_sha256) {
+				return failure(
+					`${path} is not what the edit was prepared against: it changed, or it is not a regular file. Read it again, then try again.`,
+				);
+			}
+		}
+		const keys = edits.map(({ path }) => `file:${path}`);
+		if (!keys.every((key) => run.taskApprovals.has(key))) {
+			const decision = askOrDeny(
+				"sandbox_approval",
+				edits.map(({ op, path }) =>
+					op === "add" ? `申请新建 ${path}` : `申请修改 ${path}`,
+				),
+				policy,
+			);
+			if (decision.action === "deny") {
+				return {
+					status: "denied",
+					reason: decision.reason,
+					content: text(decision.message),
+				};
+			}
+			if (decision.action === "ask") {
+				const refused = await this.#confirm(
+					run,
+					toolCallId,
+					{ kind: "file_edits", edits: [...edits] },
+					decision.reasons,
+					"file change",
+					keys,
+				);
+				if (refused !== undefined) return refused;
+			}
+		}
+		try {
+			const outcome = await runApplyEdits({
+				argv: await editLauncher(edits.map(({ path }) => path)),
+				cwd: this.#options.workspace,
+				env: this.#options.env,
+				edits,
+				signal,
+				tracker: this.#options.tracker,
+			});
+			if (outcome === "cancelled") {
+				return {
+					status: "cancelled",
+					content: text("The file change was cancelled."),
+				};
+			}
+			if (outcome.status === "failed") {
+				return failure(
+					outcome.written.length === 0
+						? outcome.message
+						: `${outcome.message}. Already written: ${outcome.written.join(", ")}`,
+				);
+			}
+		} catch (error) {
+			if (!(error instanceof ApplyEditsError)) throw error;
+			// 单次改动的沙盒启动失败只让这次调用失败，不关闭 session
+			return {
+				status: "failed",
+				reason: "sandbox_launch",
+				content: text(
+					`The sandbox could not apply this file change: ${error.message}`,
+				),
+			};
+		}
+		return {
+			status: "succeeded",
+			content: text(
+				edits
+					.map(
+						({ path, content }) =>
+							`Wrote ${Buffer.byteLength(content, "utf8")} bytes to ${path}.`,
+					)
+					.join("\n"),
+			),
+		};
 	}
 
 	#parseShell(raw: string): ShellArguments | ToolResult {

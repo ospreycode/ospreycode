@@ -15,9 +15,9 @@ import {
 	type TaskEndParams,
 	type TaskEndResult,
 	type ToolCallCompleteParams,
-	type ToolCallParams,
 	type ToolCallRegisterParams,
 	type ToolCallRegisterResult,
+	type ToolCallRunParams,
 	type ToolCallRunResult,
 } from "@ospreycode/agent-runtime";
 import type { StreamModel } from "@ospreycode/api";
@@ -208,11 +208,15 @@ export class HostSession implements ChannelHandlers {
 			events: this.#events,
 			approvals: this.#approvals,
 			launcher: this.#sandbox.commands,
+			...(this.#sandbox.edits === undefined
+				? {}
+				: { editLauncher: this.#sandbox.edits }),
 			policy: {
 				sandboxMode: config.sandboxMode,
 				approvalPolicy: config.approvalPolicy,
 				...(config.granular === undefined ? {} : { granular: config.granular }),
 			},
+			hostRoot: root,
 			workspace,
 			writableRoots: this.#writableRoots,
 			outputDir: directories.output,
@@ -397,7 +401,7 @@ export class HostSession implements ChannelHandlers {
 	}
 
 	async toolCallRun(
-		params: ToolCallParams,
+		params: ToolCallRunParams,
 		context: HandlerContext<RuntimeRequests["tool_call/run"]["stream"]>,
 	): Promise<ToolCallRunResult> {
 		return this.#toolCalls.run(params, context, this.#activeRun());

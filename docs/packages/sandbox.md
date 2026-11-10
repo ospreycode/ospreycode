@@ -193,9 +193,10 @@ sandbox/
 
 Host 代为执行的越界动作只有命令和文件改动两类；网络访问、MCP 工具调用和写 stdin 也要审批，但分别由代理、MCP 客户端和后台命令所在的命令沙盒处理，不另起沙盒。agent-runtime 的编辑工具遇到可写范围外的目标时自动组装文件改动的申请（见 agent-runtime 的[工具执行](agent-runtime.md#工具执行)）。
 
-- 申请按文件列出 `add`、`update`、`delete`，每项给出规范化的绝对路径（父目录取真实路径，各级都不能是符号链接）、改动前内容的 SHA-256（`add` 要求文件不存在）和完整的新内容；同一路径在一次申请里只出现一次，移动写成删除加新增。
-- CLI 显示 Host 按磁盘上的旧内容算出的统一 diff，批准的就是将要写入的字节。哈希对不上直接报错，不做模糊匹配。
-- 执行：Host 经 `sandbox` 以 `apply-edits` 角色启动 agent-runtime 的入口，写权限只给批准的路径，不能联网。申请作为一份 JSON 经 stdin 传入，结果一份 JSON 经 stdout 返回：`succeeded`，或 `failed` 加 `written: [path]`（部分写入算 `failed`）。它先核对全部哈希，再不跟随符号链接地打开文件（macOS 用 `O_NOFOLLOW_ANY`，Node 的 `fs.constants` 里没有，按数值 `0x20000000` 传入；Linux 上逐级 `lstat`，最后一级用 `O_NOFOLLOW`），在同一个文件描述符上读、核对、截断和写入。不写临时文件再改名：改名需要整个目录的写权限。
+- 申请按文件列出 `add`、`update`、`delete`，每项给出规范化的绝对路径（父目录取真实路径，各级都不能是符号链接）、改动前内容的 SHA-256（`add` 要求文件不存在）和完整的新内容；同一路径在一次申请里只出现一次，移动写成删除加新增。`write` 和 `edit` 只产生 `add` 和 `update`，通道和 apply-edits 现在也只接受这两种；删除和移动由模型用 shell 命令做，走命令的越界申请。
+- Host 在询问之前核对申请：Host 根目录里的文件不能改，按内置的 `forbidden` 处理；上级目录要已经存在并且就是它的真实路径（apply-edits 的写权限只到文件，建不了目录）；磁盘上的旧内容和申请里的哈希要一致。不符的直接失败，不拿去问用户。
+- CLI 显示 Host 按磁盘上的旧内容算出的统一 diff，批准的就是将要写入的字节。哈希对不上直接报错，不做模糊匹配。用户选"本任务内允许"时，这个任务里对同一路径的改动不再询问。
+- 执行：Host 经 `sandbox` 以 `apply-edits` 角色启动 agent-runtime 的入口，写权限只给批准的路径（工作区也不给），不能联网，时限 30 秒。申请作为一份 JSON 经 stdin 传入，结果一份 JSON 经 stdout 返回：`succeeded`，或 `failed` 加 `written: [path]`（部分写入算 `failed`）。它先核对全部哈希，有一个不符就什么都不写，再不跟随符号链接地打开文件（macOS 用 `O_NOFOLLOW_ANY`，Node 的 `fs.constants` 里没有，按数值 `0x20000000` 传入；Linux 上逐级 `lstat`，最后一级用 `O_NOFOLLOW`），在同一个文件描述符上读、核对、截断和写入。不写临时文件再改名：改名需要整个目录的写权限。
 - 不提供目录级的编辑批准，需要时用 `request_permissions`。
 - sandbox-runtime 在 macOS 上能把写权限限定到单个文件（`/tmp` 这类路径要先规范化成 `/private/tmp`）。Linux 上不存在的写入路径会被悄悄跳过，对单个文件的绑定挂载也可能删不掉；新增和删除需要放开所在目录时，询问里写明。
 

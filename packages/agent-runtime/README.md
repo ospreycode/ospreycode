@@ -13,6 +13,7 @@ npm install @ospreycode/agent-runtime
 主要接口：
 
 - `@ospreycode/agent-runtime/agent`：agent 进程的入口。Host 用 `process.execPath` 运行这个文件，通道在继承的 fd 3 上。
+- `@ospreycode/agent-runtime/apply-edits`：apply-edits 的入口，执行用户批准的、可写范围之外的文件改动。Host 在只能写这几个文件的沙盒里运行它，申请经 stdin 传入，结果经 stdout 返回。
 - `openHostChannel(stream, onFailure)`：在 Host 一侧打开通道，按 schema 检查 runtime 发来的每条消息；`openRuntimeChannel` 是 runtime 一侧。两者都返回 `ChannelPeer`，可以发请求和通知、注册处理函数。
 - `runAgent(stream)`：在给定的连接上运行 runtime，测试时由测试实现 Host 一侧。
 - 工具调用的格式：工具声明 `ToolSpec`、工具结果 `ToolResult`，以及 Host 写入 session 记录的工具调用事件。

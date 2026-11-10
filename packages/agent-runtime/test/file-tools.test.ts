@@ -18,6 +18,7 @@ import {
 	runAgent,
 	type ToolCallRegisterParams,
 	type ToolCallRegisterResult,
+	type ToolCallRunParams,
 	type ToolResult,
 } from "@ospreycode/agent-runtime";
 import type { AssistantMessage } from "@ospreycode/api/protocol";
@@ -31,12 +32,17 @@ interface Call {
 
 /** 假 Host 看到的一次运行。 */
 interface Trace {
-	/** 每次调用的登记，按模型发出调用的顺序。 */
-	registered: ToolCallRegisterParams[];
-	/** 每次调用提交的结果，按模型发出调用的顺序；被拒绝的调用不提交结果，对应的位置为空。 */
+	/** 每次调用的登记，按模型发出调用的顺序；交给 Host 执行的调用不登记，对应的位置为空。 */
+	registered: (ToolCallRegisterParams | undefined)[];
+	/**
+	 * 每次调用的结果，按模型发出调用的顺序：登记过的是 runtime 提交的结果，交给 Host 执行的是
+	 * 假 Host 给出的结果；登记时被拒绝的调用不提交结果，对应的位置为空。
+	 */
 	results: (ToolResult | undefined)[];
 	/** 登记和提交结果到达的先后，如 `register read`、`complete read`。 */
 	order: string[];
+	/** 交给 Host 执行的调用（`tool_call/run`），按到达的顺序。 */
+	hostRuns: ToolCallRunParams[];
 }
 
 interface Options {
@@ -48,6 +54,8 @@ interface Options {
 		params: ToolCallRegisterParams,
 		toolCallId: string,
 	) => Promise<ToolCallRegisterResult> | ToolCallRegisterResult;
+	/** 假 Host 执行交给它的调用（`tool_call/run`）。 */
+	runOnHost?: (params: ToolCallRunParams) => ToolResult;
 }
 
 let base: string;
@@ -94,6 +102,7 @@ async function run(rounds: Call[][], options: Options = {}): Promise<Trace> {
 	const results = new Map<string, ToolResult>();
 	/** Host 分配的编号对应的登记。 */
 	const byToolCallId = new Map<string, ToolCallRegisterParams>();
+	const hostRuns: ToolCallRunParams[] = [];
 	const ended = Promise.withResolvers<void>();
 	let round = 0;
 
@@ -171,6 +180,19 @@ async function run(rounds: Call[][], options: Options = {}): Promise<Trace> {
 		order.push(`complete ${params.name}`);
 		return {};
 	});
+	channel.handle("tool_call/run", async (params, context) => {
+		if (options.runOnHost === undefined) {
+			throw new Error(`假 Host 没有准备执行 ${params.name}`);
+		}
+		hostRuns.push(params);
+		await context.stream({
+			method: "tool_call/started",
+			params: { tool_call_id: `host-${hostRuns.length}` },
+		});
+		const result = options.runOnHost(params);
+		results.set(params.call_id, result);
+		return { result };
+	});
 	channel.handle("task/end", async () => {
 		ended.resolve();
 		return { continue: false };
@@ -185,13 +207,10 @@ async function run(rounds: Call[][], options: Options = {}): Promise<Trace> {
 	await agent;
 	expect(failures).toEqual([]);
 	return {
-		registered: issued.map((callId) => {
-			const params = registered.get(callId);
-			if (params === undefined) throw new Error(`调用 ${callId} 没有登记`);
-			return params;
-		}),
+		registered: issued.map((callId) => registered.get(callId)),
 		results: issued.map((callId) => results.get(callId)),
 		order,
+		hostRuns,
 	};
 }
 
@@ -222,7 +241,7 @@ test("write 新建文件和上级目录，登记改动前后的哈希；之后�
 		"succeeded",
 		"succeeded",
 	]);
-	expect(trace.registered.map((params) => params.edit)).toEqual([
+	expect(trace.registered.map((params) => params?.edit)).toEqual([
 		{
 			path: file,
 			old_sha256: null,
@@ -440,47 +459,140 @@ test("read 对不存在的文件、目录和二进制文件报告失败", async 
 	]);
 });
 
-test("可写范围之外的文件不写，经符号链接指到范围外的也一样", async () => {
-	const target = join(outside, "escape.txt");
-	writeFileSync(target, "original");
+/** 假 Host 像 apply-edits 那样写入申请的文件。 */
+function applyOnHost(params: ToolCallRunParams): ToolResult {
+	for (const edit of params.file_edits ?? []) {
+		writeFileSync(edit.path, edit.content);
+	}
+	return { status: "succeeded", content: [{ type: "text", text: "written" }] };
+}
+
+test("可写范围之外的改动不在 agent 沙盒里写，组装成申请交给 Host；经符号链接指到范围外的也一样", async () => {
+	const target = join(outside, "existing.txt");
+	writeFileSync(target, "original\n");
 	mkdirSync(join(workspace, "sub"));
 	// 工作区里指向范围外的符号链接
 	symlinkSync(outside, join(workspace, "sub/link"));
-	const trace = await run([
+	const trace = await run(
 		[
-			{
-				name: "write",
-				arguments: { path: join(outside, "new.txt"), content: "x" },
-			},
-		],
-		[{ name: "write", arguments: { path: "sub/link/new.txt", content: "x" } }],
-		[{ name: "read", arguments: { path: target } }],
-		[
-			{
-				name: "edit",
-				arguments: {
-					path: "sub/link/escape.txt",
-					edits: [{ old_text: "original", new_text: "changed" }],
+			[
+				{
+					name: "write",
+					arguments: { path: join(outside, "new.txt"), content: "new\n" },
 				},
-			},
+			],
+			// 写入成功后记录随之更新，接着改不用重新读
+			[
+				{
+					name: "edit",
+					arguments: {
+						path: join(outside, "new.txt"),
+						edits: [{ old_text: "new", new_text: "newer" }],
+					},
+				},
+			],
+			[{ name: "read", arguments: { path: target } }],
+			[
+				{
+					name: "edit",
+					arguments: {
+						path: "sub/link/existing.txt",
+						edits: [{ old_text: "original", new_text: "changed" }],
+					},
+				},
+			],
+		],
+		{ runOnHost: applyOnHost },
+	);
+
+	expect(trace.results.map((result) => result?.status)).toEqual(
+		Array.from({ length: 4 }, () => "succeeded"),
+	);
+	expect(
+		trace.hostRuns.map((params) => [params.name, params.file_edits]),
+	).toEqual([
+		[
+			"write",
+			[
+				{
+					op: "add",
+					path: join(outside, "new.txt"),
+					old_sha256: null,
+					content: "new\n",
+				},
+			],
+		],
+		[
+			"edit",
+			[
+				{
+					op: "update",
+					path: join(outside, "new.txt"),
+					old_sha256: sha256("new\n"),
+					content: "newer\n",
+				},
+			],
+		],
+		[
+			"edit",
+			[
+				{
+					op: "update",
+					path: target,
+					old_sha256: sha256("original\n"),
+					content: "changed\n",
+				},
+			],
 		],
 	]);
+	// 只有读取登记，范围外的改动都没有在 agent 沙盒里登记和执行
+	expect(trace.registered.map((params) => params?.name)).toEqual([
+		undefined,
+		undefined,
+		"read",
+		undefined,
+	]);
+});
+
+test("范围外的改动被 Host 拒绝后读取记录不变；已有的文件同样要先读过；上级目录不存在的不申请", async () => {
+	const target = join(outside, "existing.txt");
+	writeFileSync(target, "original\n");
+	const denied: ToolResult = {
+		status: "denied",
+		reason: "user",
+		content: [{ type: "text", text: "The user denied this file change." }],
+	};
+	const write = (path: string) => ({
+		name: "write",
+		arguments: { path, content: "x" },
+	});
+	const trace = await run(
+		[
+			[write(target)],
+			[write(join(outside, "new.txt"))],
+			// 上一次被拒绝，文件没有写出来，这一次还是新建
+			[write(join(outside, "new.txt"))],
+			[write(join(outside, "missing/deep.txt"))],
+		],
+		{ runOnHost: () => denied },
+	);
 
 	expect(trace.results.map((result) => result?.status)).toEqual([
 		"failed",
-		"failed",
-		"succeeded",
+		"denied",
+		"denied",
 		"failed",
 	]);
-	expect(output(trace.results[0])).toContain("outside the writable roots");
+	expect(output(trace.results[0])).toContain("has not been read yet");
 	expect(output(trace.results[3])).toContain(
-		`${target} is outside the writable roots`,
+		`The directory ${join(outside, "missing")} does not exist`,
 	);
+	expect(trace.hostRuns.map((params) => params.file_edits?.[0]?.op)).toEqual([
+		"add",
+		"add",
+	]);
 	expect(existsSync(join(outside, "new.txt"))).toBe(false);
-	expect(readFileSync(target, "utf8")).toBe("original");
-	expect(trace.registered.every((params) => params.edit === undefined)).toBe(
-		true,
-	);
+	expect(readFileSync(target, "utf8")).toBe("original\n");
 });
 
 test("参数不是 JSON 或不符合 schema 的调用照样登记，结果记为失败", async () => {

@@ -38,7 +38,7 @@ agent-runtime/
 | `status` | Host → runtime，请求 | 查询 runtime 当前在做什么：等待模型、执行哪些工具调用、空闲 | P0 |
 | `model/request` | runtime → Host，流式请求 | 内部协议的模型请求；流式事件以 `model/event` 通知返回，最终响应是这次回复，带停止原因和用量，模型出错时另带错误类别（见 api 的[在系统中的位置](api.md#在系统中的位置)） | P0 |
 | `model/count_tokens` | runtime → Host，请求 | token 计数（见 api 的 [token 计数](api.md#token-计数)） | P3 |
-| `tool_call/run` | runtime → Host，流式请求 | Host 代为执行的工具：shell（含后台命令的启动、查询、写入和停止）、MCP 工具、越界动作。第一条通知 `tool_call/started` 带 Host 分配的 `tool_call_id`，随后是输出通知 `tool_call/output`，最终响应是结果；Permission 的判断和询问都在其中完成 | P0 |
+| `tool_call/run` | runtime → Host，流式请求 | Host 代为执行的工具：shell（含后台命令的启动、查询、写入和停止）、MCP 工具、越界动作。编辑工具的目标在可写范围之外时带上 `file_edits`（runtime 组装好的文件改动申请）。第一条通知 `tool_call/started` 带 Host 分配的 `tool_call_id`，随后是输出通知 `tool_call/output`，最终响应是结果；Permission 的判断和询问都在其中完成 | P0 |
 | `tool_call/register` | runtime → Host，请求 | 登记 runtime 一侧执行的工具调用（文件工具、`skill_load`、`memory_*`），返回 `tool_call_id` 和决定；`skill_load`、`memory_*` 登记后再用下面的 `skill/load`、`memory/*` 取内容 | P0 |
 | `tool_call/complete` | runtime → Host，请求 | 提交用 `tool_call/register` 登记的调用的结果 | P0 |
 | `input/available` | Host → runtime，通知 | 有 steering 或后台命令的通知等待插入 | P1 |
@@ -125,7 +125,7 @@ runtime 在沙盒里读不到用户级配置，启用哪些扩展也由 Host 决
 
 - `write` 新建文件或整个覆盖已有的文件，上级目录不存在时一并创建。`edit` 在已有的文件里做一处或几处文本替换（照 pi 的 edit 工具）：每处的 `old_text` 都按原内容匹配，必须恰好出现一次、各处不能重叠，替换后内容要有变化。只做精确匹配，匹配不上就报错让模型重新读取：模糊匹配改到的可能不是模型想改的地方。
 - 模型写的是 LF，所以匹配前把文件内容统一成 LF，写回时恢复文件原来的换行和开头的 BOM。不是合法 UTF-8 的文件 `edit` 不改：不合法的字节换成替换字符再写回会破坏文件。
-- tool-executor 按 `writable_roots` 判断目标的真实路径，范围外时自动组装 apply-edits 申请，不要求模型改参数；`read-only` 下所有编辑都走这条路；Host 收到申请后再核对一次。
+- tool-executor 按 `writable_roots` 判断目标的真实路径，范围外时自动组装 apply-edits 申请，不要求模型改参数；`read-only` 下所有编辑都走这条路；Host 收到申请后再核对一次。范围外的改动不在 agent 沙盒里登记和执行，经 `tool_call/run` 交给 Host；Host 报告写入成功后，runtime 更新这个文件的读取记录。范围外新建文件时上级目录要已经存在，不存在就让模型先用 shell 建目录。
 - 登记时带 `{path, old_sha256, new_sha256}`，Host 据此做目标文件的前后快照，异常退出和恢复时按哈希判断是否已写入。所以编辑工具在登记之前就读出旧内容、算出新内容；Host 允许之后、写入之前再核对一次旧内容，等待期间文件变了就报错。
 - `request_permissions` 批下来的目录，本任务内落在其中的编辑仍由 apply-edits 执行，但不再询问。
 - 修改前确认文件自上次读取后没有被改过（用户可能同时在编辑器里修改），否则要求重新读取：`read` 记下读到内容的 SHA-256，改已有的文件时要有这份记录、并且和文件现在的内容一致；agent 自己写入后记录随之更新，接着改不用重新读。读取记录在回退、重启和恢复后清空。

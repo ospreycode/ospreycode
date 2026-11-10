@@ -454,7 +454,26 @@ const requestParams = {
 		{ message_id: Id, request: ModelRequest },
 		closed,
 	),
-	"tool_call/run": Type.Object(ToolCallFields, closed),
+	"tool_call/run": Type.Object(
+		{
+			...ToolCallFields,
+			file_edits: Type.Optional(
+				Type.Array(
+					Type.Object(
+						{
+							op: Type.Union([Type.Literal("add"), Type.Literal("update")]),
+							path: Type.String(),
+							old_sha256: Type.Union([Type.String(), Type.Null()]),
+							content: Type.String(),
+						},
+						closed,
+					),
+					{ minItems: 1 },
+				),
+			),
+		},
+		closed,
+	),
 	"tool_call/register": Type.Object(
 		{
 			...ToolCallFields,

@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -11,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	checkSandboxSupport,
+	filesystemRules,
 	type SandboxHelper,
 	type SandboxPolicy,
 	SandboxUnavailableError,
@@ -158,6 +160,28 @@ describe.runIf(onMac)("macOS 的沙盒后端（真实沙盒）", () => {
 		expect(
 			run(await sandbox.wrap(`echo ok > ${target}.2`, bash)).status,
 		).not.toBe(0);
+	});
+
+	test("写权限可以限定到单个文件：能改它、能新建它，写不了旁边的文件和工作区", async () => {
+		const sandbox = await helper(policy);
+		const existing = join(paths.outside, "only-this.txt");
+		const created = join(paths.outside, "created.txt");
+		writeFileSync(existing, "old");
+		const only = {
+			allowRead: filesystemRules(policy).allowRead,
+			allowWrite: [existing, created],
+		};
+		const exit = async (command: string) =>
+			run(await sandbox.wrap(command, bash, only)).status;
+
+		expect(await exit(`echo new > '${existing}'`)).toBe(0);
+		expect(readFileSync(existing, "utf8")).toBe("new\n");
+		expect(await exit(`echo new > '${created}'`)).toBe(0);
+		expect(readFileSync(created, "utf8")).toBe("new\n");
+		expect(await exit(`echo x > '${paths.outside}/sibling.txt'`)).not.toBe(0);
+		expect(existsSync(join(paths.outside, "sibling.txt"))).toBe(false);
+		expect(await exit("echo x > in-workspace.txt")).not.toBe(0);
+		expect(existsSync(join(paths.workspace, "in-workspace.txt"))).toBe(false);
 	});
 
 	test("read-only 下不能写工作区", async () => {

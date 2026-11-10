@@ -3,7 +3,12 @@ import { Compile, type Validator } from "typebox/compile";
 import type { RuntimeChannel } from "../channel/open.js";
 import type { ToolResult } from "../contracts/index.js";
 import { isFileSystemError, ToolFailure, text } from "../tools/files.js";
-import type { LocalTool, PreparedCall, ToolContext } from "./local-tool.js";
+import type {
+	LocalCall,
+	LocalTool,
+	PreparedCall,
+	ToolContext,
+} from "./local-tool.js";
 
 /** 约定中会发生的失败（工具自己报告的、文件系统报告的）写成交给模型的结果，其余的错误照常抛出。 */
 function failed(error: unknown): ToolResult {
@@ -53,11 +58,31 @@ export class ToolExecutor {
 		} catch (error) {
 			prepared = failed(error);
 		}
-		const registered = await this.#channel.request("tool_call/register", {
+		const params = {
 			call_id: call.call_id,
 			message_id: messageId,
 			name: call.name,
 			arguments: call.arguments,
+		};
+		if ("fileEdits" in prepared) {
+			// 可写范围之外的改动由 Host 询问用户，批准后交给 apply-edits 执行
+			const { result } = await this.#channel.request(
+				"tool_call/run",
+				{ ...params, file_edits: prepared.fileEdits },
+				{
+					signal,
+					onStream: (notification) => {
+						if (notification.method === "tool_call/started") {
+							onRegistered(notification.params.tool_call_id);
+						}
+					},
+				},
+			);
+			if (result.status === "succeeded") prepared.applied();
+			return result;
+		}
+		const registered = await this.#channel.request("tool_call/register", {
+			...params,
 			...("edit" in prepared && prepared.edit !== undefined
 				? { edit: prepared.edit }
 				: {}),
@@ -94,7 +119,7 @@ export class ToolExecutor {
 	}
 
 	async #execute(
-		prepared: PreparedCall | ToolResult,
+		prepared: LocalCall | ToolResult,
 		signal: AbortSignal,
 	): Promise<ToolResult> {
 		if ("status" in prepared) return prepared;
