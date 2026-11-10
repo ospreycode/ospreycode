@@ -158,9 +158,12 @@ const scan = { depth: 3, timeoutMs: 10_000 };
  */
 const placeholderChild = ".placeholder";
 
-/** 一个不存在的受保护路径交给 sandbox-runtime 的禁止写入路径：占位成空目录。 */
+/**
+ * 一个不存在的受保护路径交给 sandbox-runtime 的禁止写入路径：占位成空目录。子路径排在前面：同时启动的
+ * 另一个沙盒的 bwrap 可能正在建这个目录，它在包装期间出现时，子路径的占位要在目录变成只读之前建好。
+ */
 function placeholderPaths(path: string): string[] {
-	return [path, join(path, placeholderChild)];
+	return [join(path, placeholderChild), path];
 }
 
 /** 宿主上实际放占位的位置：路径上第一个不存在的那一级。 */

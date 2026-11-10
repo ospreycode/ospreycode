@@ -158,7 +158,7 @@ sandbox-runtime 写不出"最具体的一条生效"的全部情形，写不出�
 
 实现：
 
-- sandbox-runtime 自带的强制名单保留，多出的项由 Host 加进 `denyWrite`。macOS 上写成以 `**/` 开头的通配，任意深度生效，之后新建的路径也受保护，路径不存在时 Seatbelt 直接拒绝创建。Linux 上写入规则不支持通配，Host 在每次包装前用和强制保护相同的扫描（深度 3，最多 10 秒）找出这些名字已存在的位置，以绝对路径加入；不存在的只在工作区根目录用 sandbox-runtime 的占位（`.git` 不存在时它不放占位，要显式加上）。占位一律是只读的空目录：sandbox-runtime 给文件类的名字在宿主上放空文件、在沙盒里绑上 `/dev/null`，`git add -A` 遇到这个字符设备就失败，空目录 git 不管；Host 在每个不存在的名字下面多禁止一级（`<名字>/.placeholder`），它就改放空目录。带通配的名字放不了占位，mise 的换成它默认读取的 `mise.toml`、`mise.local.toml`、`.mise.toml`、`.mise.local.toml`、`.config/mise.toml`、`.config/mise.local.toml`、`mise/config.toml` 和 `mise/config.local.toml`。
+- sandbox-runtime 自带的强制名单保留，多出的项由 Host 加进 `denyWrite`。macOS 上写成以 `**/` 开头的通配，任意深度生效，之后新建的路径也受保护，路径不存在时 Seatbelt 直接拒绝创建。Linux 上写入规则不支持通配，Host 在每次包装前用和强制保护相同的扫描（深度 3，最多 10 秒）找出这些名字已存在的位置，以绝对路径加入；不存在的只在工作区根目录用 sandbox-runtime 的占位（`.git` 不存在时它不放占位，要显式加上）。占位一律是只读的空目录：sandbox-runtime 给文件类的名字在宿主上放空文件、在沙盒里绑上 `/dev/null`，`git add -A` 遇到这个字符设备就失败，空目录 git 不管；Host 在每个不存在的名字下面多禁止一级（`<名字>/.placeholder`），它就改放空目录。这一级排在名字前面：同时启动的另一个沙盒可能正在建这个目录，目录在包装期间出现时，下一级的占位要在目录变成只读之前建好。带通配的名字放不了占位，mise 的换成它默认读取的 `mise.toml`、`mise.local.toml`、`.mise.toml`、`.mise.local.toml`、`.config/mise.toml`、`.config/mise.local.toml`、`mise/config.toml` 和 `mise/config.local.toml`。
 - 占位在沙盒存在期间对沙盒外的工具也可见，进程被强制结束后还会留在用户的目录里，所以 Host 把占位记进 `data/placeholders.json`（加锁写入），在 session 结束和下次打开同一工作区时删除仍为空的残留。
 - 工作区以外批准的可写路径（`request_permissions`、`file_system.write` 批下来的目录）里，Host 以每个可写路径为根同样加上这些名字：sandbox-runtime 的强制保护只以工作区为根。申请写入的路径本身（或它的某一级上级）叫这些名字时直接拒绝，不拿去问用户；工作区以外的路径从根目录起逐级判断。
 - nix 的那几个文件只看可写根目录下有没有 `.envrc`：任意深度的 `.envrc` 要在每次包装前扫描整个工作区才知道。
