@@ -206,8 +206,8 @@ test.runIf(process.platform === "darwin" || process.platform === "linux")(
 			],
 			{ cwd: dirs.workspace, env: dirs.env },
 		);
-		await cli.waitFor("Enter 发送");
-		expect(cli.output()).toContain(" · 沙盒 strict · ");
+		// 状态行在提示之后才画完：等它本身，不在半个画面上判断
+		await cli.waitFor(" · 沙盒 strict · ");
 
 		await cli.type("/quit");
 		cli.write("\r");

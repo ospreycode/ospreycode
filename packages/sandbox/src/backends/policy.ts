@@ -234,8 +234,12 @@ export async function sandboxFilesystem(
 		...policy.denyWrite,
 		// 写入规则里禁止优先于允许：批准的路径和越界执行也写不进这些位置
 		...(profile?.readOnly ?? []),
-		// 本机所有 sandbox-runtime 沙盒都能写这里，不让它成为沙盒之间的通道
-		"/tmp/claude",
+		// 本机所有 sandbox-runtime 沙盒都能写这里，不让它成为沙盒之间的通道。Linux 上它不存在时
+		// sandbox-runtime 不放开它，不用禁止：禁止不存在的路径要放占位，这个占位由本机所有辅助进程共用，
+		// 一个辅助进程收尾时删掉它，别的辅助进程的沙盒就启动不了，或者失去这条禁止
+		...(platform === "linux" && !existsSync("/tmp/claude")
+			? []
+			: ["/tmp/claude"]),
 		"/private/tmp/claude",
 	];
 	// 越界执行时要保持可写的目录：它们的上级可能叫受保护的名字，不能整个禁止

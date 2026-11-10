@@ -781,6 +781,10 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 			child.stdout?.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
+			let errors = "";
+			child.stderr?.on("data", (chunk: Buffer) => {
+				errors += chunk.toString();
+			});
 			const pipe = child.stdio[3] as import("node:net").Socket | undefined;
 			let pipeClosed = false;
 			pipe?.resume();
@@ -791,6 +795,7 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 				child,
 				exited: once(child, "exit"),
 				output: () => output,
+				errors: () => errors,
 				pipeClosed: () => pipeClosed,
 				/** 关闭管道（macOS）或结束进程组（Linux 靠 PID 命名空间）。 */
 				async end() {
@@ -827,7 +832,7 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 				) {
 					await sleep(10);
 				}
-				expect(instance.output().trim()).toBe("done");
+				expect(instance.output().trim(), instance.errors()).toBe("done");
 				const leftover = readFileSync(pidFile, "utf8")
 					.trim()
 					.split("\n")
