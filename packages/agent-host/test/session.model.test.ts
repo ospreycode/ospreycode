@@ -3,12 +3,19 @@ import { join } from "node:path";
 import { createHost, type Session } from "@ospreycode/agent-host";
 import type { ModelFields } from "@ospreycode/api";
 import { afterEach, beforeEach, expect, inject, test } from "vitest";
+import {
+	charge,
+	checkLedger,
+	testRunLimits,
+	throwIfTransient,
+} from "../../../scripts/model-test.js";
 import { EventLog, type TestDirectories, testDirectories } from "./harness.js";
 
 let dirs: TestDirectories;
 let session: Session | undefined;
 
 beforeEach(() => {
+	checkLedger();
 	dirs = testDirectories();
 });
 
@@ -36,6 +43,7 @@ test("真实模型经通道请求模型、由 Host 执行 shell，完成任务",
 		},
 		sandboxMode: "danger-full-access",
 		approvalPolicy: "never",
+		budget: testRunLimits,
 		onEvent: log.push,
 	});
 	await session.submit(
@@ -43,6 +51,8 @@ test("真实模型经通道请求模型、由 Host 执行 shell，完成任务",
 	);
 
 	const ended = await log.waitFor("task.ended");
+	charge(ended.usage);
+	throwIfTransient(ended);
 	expect(ended.outcome).toBe("completed");
 	expect(ended.usage.input).toBeGreaterThan(0);
 	expect(readFileSync(join(dirs.workspace, "hello.txt"), "utf8").trim()).toBe(

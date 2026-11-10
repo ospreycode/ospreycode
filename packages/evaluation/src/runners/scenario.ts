@@ -6,10 +6,11 @@ import {
 	createHost,
 	type HostEvent,
 	inJsonOutput,
+	type RunLimits,
 	type Session,
 	type TaskOutcome,
 } from "@ospreycode/agent-host";
-import type { ModelEntry } from "@ospreycode/api";
+import type { ModelEntry, StreamModel } from "@ospreycode/api";
 import type { ReasoningEffort, Usage } from "@ospreycode/api/protocol";
 import type {
 	ApprovalAnswer,
@@ -23,10 +24,17 @@ export interface EvaluationEnvironment {
 	reasoningEffort: ReasoningEffort;
 	/** 模型服务的凭据来源。 */
 	credential: CredentialSource;
+	/** 每个 run 的费用、请求次数和时间上限：评测显式给出全部三项，不用 Host 的默认值。 */
+	budget: RunLimits;
 	/** 额外禁止沙盒读取的绝对路径，如测试密钥所在的目录。 */
 	denyRead: readonly string[];
 	/** Host 的环境变量，HOME 由运行器换成每个场景自己的临时目录。 */
 	env: Readonly<Record<string, string | undefined>>;
+	/**
+	 * 发起模型请求的函数；不传时发出真实请求。模型报错、超时、超出上限这类真实模型难以稳定触发的情况，
+	 * 传入 `@ospreycode/api/testing` 的脚本模型。
+	 */
+	streamModel?: StreamModel;
 }
 
 /** 一个场景用到的目录，都在场景自己的临时目录里。 */
@@ -43,7 +51,7 @@ export interface Scenario {
 	sandboxMode: SandboxMode;
 	approvalPolicy: ApprovalPolicy;
 	prompt(dirs: ScenarioDirectories): string;
-	/** 怎样回答询问；不写时一律拒绝。 */
+	/** 怎样回答询问；不写时一律拒绝。超出 run 上限后是否追加额度的询问不经过它，一律拒绝。 */
 	answer?(
 		event: ApprovalRequestedEvent,
 		dirs: ScenarioDirectories,
@@ -108,18 +116,23 @@ export async function runScenario(
 		if (event.type === "task.ended") ended.resolve(event.outcome);
 		if (session === undefined) return;
 		if (event.type === "approval.requested") {
+			// 上限是评测显式给出的，超出后不追加额度，task 以 budget_exceeded 结束
+			const answer =
+				event.kind === "budget" ? undefined : scenario.answer?.(event, dirs);
 			session.respond(
 				event.request_id,
-				scenario.answer?.(event, dirs) ?? { decision: "deny", scope: "once" },
+				answer ?? { decision: "deny", scope: "once" },
 			);
 		}
 		if (scenario.cancelWhen?.(event) === true) void session.cancel();
 	};
 	const { id, ...model } = environment.model;
+	const { streamModel } = environment;
 	try {
 		session = await createHost({
 			root: join(dirs.home, ".ospreycode"),
 			env: { ...environment.env, HOME: dirs.home },
+			...(streamModel === undefined ? {} : { streamModel }),
 		}).openSession({
 			workspace: dirs.workspace,
 			model: id,
@@ -128,6 +141,7 @@ export async function runScenario(
 			credentials: { [model.service]: environment.credential },
 			sandboxMode: scenario.sandboxMode,
 			approvalPolicy: scenario.approvalPolicy,
+			budget: environment.budget,
 			denyRead: environment.denyRead,
 			onEvent,
 		});

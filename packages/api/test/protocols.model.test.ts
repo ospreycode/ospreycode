@@ -14,7 +14,14 @@ import type {
 	ModelRequest,
 	ReasoningEffort,
 } from "@ospreycode/api/protocol";
-import { describe, expect, inject, test } from "vitest";
+import { beforeEach, describe, expect, inject, test } from "vitest";
+import {
+	charge,
+	checkLedger,
+	expectNoModelError,
+} from "../../../scripts/model-test.js";
+
+beforeEach(checkLedger);
 
 function builtin(id: string): ModelEntry {
 	const entry = builtinModels.find((m) => m.id === id);
@@ -99,7 +106,8 @@ async function reply(
 		...(raws === undefined ? {} : { raws }),
 	})) {
 		if (event.type === "end") {
-			expect(event.error).toBeUndefined();
+			charge(event.message.usage);
+			expectNoModelError(event.error);
 			message = event.message;
 		}
 	}

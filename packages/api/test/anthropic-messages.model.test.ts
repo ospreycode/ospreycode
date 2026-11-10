@@ -7,7 +7,14 @@ import type {
 	ModelRequest,
 	ReasoningEffort,
 } from "@ospreycode/api/protocol";
-import { expect, inject, test } from "vitest";
+import { beforeEach, expect, inject, test } from "vitest";
+import {
+	charge,
+	checkLedger,
+	expectNoModelError,
+} from "../../../scripts/model-test.js";
+
+beforeEach(checkLedger);
 
 function haiku(): ModelEntry {
 	const entry = builtinModels.find((m) => m.id === "claude-haiku-5-5");
@@ -55,7 +62,8 @@ async function reply(
 		signal: AbortSignal.timeout(120_000),
 	})) {
 		if (event.type === "end") {
-			expect(event.error).toBeUndefined();
+			charge(event.message.usage);
+			expectNoModelError(event.error);
 			message = event.message;
 		}
 	}

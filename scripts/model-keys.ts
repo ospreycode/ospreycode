@@ -1,4 +1,12 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import {
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
@@ -9,6 +17,8 @@ declare module "vitest" {
 		modelKeysDir: string;
 		/** 各服务共用的接口地址，来自密钥目录里的 base-url 文件。 */
 		modelBaseUrl: string;
+		/** 这次运行的费用账本：每个模型测试花的钱追加一行，测试在不同的 worker 里也记在同一处。 */
+		modelLedger: string;
 	}
 }
 
@@ -56,6 +66,14 @@ export function keysDirProblems(dir: string, repoDir: string): string[] {
 	return problems;
 }
 
+/** 账本里记的费用合计（美元）：每行一个数。 */
+export function ledgerTotal(ledger: string): number {
+	return readFileSync(ledger, "utf8")
+		.split("\n")
+		.filter((line) => line !== "")
+		.reduce((total, line) => total + Number(line), 0);
+}
+
 function configError(message: string): Error {
 	const error = new Error(message);
 	// vitest 5.0.5 用的 vite module runner 给 globalSetup 里抛出的错误映射调用栈时会出错，只显示它自己的 TypeError
@@ -63,8 +81,11 @@ function configError(message: string): Error {
 	return error;
 }
 
-/** vitest 的全局初始化：选中 model 标签时检查密钥目录，把它的路径和接口地址交给测试。 */
-export default function setup(project: TestProject): void {
+/**
+ * vitest 的全局初始化：选中 model 标签时检查密钥目录，把它的路径、接口地址和费用账本交给测试；
+ * 运行结束时报告这次一共花了多少钱。
+ */
+export default function setup(project: TestProject): (() => void) | undefined {
 	if (!(project.globalConfig.tagsFilter ?? []).includes("model")) return;
 	const dir = process.env.OSPREYCODE_TEST_KEYS;
 	if (dir === undefined) {
@@ -79,4 +100,12 @@ export default function setup(project: TestProject): void {
 	if (problems.length > 0) throw configError(problems.join("\n"));
 	project.provide("modelKeysDir", realpathSync(dir));
 	project.provide("modelBaseUrl", readBaseUrl(dir));
+	const ledgerDir = mkdtempSync(join(tmpdir(), "osp-model-ledger-"));
+	const ledger = join(ledgerDir, "ledger");
+	writeFileSync(ledger, "");
+	project.provide("modelLedger", ledger);
+	return () => {
+		console.log(`模型测试这次一共花了 ${ledgerTotal(ledger).toFixed(4)} 美元`);
+		rmSync(ledgerDir, { recursive: true, force: true });
+	};
 }
