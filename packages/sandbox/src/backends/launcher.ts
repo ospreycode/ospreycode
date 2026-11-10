@@ -142,7 +142,7 @@ export async function startSandboxHelper(
 		// sandbox-runtime 的强制保护以辅助进程的当前目录为根，wrap 也不接受工作目录参数
 		cwd: options.workspace,
 		// sandbox-runtime 把沙盒里的 TMPDIR 设成这个变量，不设时是本机所有沙盒共用的 /tmp/claude
-		env: { ...options.env, CLAUDE_CODE_TMPDIR: options.tmpdir },
+		env: { ...options.env, CLAUDE_CODE_TMPDIR: options.tmpdir, SRT_DEBUG: "1" },
 		stdio: ["pipe", "pipe", "pipe"],
 		detached: true,
 	});
@@ -150,6 +150,7 @@ export async function startSandboxHelper(
 	if (pid === undefined) throw new Error("启动沙盒的辅助进程失败");
 	let stderr = Buffer.alloc(0);
 	child.stderr.on("data", (chunk: Buffer) => {
+		process.stderr.write(chunk);
 		stderr = Buffer.concat([stderr, chunk]).subarray(-diagnosticsBytes);
 	});
 	type Result = Extract<HelperMessage, { result: unknown }>["result"];
@@ -253,6 +254,9 @@ export async function startSandboxHelper(
 				},
 			});
 			if (argv === undefined) throw new Error("辅助进程没有给出启动命令");
+			process.stderr.write(
+				`[DEBUG-WRAP] ${JSON.stringify({ command, filesystem, argv })}\n`,
+			);
 			return argv;
 		},
 		async cleanup() {
