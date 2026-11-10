@@ -175,9 +175,10 @@ function placeholderAt(path: string): string {
 }
 
 /**
- * sandbox-runtime 只以工作区为根强制保护的这两个目录里的子路径。目录已存在、整个禁止写入时，
- * 它仍为不存在的子路径放占位；排在目录前面的禁止路径先放好占位，否则工作区在禁止读取的目录里时，
- * 占位落进只读的目录，bwrap 不启动。
+ * sandbox-runtime 只以工作区为根强制保护的这两个目录里的子路径。目录整个禁止写入时，它仍为不存在的
+ * 子路径放占位，排在 Host 的禁止路径之后；这些子路径由 Host 排在目录前面先放好占位，否则占位落进
+ * 只读的目录，bwrap 不启动。目录已存在时，工作区在禁止读取的目录里就会这样；目录不存在时，同时启动的
+ * 另一个沙盒的 bwrap 可能在包装期间建出它。
  */
 const runtimeChildren: Record<string, string[]> = {
 	".claude": ["commands", "agents"],
@@ -192,9 +193,9 @@ function missingRuntimeChildren(
 	return Object.entries(runtimeChildren).flatMap(([name, children]) => {
 		const dir = join(workspace, name);
 		if (name === ".git" && gitWritable) return [];
-		if (lstatSync(dir, { throwIfNoEntry: false })?.isDirectory() !== true) {
-			return [];
-		}
+		const stat = lstatSync(dir, { throwIfNoEntry: false });
+		// 文件和符号链接下面建不出东西
+		if (stat !== undefined && !stat.isDirectory()) return [];
 		return children
 			.map((child) => join(dir, child))
 			.filter(
@@ -296,7 +297,7 @@ export async function sandboxFilesystem(
 			workspaceOptions.gitWritable === true,
 		);
 		denyWrite.push(...ahead.flatMap(placeholderPaths));
-		placeholders.push(...ahead);
+		placeholders.push(...ahead.map(placeholderAt));
 	}
 	for (const { root, options, missing } of roots) {
 		if (platform === "darwin") {
