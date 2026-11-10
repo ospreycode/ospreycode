@@ -16,6 +16,7 @@ npm install @ospreycode/agent-runtime
 - `openHostChannel(stream, onFailure)`：在 Host 一侧打开通道，按 schema 检查 runtime 发来的每条消息；`openRuntimeChannel` 是 runtime 一侧。两者都返回 `ChannelPeer`，可以发请求和通知、注册处理函数。
 - `runAgent(stream)`：在给定的连接上运行 runtime，测试时由测试实现 Host 一侧。
 - 工具调用的格式：工具声明 `ToolSpec`、工具结果 `ToolResult`，以及 Host 写入 session 记录的工具调用事件。
+- `toolRegistry`：runtime 提供的全部工具的声明。`read`、`edit` 和 `write` 由 runtime 在 agent 沙盒里执行，先向 Host 登记；`shell` 交给 Host 执行。Host 在启动配置里选择启用哪些。
 
 通道上每条消息是一行 JSON，只按字节 0x0A 分帧：
 

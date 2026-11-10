@@ -237,6 +237,7 @@ task 的开始和结束都由 Host 决定，runtime 只报告 task 结束。新�
 
 - **顺序固定**：登记（Host 分配 `tool_call_id`）→ 工具调用前 hooks → Permission（含询问）→ 快照（P3 起）→ 执行。被 hook 阻止或被拒绝的调用不询问、不做快照。
 - **两种请求**：Host 代为执行的工具（shell、MCP 工具、越界动作）用 `tool_call/run`，结果 Host 直接知道；runtime 一侧执行的工具（文件工具、`skill_load`、`memory_*`）用 `tool_call/register` 登记、`tool_call/complete` 提交结果（见 agent-runtime 的[通道](agent-runtime.md#通道)）。`tool_call.started` 和 `tool_call.completed` 一律由 Host 写入，事件格式由 agent-runtime 的 `contracts/` 定义。
+- **登记的检查**：没有启用的工具不允许执行。文件改动的路径要是规范化的绝对路径、只有编辑工具能登记，否则按协议错误处理；路径不在 agent 沙盒的可写根内的不允许执行。task 结束时（正常结束、取消和异常退出都一样）登记过、还没有提交结果的调用，由 Host 按[异常退出](#agent-进程的启动和结束)的规则补上结果，写在 `task.ended` 之前。Host 核对磁盘时不阻塞地打开文件、确认是普通文件再读：路径来自沙盒内。
 - **结果的状态**：成功、失败、运行中（转入后台）、已取消、超时、`interrupted`（结果不确定：异常退出时核对不上的文件工具、恢复时选择跳过的调用）、`denied`。`denied` 带 `reason`（`policy`、`user`、`hook`、`forbidden_rule`）和 `message`（用户或 hook 写的原文）；批准对话框允许用户在拒绝时输入一句话给模型。
 - **询问**：Host 把权限申请作为事件交给前端，再把用户的决定交给 Permission 重新检查。等待批准期间，同一轮里已获准、互不影响的调用可以继续。批准和取消只作用于对应的 run 和 tool call。
 - **切换审批策略**时重新评估全部挂起的询问，新策略下不该问的立即答为 `denied_by_policy`。

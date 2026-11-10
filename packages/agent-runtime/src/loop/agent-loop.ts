@@ -25,6 +25,7 @@ import {
 } from "../context/estimate.js";
 import type { ToolResult, ToolSpec } from "../contracts/index.js";
 import { buildSystemPrompt } from "../instructions/system-prompt.js";
+import type { ToolExecutor } from "../tool-executor/executor.js";
 
 /** 限流和服务过载时最多重试的次数。 */
 const maxRetries = 3;
@@ -78,6 +79,7 @@ export class AgentLoop {
 	#config: AgentConfig;
 	#tools: Map<string, ToolSpec>;
 	#registry: ReadonlyMap<string, ToolSpec>;
+	#executor: ToolExecutor;
 	#history: Message[];
 	/** 作废的块：原样留在历史里，组装之后的请求时跳过，已发出的前缀不变。 */
 	#invalidated = new Map<string, Set<number>>();
@@ -89,10 +91,12 @@ export class AgentLoop {
 		channel: RuntimeChannel,
 		config: AgentConfig,
 		registry: ReadonlyMap<string, ToolSpec>,
+		executor: ToolExecutor,
 	) {
 		this.#channel = channel;
 		this.#config = config;
 		this.#registry = registry;
+		this.#executor = executor;
 		this.#tools = this.#enabled(config.tools);
 		this.#history = [
 			{
@@ -383,15 +387,31 @@ export class AgentLoop {
 	): Promise<ToolResultMessage[]> {
 		this.#state = "tools";
 		const dropped = this.#invalidated.get(message.message_id);
+		const calls = message.content.flatMap((block, index) =>
+			block.type === "tool_call" && !dropped?.has(index) ? [block] : [],
+		);
+		const concurrent = (call: ToolCallBlock) =>
+			this.#tools.get(call.name)?.concurrent === true;
 		const results: ToolResultMessage[] = [];
-		for (const [index, block] of message.content.entries()) {
-			if (block.type !== "tool_call" || dropped?.has(index)) continue;
-			// 取消后剩下的调用不再执行，补上结果，否则下一次模型请求格式不合法
+		for (let start = 0; start < calls.length; ) {
+			// 连续的、声明了能同时执行的调用一起执行，其余的按顺序一个一个执行
+			let end = start + 1;
+			if (concurrent(calls[start] as ToolCallBlock)) {
+				while (end < calls.length && concurrent(calls[end] as ToolCallBlock)) {
+					end += 1;
+				}
+			}
 			results.push(
-				signal.aborted
-					? cancelledMessage(block, undefined)
-					: await this.#runTool(block, message.message_id, signal),
+				...(await Promise.all(
+					calls.slice(start, end).map((call) =>
+						// 取消后剩下的调用不再执行，补上结果，否则下一次模型请求格式不合法
+						signal.aborted
+							? cancelledMessage(call, undefined)
+							: this.#runTool(call, message.message_id, signal),
+					),
+				)),
 			);
+			start = end;
 		}
 		return results;
 	}
@@ -408,36 +428,37 @@ export class AgentLoop {
 			arguments: call.arguments,
 		};
 		const spec = this.#tools.get(call.name);
-		if (spec?.executor !== "host") {
-			// 不认识的工具也先登记，由 Host 拒绝；P0 还没有 runtime 一侧执行的工具
-			const registered = await this.#channel.request(
-				"tool_call/register",
-				params,
-			);
-			if (!registered.allowed) {
-				return resultMessage(call, registered.tool_call_id, registered.result);
-			}
-			const result: ToolResult = {
-				status: "failed",
-				content: textContent(`Unknown tool: ${call.name}`),
-			};
-			await this.#channel.request("tool_call/complete", {
-				tool_call_id: registered.tool_call_id,
-				result,
-			});
-			return resultMessage(call, registered.tool_call_id, result);
-		}
 		let toolCallId: string | undefined;
+		const started = (id: string) => {
+			toolCallId = id;
+			this.#activeToolCalls.add(id);
+		};
 		try {
-			const { result } = await this.#channel.request("tool_call/run", params, {
-				signal,
-				onStream: (notification) => {
-					if (notification.method === "tool_call/started") {
-						toolCallId = notification.params.tool_call_id;
-						this.#activeToolCalls.add(toolCallId);
-					}
-				},
-			});
+			let result: ToolResult;
+			if (spec === undefined) {
+				// 没有启用的工具也登记，由 Host 拒绝并记下这次调用
+				const registered = await this.#channel.request(
+					"tool_call/register",
+					params,
+				);
+				if (registered.allowed) {
+					throw new Error(`Host 允许了没有启用的工具：${call.name}`);
+				}
+				toolCallId = registered.tool_call_id;
+				result = registered.result;
+			} else if (spec.executor === "runtime") {
+				result = await this.#executor.run(call, messageId, signal, started);
+			} else {
+				const response = await this.#channel.request("tool_call/run", params, {
+					signal,
+					onStream: (notification) => {
+						if (notification.method === "tool_call/started") {
+							started(notification.params.tool_call_id);
+						}
+					},
+				});
+				result = response.result;
+			}
 			return resultMessage(call, toolCallId, result);
 		} catch (error) {
 			if (isCancellation(error)) return cancelledMessage(call, toolCallId);

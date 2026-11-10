@@ -16,6 +16,7 @@ import {
 	type TaskEndResult,
 	type ToolCallCompleteParams,
 	type ToolCallParams,
+	type ToolCallRegisterParams,
 	type ToolCallRegisterResult,
 	type ToolCallRunResult,
 } from "@ospreycode/agent-runtime";
@@ -60,6 +61,9 @@ const initializeTimeoutMs = 30_000;
 
 /** 取消后等 runtime 报告 task 结束的时间。 */
 const cancelGraceMs = 5_000;
+
+/** 默认启用的工具，也是它们在系统指令和工具声明里的顺序。 */
+const enabledTools = ["read", "edit", "write", "shell"];
 
 /** agent 进程没能启动：`initialize` 超时、版本不一致或提前退出（CLI 的退出码 1）。 */
 export class AgentStartError extends Error {
@@ -131,7 +135,8 @@ export class HostSession implements ChannelHandlers {
 	#toolCalls!: ToolCalls;
 	#agent!: AgentProcess;
 	#sandbox!: SessionSandbox;
-	#tmpdir = "";
+	/** agent 沙盒的可写根，含 `TMPDIR`。 */
+	#writableRoots: readonly string[] = [];
 	#run: Run | undefined;
 	#usage = emptyUsage();
 	#state: "starting" | "open" | "closing" | "closed" = "starting";
@@ -181,7 +186,11 @@ export class HostSession implements ChannelHandlers {
 		const { config, root, hostEnv, tracker } = this.#options;
 		const { workspace } = config;
 		const directories = createSessionDirectories(root, this.sessionId);
-		this.#tmpdir = directories.tmp;
+		this.#writableRoots = {
+			"read-only": [directories.tmp],
+			"workspace-write": [workspace, directories.tmp],
+			"danger-full-access": ["/"],
+		}[config.sandboxMode];
 		const bash = findBash(hostEnv.PATH);
 		const env = sandboxEnvironment(hostEnv, {
 			tmpdir: directories.tmp,
@@ -205,9 +214,10 @@ export class HostSession implements ChannelHandlers {
 				...(config.granular === undefined ? {} : { granular: config.granular }),
 			},
 			workspace,
+			writableRoots: this.#writableRoots,
 			outputDir: directories.output,
 			env,
-			tools: ["shell"],
+			tools: enabledTools,
 			tracker,
 		});
 		const agent = startAgentProcess({
@@ -344,15 +354,9 @@ export class HostSession implements ChannelHandlers {
 		}
 		this.#initialized.resolve();
 		const { config } = this.#options;
-		const { workspace } = config;
-		const writableRoots = {
-			"read-only": [this.#tmpdir],
-			"workspace-write": [workspace, this.#tmpdir],
-			"danger-full-access": ["/"],
-		}[config.sandboxMode];
 		return {
-			workspace,
-			writable_roots: writableRoots,
+			workspace: config.workspace,
+			writable_roots: [...this.#writableRoots],
 			model: {
 				id: config.model.id,
 				protocol: config.model.protocol,
@@ -365,7 +369,7 @@ export class HostSession implements ChannelHandlers {
 			},
 			sandbox_mode: config.sandboxMode,
 			approval_policy: config.approvalPolicy,
-			tools: ["shell"],
+			tools: [...enabledTools],
 			user_instructions: null,
 			date: localDate(),
 			os: `${process.platform} ${release()} (${arch()})`,
@@ -400,7 +404,7 @@ export class HostSession implements ChannelHandlers {
 	}
 
 	async toolCallRegister(
-		params: ToolCallParams,
+		params: ToolCallRegisterParams,
 	): Promise<ToolCallRegisterResult> {
 		return this.#toolCalls.register(params, this.#activeRun());
 	}
@@ -475,6 +479,7 @@ export class HostSession implements ChannelHandlers {
 		clearTimeout(this.#cancelTimer);
 		clearTimeout(run.deadline);
 		this.#run = undefined;
+		this.#toolCalls.settle(run);
 		this.#usage = addUsage(this.#usage, run.usage);
 		const { exceeded } = run;
 		this.#events.stored(run, {

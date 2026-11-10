@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
 	ChannelRequestError,
 	type Empty,
@@ -11,6 +11,7 @@ import {
 	shellArgumentsSchema,
 	type ToolCallCompleteParams,
 	type ToolCallParams,
+	type ToolCallRegisterParams,
 	type ToolCallRegisterResult,
 	type ToolCallRunResult,
 	type ToolResult,
@@ -29,9 +30,23 @@ import type { EventSink } from "../sessions/emitter.js";
 import { newId } from "../sessions/ids.js";
 import type { Run } from "../sessions/run.js";
 import type { Approvals } from "./approvals.js";
+import { type RegisteredEdit, settleEdit } from "./file-edits.js";
 
 /** 前台命令默认的超时。 */
 const defaultTimeoutMs = 120_000;
+
+/** runtime 在 agent 沙盒里执行、经 `tool_call/register` 登记的工具。 */
+const runtimeTools: ReadonlySet<string> = new Set(["read", "edit", "write"]);
+
+/** 其中改文件的工具，登记时带改动前后的哈希。 */
+const editingTools: ReadonlySet<string> = new Set(["edit", "write"]);
+
+/** 登记过、还没有结果的一次调用。 */
+interface PendingCall {
+	run: Run;
+	startedAt: number;
+	edit?: RegisteredEdit;
+}
 
 const shellValidator = Compile(shellArgumentsSchema);
 
@@ -51,6 +66,8 @@ export interface ToolCallsOptions {
 	policy: PolicyContext;
 	/** 工作区的真实路径。 */
 	workspace: string;
+	/** agent 沙盒的可写根：文件工具登记的改动要落在里面。 */
+	writableRoots: readonly string[];
 	/** 这个 session 的输出目录。 */
 	outputDir: string;
 	/** 命令的环境变量。 */
@@ -85,6 +102,7 @@ function approvalKey(request: CommandRequest): string {
  */
 export class ToolCalls {
 	#options: ToolCallsOptions;
+	#pending = new Map<string, PendingCall>();
 
 	constructor(options: ToolCallsOptions) {
 		this.#options = options;
@@ -111,35 +129,100 @@ export class ToolCalls {
 			signal,
 			context,
 		);
-		this.#options.events.stored(run, {
-			type: "tool_call.completed",
-			tool_call_id: toolCallId,
-			result,
-			duration_ms: Date.now() - started,
-		});
+		this.#completed(run, toolCallId, result, Date.now() - started);
 		if (result.status === "cancelled") {
 			throw new ChannelRequestError("cancelled", "工具调用已取消");
 		}
 		return { result };
 	}
 
-	/** runtime 一侧执行的工具（`tool_call/register`）。P0 还没有这类工具，登记的只会是不认识的工具。 */
-	register(params: ToolCallParams, run: Run): ToolCallRegisterResult {
+	/**
+	 * runtime 一侧执行的工具（`tool_call/register`）：没有启用的工具和落在可写根之外的文件改动
+	 * 不允许执行，结果直接交回；允许的调用等 runtime 用 `tool_call/complete` 提交结果。
+	 */
+	register(params: ToolCallRegisterParams, run: Run): ToolCallRegisterResult {
+		const { name, edit } = params;
+		if (edit !== undefined) {
+			// runtime 只为编辑工具登记改动，路径是它解析好的真实路径；不是这样说明它有缺陷或被攻破
+			if (!editingTools.has(name)) {
+				throw new ProtocolError(`${name} 不是编辑工具，不能登记文件改动`);
+			}
+			if (!isAbsolute(edit.path) || resolve(edit.path) !== edit.path) {
+				throw new ProtocolError("登记的文件改动要给出规范化的绝对路径");
+			}
+		}
 		const toolCallId = newId();
 		this.#started(run, toolCallId, params, "runtime");
-		const result = failure(`Unknown tool: ${params.name}`);
+		const refused = !(
+			runtimeTools.has(name) && this.#options.tools.includes(name)
+		)
+			? failure(`Unknown tool: ${name}`)
+			: edit !== undefined &&
+					!this.#options.writableRoots.some((root) => isInside(edit.path, root))
+				? failure(`${edit.path} is outside the writable roots.`)
+				: undefined;
+		if (refused !== undefined) {
+			this.#completed(run, toolCallId, refused, 0);
+			return { tool_call_id: toolCallId, allowed: false, result: refused };
+		}
+		this.#pending.set(toolCallId, {
+			run,
+			startedAt: Date.now(),
+			...(edit === undefined ? {} : { edit }),
+		});
+		return { tool_call_id: toolCallId, allowed: true };
+	}
+
+	/** 提交登记过的调用的结果（`tool_call/complete`）。 */
+	complete(params: ToolCallCompleteParams): Empty {
+		const pending = this.#pending.get(params.tool_call_id);
+		if (pending === undefined) {
+			throw new ProtocolError(`没有等待结果的工具调用：${params.tool_call_id}`);
+		}
+		this.#pending.delete(params.tool_call_id);
+		this.#completed(
+			pending.run,
+			params.tool_call_id,
+			params.result,
+			Date.now() - pending.startedAt,
+		);
+		return {};
+	}
+
+	/**
+	 * task 结束时还没有结果的登记由 Host 补上结果：文件改动按登记的哈希核对磁盘，其余的记已取消。
+	 * 每次工具调用在 session 记录里都有开始和结果。
+	 */
+	settle(run: Run): void {
+		for (const [toolCallId, pending] of this.#pending) {
+			if (pending.run !== run) continue;
+			this.#pending.delete(toolCallId);
+			this.#completed(
+				run,
+				toolCallId,
+				pending.edit === undefined
+					? {
+							status: "cancelled",
+							content: text("The tool call was cancelled."),
+						}
+					: settleEdit(pending.edit),
+				Date.now() - pending.startedAt,
+			);
+		}
+	}
+
+	#completed(
+		run: Run,
+		toolCallId: string,
+		result: ToolResult,
+		durationMs: number,
+	): void {
 		this.#options.events.stored(run, {
 			type: "tool_call.completed",
 			tool_call_id: toolCallId,
 			result,
-			duration_ms: 0,
+			duration_ms: durationMs,
 		});
-		return { tool_call_id: toolCallId, allowed: false, result };
-	}
-
-	/** 提交登记过的调用的结果（`tool_call/complete`）。P0 不批准任何 runtime 一侧的调用。 */
-	complete(params: ToolCallCompleteParams): Empty {
-		throw new ProtocolError(`没有等待结果的工具调用：${params.tool_call_id}`);
 	}
 
 	#started(
