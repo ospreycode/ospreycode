@@ -68,11 +68,22 @@ const NetworkRequest = Type.Object(
 		kind: Type.Literal("network"),
 		host: Type.String(),
 		port: Type.Integer(),
-		protocol: Type.Union([
-			Type.Literal("http"),
-			Type.Literal("https"),
-			Type.Literal("socks5"),
+	},
+	closed,
+);
+
+const CommandRule = Type.Object(
+	{
+		pattern: Type.Array(Type.Union([Type.String(), Type.Array(Type.String())])),
+		decision: Type.Union([
+			Type.Literal("allow"),
+			Type.Literal("prompt"),
+			Type.Literal("forbidden"),
 		]),
+		justification: Type.Optional(Type.String()),
+		match: Type.Optional(Type.Array(Type.String())),
+		not_match: Type.Optional(Type.Array(Type.String())),
+		permissions: Type.Optional(AdditionalPermissions),
 	},
 	closed,
 );
@@ -85,14 +96,10 @@ const PermissionRequest = Type.Union([
 			edits: Type.Array(
 				Type.Object(
 					{
-						op: Type.Union([
-							Type.Literal("add"),
-							Type.Literal("update"),
-							Type.Literal("delete"),
-						]),
+						op: Type.Union([Type.Literal("add"), Type.Literal("update")]),
 						path: Type.String(),
 						old_sha256: Type.Union([Type.String(), Type.Null()]),
-						content: Type.Union([Type.String(), Type.Null()]),
+						content: Type.String(),
 					},
 					closed,
 				),
@@ -116,6 +123,15 @@ const PermissionRequest = Type.Union([
 			server: Type.String(),
 			tool: Type.String(),
 			arguments: Type.String(),
+		},
+		closed,
+	),
+	Type.Object(
+		{
+			kind: Type.Literal("stdin"),
+			background_id: Type.String(),
+			command: Type.String(),
+			input: Type.String(),
 		},
 		closed,
 	),
@@ -191,7 +207,7 @@ const TaskStarted = event({
 		Type.Literal("follow_up"),
 		Type.Literal("notification"),
 	]),
-	input: Type.Array(p.userContent),
+	input: Type.Array(p.inputContent),
 });
 
 const RunStarted = event({
@@ -249,6 +265,8 @@ const ApprovalRequested = Type.Union([
 		tool_call_id: Type.String(),
 		request: PermissionRequest,
 		reasons: Type.Array(Type.String()),
+		diff: Type.Optional(Type.String()),
+		suggested_rule: Type.Optional(CommandRule),
 	}),
 	event({
 		...base,
@@ -258,6 +276,8 @@ const ApprovalRequested = Type.Union([
 		request_id: Type.String(),
 		kind: Type.Literal("network"),
 		tool_call_id: Type.Optional(Type.String()),
+		running_tool_calls: Type.Optional(Type.Array(Type.String())),
+		running_background: Type.Optional(Type.Array(Type.String())),
 		request: NetworkRequest,
 		reasons: Type.Array(Type.String()),
 	}),
@@ -286,6 +306,198 @@ const ApprovalDecided = event({
 		Type.Literal("denied_by_policy"),
 	]),
 	answer: Type.Optional(ApprovalAnswer),
+});
+
+const QueuedInput = Type.Object(
+	{
+		input_id: Type.String(),
+		kind: Type.Union([Type.Literal("steering"), Type.Literal("follow_up")]),
+		input: Type.Array(p.inputContent),
+	},
+	closed,
+);
+
+const InputQueue = Type.Object(
+	{
+		steering: Type.Array(QueuedInput),
+		follow_up: Type.Array(QueuedInput),
+		follow_up_paused: Type.Boolean(),
+	},
+	closed,
+);
+
+const InputQueued = event({
+	...base,
+	...scope,
+	...stored,
+	...QueuedInput.properties,
+	type: Type.Literal("input.queued"),
+	queue: InputQueue,
+});
+
+const InputInserted = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("input.inserted"),
+	input_ids: Type.Array(Type.String()),
+	message_id: Type.String(),
+	after_tool_call_id: Type.Union([Type.String(), Type.Null()]),
+	queue: InputQueue,
+});
+
+const InputDequeued = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("input.dequeued"),
+	inputs: Type.Array(QueuedInput),
+	reason: Type.Union([
+		Type.Literal("returned"),
+		Type.Literal("task_ended"),
+		Type.Literal("follow_up_started"),
+	]),
+	queue: InputQueue,
+});
+
+const FollowUpPaused = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("input.follow_up_paused"),
+	paused: Type.Boolean(),
+	queue: InputQueue,
+});
+
+const ReasoningEffort = Type.Union([
+	Type.Literal("off"),
+	Type.Literal("minimal"),
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+	Type.Literal("xhigh"),
+	Type.Literal("max"),
+]);
+
+const ModelChanged = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("model.changed"),
+	model: Type.String(),
+	previous_model: Type.String(),
+});
+
+const ReasoningEffortChanged = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("reasoning_effort.changed"),
+	reasoning_effort: ReasoningEffort,
+	previous_reasoning_effort: ReasoningEffort,
+});
+
+const BackgroundStarted = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("background.started"),
+	background_id: Type.String(),
+	tool_call_id: Type.String(),
+	kind: Type.Union([Type.Literal("command"), Type.Literal("monitor")]),
+	command: Type.String(),
+	output_path: Type.String(),
+	deadline: Type.Union([Type.String(), Type.Null()]),
+});
+
+const BackgroundEnded = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("background.ended"),
+	background_id: Type.String(),
+	reason: Type.Union([
+		Type.Literal("exited"),
+		Type.Literal("stopped"),
+		Type.Literal("time_limit"),
+		Type.Literal("output_limit"),
+		Type.Literal("session_closed"),
+	]),
+	exit_code: Type.Union([Type.Integer(), Type.Null()]),
+	signal: Type.Union([Type.String(), Type.Null()]),
+	output_bytes: Type.Integer({ minimum: 0 }),
+});
+
+const BackgroundNotification = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("background.notification"),
+	notification_id: Type.String(),
+	background_id: Type.Union([Type.String(), Type.Null()]),
+	text: Type.String(),
+});
+
+const BackgroundDelivered = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("background.delivered"),
+	notification_ids: Type.Array(Type.String()),
+});
+
+const ProcessKind = Type.Union([
+	Type.Literal("agent"),
+	Type.Literal("helper"),
+	Type.Literal("command"),
+	Type.Literal("escalated"),
+	Type.Literal("apply_edits"),
+	Type.Literal("hook"),
+	Type.Literal("mcp_server"),
+]);
+
+const ProcessStarted = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("process.started"),
+	kind: ProcessKind,
+	pid: Type.Integer(),
+});
+
+const ProcessExited = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("process.exited"),
+	kind: ProcessKind,
+	pid: Type.Integer(),
+	exit_code: Type.Union([Type.Integer(), Type.Null()]),
+	signal: Type.Union([Type.String(), Type.Null()]),
+});
+
+const SandboxModeChanged = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("sandbox_mode.changed"),
+	from: Type.String(),
+	to: Type.String(),
+});
+
+const ApprovalPolicy = Type.Union([
+	Type.Literal("on-request"),
+	Type.Literal("granular"),
+	Type.Literal("never"),
+]);
+
+const ApprovalPolicyChanged = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("approval_policy.changed"),
+	from: ApprovalPolicy,
+	to: ApprovalPolicy,
 });
 
 const Warning = event({
@@ -331,6 +543,20 @@ export const hostEventSchema = Type.Union([
 	ToolCallCompleted,
 	...ApprovalRequested.anyOf,
 	ApprovalDecided,
+	InputQueued,
+	InputInserted,
+	InputDequeued,
+	FollowUpPaused,
+	ModelChanged,
+	ReasoningEffortChanged,
+	BackgroundStarted,
+	BackgroundEnded,
+	BackgroundNotification,
+	BackgroundDelivered,
+	ProcessStarted,
+	ProcessExited,
+	SandboxModeChanged,
+	ApprovalPolicyChanged,
 	Warning,
 	ErrorEvent,
 	ModelDelta,

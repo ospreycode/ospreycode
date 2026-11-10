@@ -19,7 +19,7 @@ import type { ToolResult } from "@ospreycode/agent-runtime";
 import type { Message } from "@ospreycode/api/protocol";
 import { type ScriptedTurn, scriptedModel } from "@ospreycode/api/testing";
 import type { ApprovalAnswer } from "@ospreycode/sandbox";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	EventLog,
 	type TestDirectories,
@@ -28,6 +28,9 @@ import {
 } from "./harness.js";
 
 const onMac = process.platform === "darwin";
+
+// 真实沙盒的测试每个都要启动几个进程，机器忙的时候（CI 的 runner、同时在跑别的测试）默认的 5 秒不够
+vi.setConfig({ testTimeout: 20_000 });
 
 let dirs: TestDirectories;
 let session: Session | undefined;
@@ -51,7 +54,7 @@ afterEach(async () => {
 	expect(log.invalid).toEqual([]);
 });
 
-function sha256(content: string): string {
+function sha256(content: string | Buffer): string {
 	return createHash("sha256").update(content).digest("hex");
 }
 
@@ -217,7 +220,7 @@ describe.runIf(onMac)("沙盒里的文件工具（macOS 真实沙盒，脚本模
 				event.type === "tool_call.started" ? [event.executor] : [],
 			),
 		).toEqual(["runtime", "host", "host", "host"]);
-		// 询问里是将要写入的内容和改动前内容的哈希
+		// 询问里是将要写入的内容、改动前内容的哈希，和 Host 按磁盘上的旧内容算出的 diff
 		expect(asked()).toMatchObject([
 			{
 				kind: "tool_call",
@@ -233,6 +236,7 @@ describe.runIf(onMac)("沙盒里的文件工具（macOS 真实沙盒，脚本模
 					],
 				},
 				reasons: [`申请新建 ${outsideFile}`],
+				diff: `--- /dev/null\n+++ ${outsideFile}\n@@ -0,0 +1,1 @@\n+one\n`,
 			},
 			{
 				kind: "tool_call",
@@ -248,6 +252,7 @@ describe.runIf(onMac)("沙盒里的文件工具（macOS 真实沙盒，脚本模
 					],
 				},
 				reasons: [`申请修改 ${outsideFile}`],
+				diff: `--- ${outsideFile}\n+++ ${outsideFile}\n@@ -1,1 +1,1 @@\n-one\n+two\n`,
 			},
 		]);
 	});
@@ -286,7 +291,9 @@ describe.runIf(onMac)("沙盒里的文件工具（macOS 真实沙盒，脚本模
 
 		expect(existsSync(outsideFile)).toBe(false);
 		expect(asked()).toEqual([]);
-		expect(results()).toMatchObject([{ status: "denied", reason: "policy" }]);
+		expect(results()).toMatchObject([
+			{ status: "denied", reason: "policy", categories: ["sandbox_approval"] },
+		]);
 	});
 
 	test("read-only 下工作区里的改动也要批准", async () => {
@@ -383,50 +390,44 @@ describe("有缺陷或被攻破的 runtime（假的 agent 进程）", () => {
 		);
 	});
 
-	test("协议错误结束 agent 进程，session 以 error 关闭：登记的路径不是规范化的绝对路径", async () => {
-		const current = await open([], {}, { agentEntry });
-		await current.submit(
-			JSON.stringify({
-				method: "tool_call/register",
-				params: {
-					...toolCall,
-					edit: {
-						path: "relative.txt",
-						old_sha256: null,
-						new_sha256: sha256("x"),
-					},
-				},
-			}),
-		);
+	test("协议错误结束 agent 进程，这个 task 记 failed：登记的路径不是规范化的绝对路径", async () => {
+		await open([], {}, { agentEntry });
+		const ended = await send("tool_call/register", {
+			...toolCall,
+			edit: {
+				path: "relative.txt",
+				old_sha256: null,
+				new_sha256: sha256("x"),
+			},
+		});
 
-		expect((await log.waitFor("session.ended")).reason).toBe("error");
+		expect(ended).toMatchObject({
+			outcome: "failed",
+			error: expect.stringContaining("规范化的绝对路径"),
+		});
 		expect((await log.waitFor("error")).message).toContain("规范化的绝对路径");
-		await current.ended;
 	});
 
 	test("协议错误：没有沙盒时申请可写范围之外的文件改动", async () => {
-		const current = await open([], {}, { agentEntry });
-		await current.submit(
-			JSON.stringify({
-				method: "tool_call/run",
-				params: {
-					...toolCall,
-					file_edits: [
-						{
-							op: "add",
-							path: join(dirs.home, "outside.txt"),
-							old_sha256: null,
-							content: "x",
-						},
-					],
+		await open([], {}, { agentEntry });
+		const ended = await send("tool_call/run", {
+			...toolCall,
+			file_edits: [
+				{
+					op: "add",
+					path: join(dirs.home, "outside.txt"),
+					old_sha256: null,
+					content: "x",
 				},
-			}),
-		);
+			],
+		});
 
-		expect((await log.waitFor("session.ended")).reason).toBe("error");
+		expect(ended).toMatchObject({
+			outcome: "failed",
+			error: expect.stringContaining("没有沙盒时"),
+		});
 		expect((await log.waitFor("error")).message).toContain("没有沙盒时");
 		expect(existsSync(join(dirs.home, "outside.txt"))).toBe(false);
-		await current.ended;
 	});
 
 	// 只有沙盒模式下才有可写根之外的路径，现在只有 macOS 有沙盒后端
@@ -506,6 +507,51 @@ describe("有缺陷或被攻破的 runtime（假的 agent 进程）", () => {
 			expect(existsSync(join(dirs.root, "config.toml"))).toBe(false);
 			expect(readFileSync(stale, "utf8")).toBe("changed by the user");
 			expect(existsSync(join(dirs.home, "real/new.txt"))).toBe(false);
+		});
+
+		test("凭据文件和配置里禁止写的文件不能改，也不拿去问用户", async () => {
+			const frozen = join(dirs.home, "frozen.txt");
+			writeFileSync(frozen, "old");
+			answer = () => ({ decision: "approve", scope: "once" });
+			await open([], { ...sandboxed, denyWrite: [frozen] }, { agentEntry });
+
+			await send(
+				"tool_call/run",
+				fileEdits(dirs.credentialFile, "test-key\n", "stolen"),
+			);
+			await send("tool_call/run", fileEdits(frozen, "old", "new"));
+
+			expect(asked()).toEqual([]);
+			expect(results()).toMatchObject([
+				{ status: "denied", reason: "forbidden_rule" },
+				{ status: "denied", reason: "forbidden_rule" },
+			]);
+			expect(readFileSync(dirs.credentialFile, "utf8")).toBe("test-key\n");
+			expect(readFileSync(frozen, "utf8")).toBe("old");
+		});
+
+		test("旧内容不是合法的 UTF-8 时，询问里的 diff 只说明两者不同", async () => {
+			const file = join(dirs.home, "blob.bin");
+			const bytes = Buffer.from([0xff, 0xfe, 0x00, 0x01]);
+			writeFileSync(file, bytes);
+			answer = () => ({ decision: "deny", scope: "once" });
+			await open([], sandboxed, { agentEntry });
+			await send("tool_call/run", {
+				...toolCall,
+				file_edits: [
+					{
+						op: "update",
+						path: file,
+						old_sha256: sha256(bytes),
+						content: "text now",
+					},
+				],
+			});
+
+			expect(asked()).toMatchObject([
+				{ diff: `Binary files ${file} and ${file} differ\n` },
+			]);
+			expect(readFileSync(file)).toEqual(bytes);
 		});
 
 		test("批准之后、写入之前文件又变了：apply-edits 核对不上，不写", async () => {

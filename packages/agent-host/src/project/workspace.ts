@@ -108,22 +108,28 @@ export interface SessionDirectories {
 	tmp: string;
 	/** 命令的输出文件，由 Host 写入，沙盒只能读。 */
 	output: string;
+	/** 这个项目的构建缓存，命令沙盒可读写。 */
+	cache: string;
 }
 
 /**
- * 创建 session 的临时目录和输出目录。目录名取 session 标识的前 12 个字符：
- * Unix socket 的路径有长度上限，沙盒后端的 socket 建在临时目录里。
+ * 创建 session 的临时目录、输出目录和它所属项目的缓存目录。session 的目录名取 session 标识的
+ * 前 12 个字符：Unix socket 的路径有长度上限，沙盒后端的 socket 建在临时目录里。
  */
 export function createSessionDirectories(
 	root: string,
 	sessionId: string,
+	projectId: string,
 ): SessionDirectories {
 	const name = sessionId.slice(0, 12);
 	const directories = {
 		tmp: join(root, "tmp", name),
 		output: join(root, "output", name),
+		cache: join(root, "cache", projectId),
 	};
-	for (const parent of ["tmp", "output"]) ensureDirectory(join(root, parent));
+	for (const parent of ["tmp", "output", "cache"]) {
+		ensureDirectory(join(root, parent));
+	}
 	for (const dir of Object.values(directories)) ensureDirectory(dir);
 	return directories;
 }

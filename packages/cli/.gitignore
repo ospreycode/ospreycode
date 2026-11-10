@@ -1,0 +1,2 @@
+# 构建时从 sandbox 包和 sandbox-runtime 复制来的 WASM 文件和二进制
+vendor/

@@ -6,6 +6,7 @@ import {
 	type Host,
 	type SessionOptions,
 } from "@ospreycode/agent-host";
+import { toolRegistry } from "@ospreycode/agent-runtime";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type TestDirectories, testDirectories, testModel } from "./harness.js";
 
@@ -137,6 +138,81 @@ input = 1
 			"/var/keys",
 		]);
 		expect(config.denyWrite).toEqual(["/opt/shared"]);
+	});
+});
+
+describe("可选工具和显示设置", () => {
+	const defaults = ["read", "edit", "write", "shell", "request_permissions"];
+	const optional = [...toolRegistry.keys()].filter(
+		(name) => !defaults.includes(name),
+	);
+
+	test("没有配置时只启用默认的工具，显示推理内容", () => {
+		const config = resolve({ model: "scripted" });
+		expect(config.tools).toEqual(defaults);
+		expect(config.ui).toEqual({ showReasoning: true });
+	});
+
+	test.runIf(optional.length > 0)(
+		"[tools] 打开的可选工具排在默认工具之后，仓库配置可以覆盖用户级配置",
+		() => {
+			const [name] = optional as [string];
+			userConfig(`[tools]\n${name} = true`);
+			expect(resolve({ model: "scripted" }).tools).toEqual([...defaults, name]);
+			repoConfig(`[tools]\n${name} = false`);
+			const config = resolve({ model: "scripted" });
+			expect(config.tools).toEqual(defaults);
+			expect(config.warnings).toEqual([]);
+		},
+	);
+
+	test("可以打开的是 grep 和 ls：打开哪个启用哪个，都打开时按这个顺序排在默认工具之后；各层按工具名合并", () => {
+		expect(optional).toEqual(["grep", "ls"]);
+		userConfig(`[tools]\nls = true\ngrep = true`);
+		expect(resolve({ model: "scripted" }).tools).toEqual([
+			...defaults,
+			"grep",
+			"ls",
+		]);
+		userConfig(`[tools]\nls = true`);
+		expect(resolve({ model: "scripted" }).tools).toEqual([...defaults, "ls"]);
+		// 仓库配置只写了 grep：用户级配置打开的 ls 不受影响
+		repoConfig(`[tools]\ngrep = true`);
+		const config = resolve({ model: "scripted" });
+		expect(config.tools).toEqual([...defaults, "grep", "ls"]);
+		expect(config.warnings).toEqual([]);
+	});
+
+	test("[tools] 只能开关可选工具，值要是布尔值", () => {
+		userConfig(`[tools]\nread = false`);
+		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
+			/tools\.read 不是可选工具：可以开关的有 grep、ls/,
+		);
+		userConfig(`[tools]\nno_such_tool = true`);
+		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
+			/tools\.no_such_tool 不是可选工具：可以开关的有 grep、ls/,
+		);
+		userConfig(`[tools]\ngrep = "yes"`);
+		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
+			/tools\.grep 要是 true（启用）或 false（不启用）/,
+		);
+	});
+
+	test("[ui] 仓库配置可以覆盖用户级配置，不认识的键报错", () => {
+		userConfig(`[ui]\nshow_reasoning = false`);
+		expect(resolve({ model: "scripted" }).ui).toEqual({ showReasoning: false });
+		repoConfig(`[ui]\nshow_reasoning = true`);
+		const config = resolve({ model: "scripted" });
+		expect(config.ui).toEqual({ showReasoning: true });
+		expect(config.warnings).toEqual([]);
+		userConfig(`[ui]\ntheme = "dark"`);
+		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
+			/ui\.theme 不认识的键/,
+		);
+		userConfig(`[ui]\nshow_reasoning = "no"`);
+		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
+			/ui\.show_reasoning 要是 true 或 false/,
+		);
 	});
 });
 
@@ -272,5 +348,118 @@ describe("加载出错时拒绝打开 session", () => {
 		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
 			/models\.partial 内置清单里没有这个模型，要写全 protocol/,
 		);
+	});
+});
+
+describe("命名权限配置作为沙盒模式", () => {
+	const strict = `
+[permissions.strict]
+extends = "read-only"
+[permissions.strict.paths]
+"~/" = "deny"
+"~/scratch" = "write"
+[permissions.strict.domains]
+"registry.npmjs.org" = "allow"
+`;
+
+	test("sandbox_mode 写它的名字：按继承的模式和它的路径、域名解析，启动参数也能选用", () => {
+		userConfig(`sandbox_mode = "strict"\n${strict}`);
+		const config = resolve({ model: "scripted" });
+		expect(config.sandboxMode).toBe("strict");
+		expect(config.baseSandboxMode).toBe("read-only");
+		expect(config.permissionProfile).toMatchObject({
+			mode: "read-only",
+			write: [join(dirs.home, "scratch")],
+			deny: [dirs.home],
+			domains: { allow: ["registry.npmjs.org"], deny: [] },
+		});
+
+		const builtin = resolve({ model: "scripted", sandboxMode: "read-only" });
+		expect(builtin.sandboxMode).toBe("read-only");
+		expect(builtin.baseSandboxMode).toBe("read-only");
+		expect(builtin.permissionProfile).toBeUndefined();
+
+		userConfig(strict);
+		const startup = resolve({ model: "scripted", sandboxMode: "strict" });
+		expect(startup.sandboxMode).toBe("strict");
+		expect(startup.permissionProfile?.write).toEqual([
+			join(dirs.home, "scratch"),
+		]);
+	});
+
+	test("名字不存在时报错", () => {
+		userConfig(strict);
+		expect(
+			configError(() => resolve({ model: "scripted", sandboxMode: "loose" })),
+		).toMatch(/沙盒模式 loose 不存在/);
+	});
+
+	test("write 写到受保护的路径上时加载报错，没选用的配置也检查", () => {
+		userConfig(`
+[permissions.tools]
+extends = "workspace-write"
+[permissions.tools.paths]
+"~/repo/.git" = "write"
+`);
+		expect(configError(() => resolve({ model: "scripted" }))).toBe(
+			`${join(dirs.root, "config.toml")}：permissions.tools.paths."~/repo/.git" 写到了受保护的路径上（.git）：会被自动执行或能给工具授权的路径保持只读`,
+		);
+		userConfig(`
+[permissions.tools]
+extends = "workspace-write"
+[permissions.tools.paths]
+"${join(dirs.workspace, "sub", ".envrc")}" = "write"
+`);
+		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
+			/permissions\.tools\.paths\..*受保护的路径/,
+		);
+	});
+
+	test("放不开的位置和沙盒后端表达不了的写法：选用时加载报错，带文件路径和出错的键", () => {
+		const select = (paths: string, extra = "") => {
+			userConfig(
+				`sandbox_mode = "p"\n${extra}\n[permissions.p]\nextends = "workspace-write"\n[permissions.p.paths]\n${paths}`,
+			);
+			return configError(() => resolve({ model: "scripted" }));
+		};
+		expect(select(`"~/.ospreycode/data" = "read"`)).toMatch(
+			/config\.toml：permissions\.p\.paths\."~\/\.ospreycode\/data" .*始终优先/,
+		);
+		expect(
+			select(`"/opt/closed/sub" = "read"`, `deny_read = ["/opt/closed"]`),
+		).toMatch(/permissions\.p\.paths\."\/opt\/closed\/sub"/);
+		// 配置里指定的凭据文件，不只是当前模型用的那一个
+		expect(
+			select(
+				`"${dirs.credentialFile}" = "read"`,
+				`[credentials]\nother = { file = "${dirs.credentialFile}" }`,
+			),
+		).toMatch(/始终优先/);
+		expect(select(`"${dirs.workspace}" = "deny"`)).toMatch(/当前的工作区/);
+		expect(
+			select(
+				`"~/" = "deny"\n"~/a" = "read"\n"~/a/b" = "deny"\n"~/a/b/c" = "read"`,
+			),
+		).toMatch(/permissions\.p\.paths\."~\/a\/b\/c" .*三层/);
+	});
+
+	test("仓库配置不能选用它；用户级选用了它时，仓库配置的 read-only 忽略并告警", () => {
+		userConfig(strict);
+		repoConfig(`sandbox_mode = "strict"`);
+		const ignored = resolve({ model: "scripted" });
+		expect(ignored.sandboxMode).toBe("workspace-write");
+		expect(ignored.warnings).toEqual([
+			expect.stringMatching(/sandbox_mode 在仓库配置里只能设为 read-only/),
+		]);
+
+		userConfig(`sandbox_mode = "strict"\n${strict}`);
+		repoConfig(`sandbox_mode = "read-only"`);
+		const kept = resolve({ model: "scripted" });
+		expect(kept.sandboxMode).toBe("strict");
+		expect(kept.warnings).toEqual([
+			expect.stringMatching(
+				/sandbox_mode 用户级配置选用了命名权限配置 strict.*已忽略/,
+			),
+		]);
 	});
 });

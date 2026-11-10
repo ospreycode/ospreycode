@@ -277,14 +277,16 @@ coding-agent/
 - npm 只打包包目录里的 `LICENSE`，所以每个包目录各放一份，`package.json` 的 `license` 写 `"Apache-2.0"`。
 - `cli` 包打包后依赖自带的许可证文件不再随包发布，构建时根据 lockfile 生成第三方许可证文件放进 `cli` 包。
 - 每个依赖和评测数据集固定版本或升级时核对许可证。CI 用 `npm sbom` 列出全部运行时依赖的许可证，脚本按 SPDX 表达式检查是否都在白名单内（Apache-2.0、MIT、ISC、BSD-2-Clause、BSD-3-Clause、0BSD、BlueOak-1.0.0，都是宽松许可证）；表达式含 `OR` 时记录选用的许可证，例如 node-forge 的 `(BSD-3-Clause OR GPL-2.0)` 选 BSD-3-Clause。
-- sandbox-runtime 随包发布的 `vendor/seccomp/{x64,arm64}/apply-seccomp` 静态链接了 glibc（LGPL-2.1-or-later），`npm sbom` 看不到。`cli` 包附上 LGPL-2.1 的文本并写明 glibc 的来源版本；每次发布在同一个 GitHub Release 里附上对应 sandbox-runtime 版本的 `vendor/seccomp-src` 和 Ubuntu 24.04 的 glibc 源码包，满足 LGPL-2.1 第 6 条对静态链接的要求。升级 sandbox-runtime 时重新检查这些二进制。
+- sandbox-runtime 随包发布的 `vendor/seccomp/{x64,arm64}/apply-seccomp` 静态链接了 glibc（LGPL-2.1-or-later），`npm sbom` 看不到。`cli` 包附上 LGPL-2.1 的文本（`licenses/LGPL-2.1.txt`，gnu.org 上的文本，一字不改）并在二进制旁边的 `vendor/seccomp/NOTICE.txt` 里写明 glibc 的来源版本和源码的出处（构建时生成；`dist/THIRD-PARTY-LICENSES.txt` 只列打进入口文件的 npm 包，开头指向这份说明）；每次发布在同一个 GitHub Release 里附上对应 sandbox-runtime 版本的 `vendor/seccomp-src` 和 Ubuntu 24.04 的 glibc 源码包，满足 LGPL-2.1 第 6 条对静态链接的要求。升级 sandbox-runtime 时重新检查这些二进制：`cli` 的构建脚本里写着核对过的 sandbox-runtime 版本，版本变了就停止构建。`check:pack` 检查带着 `apply-seccomp` 的包里有这份文本和 glibc 的说明。
+  - sandbox-runtime 0.0.81 的两个二进制链接的是 Ubuntu 24.04 的 glibc 2.39。依据有三条：二进制里的编译器标识是 `GCC: (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0`，glibc 的报错信息指向 Ubuntu 的 glibc 缺陷页面；sandbox-runtime 的 release 工作流（tag `v0.0.81`）在 `ubuntu-24.04` 和 `ubuntu-24.04-arm` 的 runner 上用系统的 gcc 以 `-static` 构建；二进制里 glibc 的 tunables 名单有 2.39 新增的 `glibc.mem.decorate_maps`（x64 还有 `glibc.cpu.plt_rewrite`），没有 2.40 新增的 `glibc.rtld.enable_secure`（以 glibc 的 `NEWS` 为准）。二进制去掉了符号，里面没有 glibc 的版本字符串，Ubuntu 包的修订号从二进制和构建说明里确认不了。
+  - `sandbox` 和 `agent-host` 包不带这些二进制：sandbox-runtime 是 `sandbox` 的普通依赖，由 npm 安装，只有打包的 `cli` 把二进制复制进自己的包。
 - 贡献用 DCO：每个提交带 `Signed-off-by`，CI 检查。不用 CLA：本项目没有收存协议的法律实体，Apache-2.0 第 5 条已规定贡献按本许可证授权。
 
 ### CI 和真实模型测试
 
 需要模型的测试用便宜的真实模型联网运行（见 AGENTS.md 的测试规则），不回放录制、不跳过。
 
-- CI 用 GitHub Actions，runner 固定版本，不配置任何密钥。每个 PR（包括 fork 和 Dependabot 的）和推到 `main` 的提交运行 `npm run check`、`npm run check:pack` 和不带 vitest `model` 标签的测试，并检查每个提交都有和作者邮箱一致的 `Signed-off-by`：`sandbox` 包自己的测试在 `ubuntu-24.04`、`ubuntu-24.04-arm`、`macos-15`、`macos-26` 四个 runner 上用真实沙盒运行，其余包在 `ubuntu-24.04` 和 `macos-15` 上运行。工作流不用 `pull_request_target`：它在有写权限的上下文里运行 PR 的代码。
+- CI 用 GitHub Actions，runner 固定版本，不配置任何密钥。每个 PR（包括 fork 和 Dependabot 的）和推到 `main` 的提交运行 `npm run check`、`npm run check:pack` 和不带 vitest `model` 标签的测试，并检查每个提交都有和作者邮箱一致的 `Signed-off-by`：`sandbox` 包自己的测试和 sandbox 专项评测在 `ubuntu-24.04`、`ubuntu-24.04-arm`、`macos-15`、`macos-26` 四个 runner 上用真实沙盒运行，全部包的测试在 `ubuntu-24.04` 和 `macos-15` 上运行。工作流不用 `pull_request_target`：它在有写权限的上下文里运行 PR 的代码。
 - 需要模型的测试标上 `model`，由维护者在本机用 `npm run test:model` 运行，CI 不运行：密钥只放在维护者本机，不交给 GitHub。合并 PR 和打 tag 发布之前，维护者在本机跑一遍。
 - 选中了模型测试却缺少密钥时直接失败，不用 `skipIf`：`npm test` 排除 `model` 标签是命令显式选择的。
 - 模型测试经一个中转服务访问 OpenAI、Anthropic 和 Gemini 三家的模型，每家一个密钥，各设额度上限。密钥放在仓库之外的一个目录里，每家一个只对当前用户可读写（0600）的文件，文件名是服务名（`openai`、`anthropic`、`gemini`），另有一个 `base-url` 文件写三家共用的接口地址；由环境变量 `OSPREYCODE_TEST_KEYS` 给出目录的路径。测试只拿到密钥文件的路径和接口地址，这个目录列入沙盒的读取禁止名单：macOS 上沙盒内能读到同一用户其他进程的初始环境变量（见 sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)）。
@@ -316,3 +318,4 @@ P1 的两个沙盒后端都要经过真实沙盒的验证；其他平台逐个�
 - P1：在 Ubuntu 24.04 上实测 `apply-seccomp` 是否也需要允许 `bwrap` 使用 `userns` 的 AppArmor 配置，需要就写进安装说明。
 - P1：确认选中的 SWE-bench Pro V2 题目镜像满足 glibc 2.28 以上，缺 `libatomic1` 时由评测的安装步骤装上。
 - P1：第一次发布时实际走一遍 release 工作流：tag 和版本的核对、OIDC 下的 `npm stage publish` 和自动生成的 provenance。
+- P1：第一次发布前确定 `apply-seccomp` 链接的 Ubuntu glibc 源码包的修订号（二进制里没有，向 sandbox-runtime 的维护者确认，或按 0.0.81 的构建时间查当时 runner 镜像里 `libc6-dev` 的版本），并在 release 工作流里把 sandbox-runtime 0.0.81 的 `vendor/seccomp-src` 和这个源码包附到同一个 GitHub Release：现在的 `release.yml` 没有这一步，而随包发布的 `vendor/seccomp/NOTICE.txt` 已经写明源码在 Release 里。

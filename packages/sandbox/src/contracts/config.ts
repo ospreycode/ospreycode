@@ -20,7 +20,8 @@ export class PermissionConfigError extends Error {
 	}
 }
 
-function joinKey(parent: string, key: string): string {
+/** 在 TOML 的键路径后面接一段；不是裸键的写法加上引号。 */
+export function joinKey(parent: string, key: string): string {
 	const part = /^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key);
 	return parent === "" ? part : `${parent}.${part}`;
 }

@@ -7,6 +7,9 @@ const knownFormats = [
 	/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
 ];
 
+/** 高熵字符串的候选至少这么长。 */
+const minCandidateLength = 32;
+
 /** 高熵字符串的候选：32 个字符以上、只含 base64 和 URL 安全 base64 的字符，结尾最多两个填充的 `=`。 */
 const candidate = /[A-Za-z0-9+/_-]{32,}={0,2}/g;
 
@@ -27,17 +30,40 @@ function entropy(text: string): number {
 	return bits;
 }
 
-function highEntropy(text: string): RegExpMatchArray[] {
-	return [...text.matchAll(candidate)].filter(
-		(match) => entropy(match[0]) > entropyThreshold,
+/** 路径里一段的平均长度不超过它：随机的 base64 里 `/` 很少，平均每 64 个字符才一个。 */
+const maxPathSegment = 16;
+
+/**
+ * 候选串里疑似密钥的部分。带两个以上 `/`、每段又不长的是文件路径：整串的熵会超过阈值（大小写
+ * 混合的目录名就够了），所以按段判断，只有某一段自己够长、熵也够高才算。标准 base64 的密钥里
+ * 恰好有这么多 `/` 的不到 5%，它们靠已知格式和按原文替换来挡。
+ */
+function secretParts(candidateText: string): string[] {
+	const segments = candidateText.split("/");
+	const pathLike =
+		segments.length > 2 &&
+		candidateText.length / (segments.length - 1) <= maxPathSegment;
+	return (pathLike ? segments : [candidateText]).filter(
+		(part) =>
+			part.length >= minCandidateLength && entropy(part) > entropyThreshold,
 	);
+}
+
+function redactCandidate(candidateText: string): string {
+	let result = candidateText;
+	for (const part of secretParts(candidateText)) {
+		result = result.split(part).join("[REDACTED]");
+	}
+	return result;
 }
 
 /** 文本里有没有疑似密钥。记忆候选命中时直接拒绝。 */
 export function containsSecret(text: string): boolean {
 	return (
 		knownFormats.some((pattern) => new RegExp(pattern).test(text)) ||
-		highEntropy(text).length > 0
+		[...text.matchAll(candidate)].some(
+			(match) => secretParts(match[0]).length > 0,
+		)
 	);
 }
 
@@ -53,7 +79,5 @@ export function redact(text: string, known: readonly string[] = []): string {
 	for (const pattern of knownFormats) {
 		result = result.replace(new RegExp(pattern), "[REDACTED]");
 	}
-	return result.replace(candidate, (match) =>
-		entropy(match) > entropyThreshold ? "[REDACTED]" : match,
-	);
+	return result.replace(candidate, redactCandidate);
 }

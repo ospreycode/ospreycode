@@ -110,8 +110,10 @@ describe("拒绝和回退（脚本模型）", () => {
 		);
 		expect(await run("first")).toBe("refused");
 		expect(await run("second")).toBe("completed");
+		// 系统指令、会话开始的上下文消息、两次输入
 		expect(requests[1]?.messages.map((message) => message.role)).toEqual([
 			"system",
+			"user",
 			"user",
 			"user",
 		]);
@@ -146,7 +148,7 @@ describe("拒绝和回退（脚本模型）", () => {
 		expect(started).toMatchObject([{ call_id: "call_b" }]);
 		const completed = await log.waitFor("message.completed");
 		expect(completed.message.model).toBe("scripted-fallback");
-		const [, , reply, result] = requests[1]?.messages ?? [];
+		const [, , , reply, result] = requests[1]?.messages ?? [];
 		expect(reply?.role === "assistant" && reply.content).toMatchObject([
 			{ type: "fallback" },
 			{ type: "text", text: "ok" },
@@ -236,8 +238,10 @@ test("流中途出错：已收到的部分作废，重试的请求里没有它",
 			: { content: [{ type: "text", text: "done" }] },
 	);
 	expect(await run("go")).toBe("completed");
+	// 系统指令、会话开始的上下文消息、输入
 	expect(requests[1]?.messages.map((message) => message.role)).toEqual([
 		"system",
+		"user",
 		"user",
 	]);
 	expect(await invalidations()).toMatchObject([

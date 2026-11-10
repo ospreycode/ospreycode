@@ -16,7 +16,7 @@ import type { ModelInfo } from "../channel/protocol.js";
 const bytesPerToken = 1.7;
 
 /** 会话里的图片长边不超过 2000 像素，读不出尺寸时按这个上限算。 */
-const maxImageSide = 2000;
+export const maxImageSide = 2000;
 
 export function textTokens(text: string): number {
 	return Math.ceil(Buffer.byteLength(text, "utf8") / bytesPerToken);

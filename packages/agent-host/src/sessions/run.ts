@@ -30,7 +30,7 @@ export class Run {
 	readonly taskId = newId();
 	readonly runId = newId();
 	/** Host 取消这个 run 时中止，进行中的模型请求、命令和询问都跟着结束。 */
-	readonly controller = new AbortController();
+	controller = new AbortController();
 	usage = emptyUsage();
 	/** 用户选了"本任务内允许"的资源，同一资源上的同类动作不再询问。 */
 	readonly taskApprovals = new Set<string>();
@@ -39,6 +39,16 @@ export class Run {
 	 * 落在可写路径里的文件改动不再询问。
 	 */
 	readonly grants = { read: new Set<string>(), write: new Set<string>() };
+	/**
+	 * 本任务内放行的域名（规范化后的写法，可以是 `*.` 开头的通配）：网络审批里选了"本任务内允许"的，
+	 * 和 `request_permissions` 批下来的。
+	 */
+	readonly domains = new Set<string>();
+	/**
+	 * Host 正在为这个 run 处理的模型请求和代为执行的工具调用。run 被 Host 结束（异常退出、
+	 * 取消超时、关闭）时先等它们收尾，结果和用量才能写在 `task.ended` 之前。
+	 */
+	readonly inFlight = new Set<Promise<unknown>>();
 	/** runtime 上报过的事件编号：Host 只在所属 run 内去重。 */
 	readonly runtimeEventIds = new Set<string>();
 	readonly budget: RunBudget;
@@ -46,6 +56,8 @@ export class Run {
 	exceeded: BudgetLimit | undefined;
 	/** 非交互运行的时间上限到时停止 run 的计时器。 */
 	deadline: NodeJS.Timeout | undefined;
+	/** task 结束（`task.ended` 已经记下）时兑现。 */
+	readonly ended = Promise.withResolvers<void>();
 	#seq = 0;
 
 	constructor(limits: RunLimits) {
@@ -59,6 +71,14 @@ export class Run {
 
 	get signal(): AbortSignal {
 		return this.controller.signal;
+	}
+
+	/**
+	 * 取消之后同一个 run 接着进行：用户取消当前动作时还有没插入的 steering，runtime 报告结束后
+	 * 取走它们继续。换一个新的中止信号，之后的请求重新被接受。
+	 */
+	renew(): void {
+		if (this.cancelled) this.controller = new AbortController();
 	}
 
 	/** run 内下一个事件的序号。 */

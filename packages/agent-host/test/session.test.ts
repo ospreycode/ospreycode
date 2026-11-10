@@ -98,6 +98,7 @@ describe("在指定时刻取消（脚本模型）", () => {
 		});
 		expect(log.types().filter((type) => type !== "model.delta")).toEqual([
 			"session.started",
+			"process.started",
 			"run.started",
 			"task.started",
 			"message.completed",
@@ -188,20 +189,20 @@ describe("agent 进程", () => {
 		expect(log.events).toEqual([]);
 	});
 
-	test("发来不合规的消息时结束 agent 进程，run 记 failed，session 以 error 关闭", async () => {
+	test("发来不合规的消息时结束 agent 进程，run 记 failed，session 保留", async () => {
 		const log = new EventLog();
 		const current = await open(log, {
 			agentEntry: fixture("garbage-agent.mjs"),
 			script: () => ({ content: [] }),
 		});
 		await current.submit("你好");
-		const ended = await log.waitFor("session.ended");
-		expect(ended.reason).toBe("error");
 		expect(await log.waitFor("task.ended")).toMatchObject({
 			outcome: "failed",
 		});
 		expect((await log.waitFor("error")).message).toContain("JSON");
-		await current.ended;
+		await log.waitFor("process.exited");
+		// 连续三次才关闭 session（见 restart.test.ts）：一次之后下一个输入会重启 agent 进程
+		expect(log.types()).not.toContain("session.ended");
 	});
 });
 
@@ -288,7 +289,9 @@ describe.runIf(process.platform === "darwin")(
 	},
 );
 
-describe.runIf(process.platform !== "darwin")("没有沙盒后端的平台", () => {
+// macOS 和 Linux 都有沙盒后端
+const noBackend = process.platform !== "darwin" && process.platform !== "linux";
+describe.runIf(noBackend)("没有沙盒后端的平台", () => {
 	test("沙盒模式报告不支持，不降级运行", async () => {
 		await expect(
 			open(new EventLog(), {}, { sandboxMode: "workspace-write" }),

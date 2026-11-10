@@ -1,0 +1,35 @@
+schema_version = "1.4"
+artifacts = []
+
+[task]
+name = "example/instance_example__counter-4444444444444444444444444444444444444444-vnan"
+description = ""
+keywords = []
+
+[metadata]
+difficulty = "easy"
+
+[verifier]
+network_mode = "public"
+timeout_sec = 3000.0
+collect = []
+
+[verifier.env]
+
+[agent]
+network_mode = "no-network"
+timeout_sec = 3000.0
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 1800.0
+docker_image = "registry.example/coding-tasks:instance_example__counter-4444444444444444444444444444444444444444-vnan"
+os = "linux"
+cpus = 1
+memory_mb = 4096
+storage_mb = 10240
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]

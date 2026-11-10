@@ -38,3 +38,19 @@ test("高熵的随机串算密钥，提交哈希、SHA-256 和 UUID 不算", () 
 	expect(containsSecret(ordinary)).toBe(false);
 	expect(redact(ordinary)).toBe(ordinary);
 });
+
+test("带目录分隔符的路径不算密钥，路径里夹着的随机串照样替换", () => {
+	const paths = [
+		"规则文件 /Users/alice/Desktop/coding-agent/AGENTS.md 超出上限",
+		"找不到 /private/tmp/osp-host-9F3p6F/workspace/agent.mjs 所属的包",
+		"/home/Runner/Work/Coding-Agent/packages/Agent-Host/src/Sessions",
+	].join("\n");
+	expect(containsSecret(paths)).toBe(false);
+	expect(redact(paths)).toBe(paths);
+
+	const random = randomBytes(30).toString("base64url");
+	expect(redact(`/var/Cache/${random}/Data/x`)).toBe(
+		"/var/Cache/[REDACTED]/Data/x",
+	);
+	expect(containsSecret(`/var/Cache/${random}/Data/x`)).toBe(true);
+});

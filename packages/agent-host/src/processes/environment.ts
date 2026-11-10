@@ -13,26 +13,47 @@ const inherited = [
 	"TZ",
 ] as const;
 
-/** 构建工具的缓存位置，由 Host 指向这个项目的缓存目录（见 sandbox 的构建工具的缓存）。 */
+/**
+ * 构建工具的缓存位置，由 Host 指向这个项目的缓存目录下的子目录（见 sandbox 的构建工具的缓存）。
+ * `CARGO_TARGET_DIR` 不设，`target/` 留在工作区。
+ */
+const cacheDirectories = {
+	GOCACHE: "go-build",
+	GOMODCACHE: "go/pkg/mod",
+	GOPATH: "go",
+	npm_config_cache: "npm",
+	pnpm_config_store_dir: "pnpm-store",
+	YARN_GLOBAL_FOLDER: "yarn",
+	BUN_INSTALL_CACHE_DIR: "bun",
+	PIP_CACHE_DIR: "pip",
+	UV_CACHE_DIR: "uv",
+	POETRY_CACHE_DIR: "poetry",
+	CARGO_HOME: "cargo",
+	GRADLE_USER_HOME: "gradle",
+	DENO_DIR: "deno",
+	CCACHE_DIR: "ccache",
+	SCCACHE_DIR: "sccache",
+	XDG_CACHE_HOME: "xdg",
+} as const;
+
+/** Host 设置的缓存变量的名字。Maven 没有指定本地仓库的环境变量，经 `MAVEN_OPTS` 设 `maven.repo.local`。 */
 export const cacheVariables = [
-	"GOCACHE",
-	"GOMODCACHE",
-	"GOPATH",
-	"npm_config_cache",
-	"pnpm_config_store_dir",
-	"YARN_GLOBAL_FOLDER",
-	"BUN_INSTALL_CACHE_DIR",
-	"PIP_CACHE_DIR",
-	"UV_CACHE_DIR",
-	"POETRY_CACHE_DIR",
-	"CARGO_HOME",
-	"GRADLE_USER_HOME",
-	"DENO_DIR",
-	"CCACHE_DIR",
-	"SCCACHE_DIR",
-	"XDG_CACHE_HOME",
+	...(Object.keys(cacheDirectories) as (keyof typeof cacheDirectories)[]),
 	"MAVEN_OPTS",
 ] as const;
+
+/** 把构建工具的缓存都指到这个项目的缓存目录里。 */
+export function cacheEnvironment(cache: string): Record<string, string> {
+	return {
+		...Object.fromEntries(
+			Object.entries(cacheDirectories).map(([name, dir]) => [
+				name,
+				join(cache, dir),
+			]),
+		),
+		MAVEN_OPTS: `-Dmaven.repo.local=${join(cache, "maven")}`,
+	};
+}
 
 /** Host 自己设置、用户补充的变量不能改的环境变量。 */
 export const hostSetVariables: ReadonlySet<string> = new Set([
@@ -50,6 +71,8 @@ export const hostSetVariables: ReadonlySet<string> = new Set([
 export interface SandboxEnvironmentOptions {
 	/** session 的临时目录。 */
 	tmpdir: string;
+	/** 这个项目的构建缓存目录。 */
+	cache: string;
 	workspace: string;
 	/** 执行命令用的 bash。 */
 	bash: string;
@@ -58,7 +81,8 @@ export interface SandboxEnvironmentOptions {
 }
 
 /**
- * 沙盒里进程的环境变量：按白名单从 Host 的环境里取，加上用户补充的变量，再加上 Host 设置的几个。
+ * 沙盒里进程的环境变量：按白名单从 Host 的环境里取，加上用户补充的变量，再加上 Host 设置的几个
+ * 和构建工具的缓存变量。
  * 不继承 Host 的其他变量，凭据不经环境变量进入沙盒。
  */
 export function sandboxEnvironment(
@@ -78,6 +102,7 @@ export function sandboxEnvironment(
 		TERM: "dumb",
 		NO_COLOR: "1",
 		OSPREYCODE_WORKSPACE: options.workspace,
+		...cacheEnvironment(options.cache),
 	};
 }
 

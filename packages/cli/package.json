@@ -9,6 +9,9 @@
 		"directory": "packages/cli"
 	},
 	"type": "module",
+	"bin": {
+		"ospreycode": "./dist/bundle/ospreycode.js"
+	},
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",
@@ -17,13 +20,21 @@
 	},
 	"files": [
 		"dist",
+		"vendor",
+		"licenses",
 		"CHANGELOG.md"
 	],
 	"scripts": {
-		"build": "tsc -p tsconfig.build.json"
+		"build": "tsc -p tsconfig.build.json && node scripts/bundle.ts"
 	},
 	"dependencies": {
+		"@earendil-works/pi-tui": "1.5.0",
+		"@napi-rs/keyring": "2.1.2",
 		"@ospreycode/agent-host": "0.1.0"
+	},
+	"devDependencies": {
+		"esbuild": "0.28.2",
+		"vitest": "5.0.5"
 	},
 	"engines": {
 		"node": "^24.15.0 || >=26.0.0"

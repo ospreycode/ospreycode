@@ -45,17 +45,23 @@ export interface ScenarioDirectories {
 	home: string;
 }
 
+/**
+ * 交给场景回答的询问。超出 run 上限后是否追加额度的询问不在其中：上限是运行评测的人显式给出的，
+ * 运行器一律拒绝追加。
+ */
+export type ScenarioQuestion = Exclude<
+	ApprovalRequestedEvent,
+	{ kind: "budget" }
+>;
+
 /** 一个评测场景：一次输入、怎样回答询问、什么时候取消，以及怎样判断结果。 */
 export interface Scenario {
 	name: string;
 	sandboxMode: SandboxMode;
 	approvalPolicy: ApprovalPolicy;
 	prompt(dirs: ScenarioDirectories): string;
-	/** 怎样回答询问；不写时一律拒绝。超出 run 上限后是否追加额度的询问不经过它，一律拒绝。 */
-	answer?(
-		event: ApprovalRequestedEvent,
-		dirs: ScenarioDirectories,
-	): ApprovalAnswer;
+	/** 怎样回答询问；不写时一律拒绝。 */
+	answer?(event: ScenarioQuestion, dirs: ScenarioDirectories): ApprovalAnswer;
 	/** 看到哪个事件时取消当前的 run。 */
 	cancelWhen?(event: HostEvent): boolean;
 	/** 检查结果，返回不满足的地方，空数组表示通过。只看结构化的结果，不看模型写的原文。 */

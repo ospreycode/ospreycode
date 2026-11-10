@@ -5,6 +5,7 @@ import type {
 	BlockRef,
 	Invalidation,
 	Message,
+	TextBlock,
 	ToolCallBlock,
 	ToolResultMessage,
 	UserContent,
@@ -14,7 +15,9 @@ import type { RuntimeChannel } from "../channel/open.js";
 import type {
 	AgentConfig,
 	ConfigUpdate,
+	InputContent,
 	ModelRequestResult,
+	PendingInput,
 	StatusResult,
 	TaskEndParams,
 } from "../channel/protocol.js";
@@ -23,8 +26,21 @@ import {
 	estimateContext,
 	inputCapacity,
 } from "../context/estimate.js";
-import type { ToolResult, ToolSpec } from "../contracts/index.js";
-import { buildSystemPrompt } from "../instructions/system-prompt.js";
+import type {
+	RecordedInstructions,
+	ToolResult,
+	ToolSpec,
+} from "../contracts/index.js";
+import {
+	renderContextMessage,
+	renderRuleFilesUpdate,
+} from "../instructions/context-message.js";
+import { type RuleFile, recordRuleFiles } from "../instructions/rule-files.js";
+import {
+	buildSystemPromptSections,
+	diffSystemPromptSections,
+	renderSystemPrompt,
+} from "../instructions/system-prompt.js";
 import type { ToolExecutor } from "../tool-executor/executor.js";
 
 /** 限流和服务过载时最多重试的次数。 */
@@ -34,7 +50,8 @@ function textContent(text: string): UserContent[] {
 	return [{ type: "text", text }];
 }
 
-function resultMessage(
+/** 一次工具调用的结果消息。 */
+export function resultMessage(
 	call: ToolCallBlock,
 	toolCallId: string | undefined,
 	result: ToolResult,
@@ -45,11 +62,13 @@ function resultMessage(
 		call_id: call.call_id,
 		tool_call_id: toolCallId,
 		content: result.content,
-		is_error: result.status !== "succeeded",
+		// 转入后台的命令还在运行，不是出错
+		is_error: result.status !== "succeeded" && result.status !== "running",
 	};
 }
 
-function cancelledMessage(
+/** 没有执行或被取消的工具调用的结果消息：每个工具调用都要有结果，模型请求的格式才合法。 */
+export function cancelledMessage(
 	call: ToolCallBlock,
 	toolCallId: string | undefined,
 ): ToolResultMessage {
@@ -70,6 +89,28 @@ function isCancellation(error: unknown): boolean {
 /** 一次模型请求的结果，以及发出的 assistant 消息各留下了原消息里的哪些块。 */
 type Attempt = ModelRequestResult & { kept: Map<string, number[]> };
 
+/** agent 进程重启后，从 session 记录重建出来的状态。 */
+export interface ResumedState {
+	/** 发给过模型的历史，开头已经有系统指令和会话开始的上下文消息。 */
+	history: Message[];
+	/** 作废的块：消息编号到块的序号。 */
+	invalidated: Map<string, Set<number>>;
+	/** 路径上最后一条 `instructions.recorded` 事件的内容：已经告诉模型的系统指令段落和规则文件。 */
+	instructions: RecordedInstructions;
+}
+
+function systemMessage(text: string): Message {
+	return {
+		role: "system",
+		message_id: randomUUID(),
+		content: [{ type: "text", text }],
+	};
+}
+
+function userMessage(content: UserContent[]): Message {
+	return { role: "user", message_id: randomUUID(), content };
+}
+
 /**
  * 推进 task：请求模型、执行工具、处理结果，直到模型给出最终回复、出错或被取消。
  * 同一时间只有一个 task；task 的开始和结束由 Host 决定，这里只报告结束。
@@ -86,40 +127,75 @@ export class AgentLoop {
 	#task: AbortController | undefined;
 	#state: StatusResult["state"] = "idle";
 	#activeToolCalls = new Set<string>();
+	/** 已经告诉模型的系统指令段落和规则文件：之后的变化和它比较，只追加差别。 */
+	#recorded: RecordedInstructions;
+	/** `#recorded` 是不是已经经 `record/append` 上报。 */
+	#reported: boolean;
+	/** 重启后发现规则文件变了：等下一次模型请求之前追加的替换说明。 */
+	#ruleFilesUpdate: TextBlock[] | undefined;
+	/** Host 说有 steering 或后台通知等待插入。 */
+	#inputAvailable = false;
+	/** 已经报告 task 结束，在等 Host 的响应。 */
+	#ending = false;
+	/** 等 `task/end` 的响应期间到达的下一个 task 的输入。 */
+	#next: InputContent[] | undefined;
 
+	/**
+	 * `ruleFiles` 是启动时读到的规则文件。`resumed` 是重启后重建的状态：有它时不重新生成开头的
+	 * 系统指令和上下文消息，只把当前的段落和规则文件同记录下来的比较，变化在下一次模型请求之前追加。
+	 */
 	constructor(
 		channel: RuntimeChannel,
 		config: AgentConfig,
 		registry: ReadonlyMap<string, ToolSpec>,
 		executor: ToolExecutor,
+		ruleFiles: readonly RuleFile[],
+		resumed?: ResumedState,
 	) {
 		this.#channel = channel;
 		this.#config = config;
 		this.#registry = registry;
 		this.#executor = executor;
 		this.#tools = this.#enabled(config.tools);
+		if (resumed !== undefined) {
+			this.#history = resumed.history;
+			this.#invalidated = resumed.invalidated;
+			this.#ruleFilesUpdate = renderRuleFilesUpdate(
+				resumed.instructions.rule_files,
+				ruleFiles,
+			);
+			this.#recorded = {
+				sections: resumed.instructions.sections,
+				rule_files: recordRuleFiles(ruleFiles),
+			};
+			this.#reported = this.#ruleFilesUpdate === undefined;
+			return;
+		}
+		const sections = this.#sections();
+		this.#recorded = { sections, rule_files: recordRuleFiles(ruleFiles) };
+		this.#reported = false;
 		this.#history = [
-			{
-				role: "system",
-				message_id: randomUUID(),
-				content: [
-					{
-						type: "text",
-						text: buildSystemPrompt(config, [...this.#tools.values()]),
-					},
-				],
-			},
+			systemMessage(renderSystemPrompt(sections)),
+			userMessage(renderContextMessage(ruleFiles, config)),
 		];
 	}
 
 	/** 开始新的 task。 */
-	start(input: UserContent[]): void {
-		if (this.#task !== undefined) {
+	start(input: InputContent[]): void {
+		if (this.#task === undefined) {
+			void this.#runTask(input);
+			return;
+		}
+		// Host 结束上一个 task 后马上开始下一个时，`task/start` 可能比 `task/end` 的响应先到
+		if (!this.#ending || this.#next !== undefined) {
 			throw new Error("Host 在上一个 task 结束之前开始了新的 task");
 		}
-		const controller = new AbortController();
-		this.#task = controller;
-		void this.#runTask(input, controller.signal);
+		this.#next = input;
+	}
+
+	/** Host 有 steering 或后台通知等待插入：下一次模型请求之前取出。 */
+	inputAvailable(): void {
+		this.#inputAvailable = true;
 	}
 
 	/** 中断当前的 run；runtime 随后报告 task 以 `cancelled` 结束。 */
@@ -138,6 +214,10 @@ export class AgentLoop {
 		if (update.tools !== undefined) this.#tools = this.#enabled(update.tools);
 	}
 
+	#sections() {
+		return buildSystemPromptSections(this.#config, [...this.#tools.values()]);
+	}
+
 	#enabled(names: readonly string[]): Map<string, ToolSpec> {
 		return new Map(
 			names.map((name) => {
@@ -150,30 +230,118 @@ export class AgentLoop {
 		);
 	}
 
-	async #runTask(input: UserContent[], signal: AbortSignal): Promise<void> {
-		this.#history.push({
-			role: "user",
-			message_id: randomUUID(),
-			content: input,
-		});
+	async #runTask(input: InputContent[]): Promise<void> {
 		try {
-			const end = await this.#runTurns(signal);
-			this.#state = "idle";
-			this.#task = undefined;
-			await this.#channel.request(
-				"task/end",
-				signal.aborted ? { outcome: "cancelled" } : end,
-			);
+			let end = await this.#runStep(input);
+			for (;;) {
+				this.#ending = true;
+				const reply = await this.#channel.request("task/end", end);
+				this.#ending = false;
+				if (!reply.continue) break;
+				if (this.#next !== undefined) {
+					throw new Error("Host 让 task 继续，同时又开始了新的 task");
+				}
+				// Host 还有待插入的输入：取出后同一个 task 接着进行。取消之后也是这样，所以每一段
+				// 用自己的中止信号
+				if (await this.#takeInputs()) end = await this.#runStep();
+			}
 		} catch (error) {
 			// Host 关闭了通道，进程随后退出，没有人等这个 task 的结果
 			if (error instanceof ChannelClosedError) return;
 			throw error;
 		}
+		this.#task = undefined;
+		const next = this.#next;
+		if (next !== undefined) {
+			this.#next = undefined;
+			this.start(next);
+		}
+	}
+
+	/**
+	 * 推进到模型给出最终回复、出错或被取消，返回要报告的结果。`input` 是开始这个 task 的输入：
+	 * 提及的文件在它进入上下文时读取，这时 task 已经可以取消。
+	 */
+	async #runStep(input?: InputContent[]): Promise<TaskEndParams> {
+		const controller = new AbortController();
+		this.#task = controller;
+		if (input !== undefined) {
+			this.#history.push(userMessage(await this.#executor.expand(input)));
+		}
+		const end = await this.#runTurns(controller.signal);
+		this.#state = "idle";
+		return controller.signal.aborted ? { outcome: "cancelled" } : end;
+	}
+
+	/**
+	 * 取出 Host 那边待插入的 steering 和后台通知，作为一条 user 消息接在历史后面，每条输入单独的块；
+	 * 插入的位置经 `record/append` 上报。没有取到时返回 false。
+	 */
+	async #takeInputs(): Promise<boolean> {
+		this.#inputAvailable = false;
+		let inputs: PendingInput[];
+		try {
+			({ inputs } = await this.#channel.request("input/take", {}));
+		} catch (error) {
+			// run 已经被 Host 取消：待插入的输入留在 Host 那边
+			if (isCancellation(error)) return false;
+			throw error;
+		}
+		if (inputs.length === 0) return false;
+		const last = this.#history.at(-1);
+		const message = userMessage(
+			await this.#executor.expand(inputs.flatMap((input) => input.content)),
+		);
+		this.#history.push(message);
+		await this.#channel.notify("record/append", {
+			event_id: randomUUID(),
+			event: {
+				type: "input.inserted",
+				data: {
+					input_ids: inputs.map((input) => input.input_id),
+					message_id: message.message_id,
+					after_tool_call_id:
+						last?.role === "tool_result" ? (last.tool_call_id ?? null) : null,
+				},
+			},
+		});
+		return true;
+	}
+
+	/**
+	 * 每次模型请求之前：系统指令的段落和记录下来的不一样时（工具集或配置变了），把变了的段落作为
+	 * system 消息追加；重启后规则文件变了，追加 user 角色的替换说明。已发出的消息都不改写。
+	 */
+	async #syncInstructions(): Promise<void> {
+		// system 消息要紧跟 user 轮：模型暂停的回复（pause_turn）后面先不追加，等下一次
+		if (this.#history.at(-1)?.role === "assistant") return;
+		const sections = this.#sections();
+		const patch = diffSystemPromptSections(this.#recorded.sections, sections);
+		if (this.#ruleFilesUpdate !== undefined) {
+			this.#history.push(userMessage(this.#ruleFilesUpdate));
+			this.#ruleFilesUpdate = undefined;
+		}
+		if (patch !== undefined) {
+			this.#history.push(systemMessage(patch));
+			this.#recorded = { ...this.#recorded, sections };
+			this.#reported = false;
+		}
+		if (this.#reported) return;
+		this.#reported = true;
+		await this.#channel.notify("record/append", {
+			event_id: randomUUID(),
+			event: { type: "instructions.recorded", data: this.#recorded },
+		});
 	}
 
 	async #runTurns(signal: AbortSignal): Promise<TaskEndParams> {
 		let prefixRetried = false;
 		for (;;) {
+			// 模型暂停的回复（pause_turn）还没结束，输入等它结束后再插入
+			if (this.#inputAvailable && this.#history.at(-1)?.role !== "assistant") {
+				await this.#takeInputs();
+			}
+			await this.#syncInstructions();
 			const { model } = this.#config;
 			const estimate = estimateContext(
 				model,

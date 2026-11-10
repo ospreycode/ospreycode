@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
 	completeModel,
 	ModelConfigError,
@@ -10,11 +10,11 @@ import type { ReasoningEffort } from "@ospreycode/api/protocol";
 import {
 	type ApprovalPolicy,
 	type BuiltinSandboxMode,
-	builtinSandboxModes,
 	type GranularApproval,
 	type GranularCategory,
 	granularCategories,
 	type PermissionProfile,
+	type ResolvedProfile,
 	type SandboxMode,
 } from "@ospreycode/sandbox";
 import type { CredentialSource } from "../credentials/sources.js";
@@ -29,7 +29,9 @@ import {
 	type ParsedLayer,
 	parseConfigTable,
 	repoConfigPath,
+	type UiLayer,
 } from "./layer.js";
+import { resolveSandboxMode } from "./sandbox-mode.js";
 
 export { ConfigError };
 
@@ -67,6 +69,8 @@ export interface SessionOptions {
 	denyWrite?: readonly string[];
 	/** 额外传给沙盒的环境变量，按变量覆盖用户级配置的 `[environment]`。 */
 	environment?: Readonly<Record<string, string>>;
+	/** 另外指定的权限规则文件（`--rules FILE`），绝对路径；和用户级的 `rules/*.toml` 一样可以写 `allow`。 */
+	rules?: readonly string[];
 }
 
 /** 每个 run 的上限，`null` 表示不设。 */
@@ -74,6 +78,12 @@ export interface RunLimits {
 	maxCostUsd: number | null;
 	maxRequests: number | null;
 	maxDurationMs: number | null;
+}
+
+/** 交互界面的显示设置。 */
+export interface UiSettings {
+	/** 是否显示模型的推理内容，默认显示。 */
+	showReasoning: boolean;
 }
 
 /** 分层合并、检查过的 session 配置。 */
@@ -89,7 +99,12 @@ export interface SessionConfig {
 	reasoningEffort: ReasoningEffort;
 	/** 凭据来源，键是凭据的 ID。 */
 	credentials: Readonly<Record<string, CredentialSource>>;
-	sandboxMode: BuiltinSandboxMode;
+	/** 沙盒模式的名字：内置的三种之一，或命名权限配置的名字。 */
+	sandboxMode: SandboxMode;
+	/** 沙盒按哪个内置模式建立：选用命名权限配置时是它在这个工作区上的模式。 */
+	baseSandboxMode: BuiltinSandboxMode;
+	/** 选用命名权限配置时，它在这个工作区上解析出的路径和域名。 */
+	permissionProfile?: ResolvedProfile;
 	approvalPolicy: ApprovalPolicy;
 	/** 审批策略为 `granular` 时七个类别是否询问。 */
 	granular?: GranularApproval;
@@ -98,6 +113,12 @@ export interface SessionConfig {
 	budget: RunLimits;
 	denyRead: readonly string[];
 	denyWrite: readonly string[];
+	/** 启动参数指定的权限规则文件（`--rules FILE`），绝对路径；内容在打开 session 时读取和校验。 */
+	ruleFiles: readonly string[];
+	/** 启用的工具，按它们在系统指令和工具声明里的顺序：默认启用的在前，`[tools]` 打开的可选工具在后。 */
+	tools: readonly string[];
+	/** 交互界面的显示设置（`[ui]`），Host 只读取和合并，由前端使用。 */
+	ui: UiSettings;
 	/** 访问模型服务用的 HTTP 代理，由 CLI 入口应用。 */
 	proxy?: string;
 	/** 启动时要告诉用户的事：仓库配置里被忽略的键和更松的值。 */
@@ -118,7 +139,20 @@ export interface ResolveContext {
 	home: string | undefined;
 	/** 内置的模型清单。 */
 	catalog: readonly ModelEntry[];
+	/** runtime 提供的全部工具的名字，按声明的顺序；默认启用的之外都是可选工具。 */
+	toolNames: readonly string[];
+	/** Host 自己和它依赖的包（包括 Node）的安装目录：命名权限配置把它们所在的目录设成 `deny` 时保持可读。 */
+	install: readonly string[];
 }
+
+/** 默认启用的工具，也是它们在系统指令和工具声明里的顺序。 */
+export const defaultTools: readonly string[] = [
+	"read",
+	"edit",
+	"write",
+	"shell",
+	"request_permissions",
+];
 
 function parseFile(
 	raw: Record<string, unknown> | undefined,
@@ -198,6 +232,8 @@ interface MergedLayer extends ConfigLayer {
 	credentials: Record<string, CredentialSource>;
 	deny_read: string[];
 	deny_write: string[];
+	tools: Record<string, boolean>;
+	ui: Required<UiLayer>;
 }
 
 function mergeModels(
@@ -229,6 +265,8 @@ function mergeLayers(lower: MergedLayer, higher: ConfigLayer): MergedLayer {
 		credentials: { ...lower.credentials, ...higher.credentials },
 		deny_read: union(lower.deny_read, higher.deny_read),
 		deny_write: union(lower.deny_write, higher.deny_write),
+		tools: { ...lower.tools, ...higher.tools },
+		ui: { ...lower.ui, ...higher.ui },
 	};
 }
 
@@ -243,7 +281,8 @@ const budgetKeys: Record<keyof BudgetLayer, string> = {
 };
 
 /**
- * 仓库配置只能收紧：沙盒模式只能改成 `read-only`；审批策略从 `on-request`、`granular` 到 `never`
+ * 仓库配置只能收紧：沙盒模式只能改成 `read-only`，用户级配置选用了命名权限配置时不改（换成
+ * `read-only` 会放开它禁止读的路径）；审批策略从 `on-request`、`granular` 到 `never`
  * 越来越严，`[approval_granular]` 只能关闭类别（`on-request` 相当于七个类别都询问）；上限只能调低；
  * 禁止的路径取并集。更松的值忽略，记进 `warnings`。
  */
@@ -259,9 +298,19 @@ function applyRepo(
 	if (repo.reasoning_effort !== undefined) {
 		result.reasoning_effort = repo.reasoning_effort;
 	}
+	result.tools = { ...lower.tools, ...repo.tools };
+	result.ui = { ...lower.ui, ...repo.ui };
 	if (repo.sandbox_mode !== undefined) {
-		if (repo.sandbox_mode === "read-only") result.sandbox_mode = "read-only";
-		else ignore("sandbox_mode", "在仓库配置里只能设为 read-only");
+		if (repo.sandbox_mode !== "read-only") {
+			ignore("sandbox_mode", "在仓库配置里只能设为 read-only");
+		} else if (Object.hasOwn(lower.permissions, lower.sandbox_mode)) {
+			ignore(
+				"sandbox_mode",
+				`用户级配置选用了命名权限配置 ${lower.sandbox_mode}，换成 read-only 会放开它禁止读的路径`,
+			);
+		} else {
+			result.sandbox_mode = "read-only";
+		}
 	}
 
 	let policy = lower.approval_policy;
@@ -342,17 +391,22 @@ export function resolveSessionConfig(
 ): SessionConfig {
 	const { root, projectRoot, home } = context;
 	const warnings: string[] = [];
+	const optionalTools = context.toolNames.filter(
+		(name) => !defaultTools.includes(name),
+	);
 	const userFile = join(root, "config.toml");
 	const user = parseFile(readUserToml(userFile), userFile, {
 		kind: "user",
 		projectRoot,
 		home,
+		optionalTools,
 	});
 	const repoFile = repoConfigPath(projectRoot);
 	const repo = parseFile(readRepoToml(repoFile, projectRoot), repoFile, {
 		kind: "repo",
 		projectRoot,
 		home,
+		optionalTools,
 	});
 	if (repo.ignored.length > 0) {
 		warnings.push(
@@ -372,6 +426,8 @@ export function resolveSessionConfig(
 		credentials: {},
 		deny_read: [],
 		deny_write: [],
+		tools: {},
+		ui: { show_reasoning: true },
 	};
 	const merged = mergeLayers(
 		applyRepo(
@@ -402,15 +458,18 @@ export function resolveSessionConfig(
 	}
 
 	const permissionProfiles = merged.permissions;
-	const mode = merged.sandbox_mode;
-	const sandboxMode = builtinSandboxModes.find((name) => name === mode);
-	if (sandboxMode === undefined) {
-		throw new ConfigError(
-			mode in permissionProfiles
-				? `沙盒模式 ${mode} 是命名权限配置，作为沙盒模式使用还不支持`
-				: `沙盒模式 ${mode} 不存在：要是 ${builtinSandboxModes.join("、")} 或 [permissions.<名字>] 定义的名字`,
-		);
-	}
+	const sandbox = resolveSandboxMode(merged.sandbox_mode, permissionProfiles, {
+		userFile,
+		home,
+		workspace: context.workspace,
+		root,
+		credentials: Object.values(merged.credentials).flatMap((source) =>
+			"file" in source ? [source.file] : [],
+		),
+		denyRead: merged.deny_read,
+		denyWrite: merged.deny_write,
+		install: context.install,
+	});
 
 	const approvalPolicy = merged.approval_policy;
 	let granular: GranularApproval | undefined;
@@ -425,6 +484,12 @@ export function resolveSessionConfig(
 		granular = table as GranularApproval;
 	}
 
+	const ruleFiles = options.rules ?? [];
+	const relative = ruleFiles.find((path) => !isAbsolute(path));
+	if (relative !== undefined) {
+		throw new ConfigError(`权限规则文件要给出绝对路径：${relative}`);
+	}
+
 	const { budget } = merged;
 	return {
 		workspace: context.workspace,
@@ -433,7 +498,7 @@ export function resolveSessionConfig(
 		models,
 		reasoningEffort: merged.reasoning_effort,
 		credentials: merged.credentials,
-		sandboxMode,
+		...sandbox,
 		approvalPolicy,
 		...(granular === undefined ? {} : { granular }),
 		permissionProfiles,
@@ -445,6 +510,12 @@ export function resolveSessionConfig(
 		},
 		denyRead: merged.deny_read,
 		denyWrite: merged.deny_write,
+		ruleFiles,
+		tools: [
+			...defaultTools,
+			...optionalTools.filter((name) => merged.tools[name] === true),
+		],
+		ui: { showReasoning: merged.ui.show_reasoning },
 		...(merged.proxy === undefined ? {} : { proxy: merged.proxy }),
 		warnings,
 	};

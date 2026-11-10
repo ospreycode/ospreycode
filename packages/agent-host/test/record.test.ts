@@ -63,36 +63,69 @@ test("会存储的事件都写进项目的 session 记录，新的 run 接在上
 	);
 	try {
 		const events = store.events(session.id);
-		const external = log.events.filter(
-			(event) => "event_id" in event && "seq" in event,
+		// 对外发出、标了会存储的事件，在记录里编号和序号都一样、顺序不变
+		const external = log.events.flatMap((event) =>
+			"event_id" in event && "seq" in event
+				? [[event.type, event.event_id, event.seq]]
+				: [],
 		);
+		const sent = new Set(external.map(([, eventId]) => eventId));
 		expect(
-			events.map((event) => [event.type, event.event_id, event.seq]),
-		).toEqual(
-			external.map((event) =>
-				"event_id" in event && "seq" in event
-					? [event.type, event.event_id, event.seq]
-					: [],
-			),
-		);
-		expect(events.map((event) => event.type)).toEqual([
+			events
+				.filter((event) => sent.has(event.event_id))
+				.map((event) => [event.type, event.event_id, event.seq]),
+		).toEqual(external);
+		// 只存不发的事件：进程事件所在的那个 run 的开始、系统指令的记录、发给模型的每条输入消息
+		expect(
+			events
+				.filter((event) => !sent.has(event.event_id))
+				.map((event) => event.type),
+		).toEqual([
+			"run.started",
+			"instructions.recorded",
+			// 系统指令、上下文消息和第一条用户输入
+			"message.sent",
+			"message.sent",
+			"message.sent",
+			// 工具结果
+			"message.sent",
+			"message.sent",
+			"message.sent",
+		]);
+		const tasks = events.filter((event) => event.task_id !== null);
+		expect(tasks.map((event) => event.type)).toEqual([
 			"run.started",
 			"task.started",
+			"instructions.recorded",
+			"message.sent",
+			"message.sent",
+			"message.sent",
 			"message.completed",
 			"tool_call.started",
 			"tool_call.completed",
+			"message.sent",
 			"message.completed",
 			"task.ended",
 			"run.started",
 			"task.started",
+			"message.sent",
 			"message.completed",
 			"tool_call.started",
 			"tool_call.completed",
+			"message.sent",
 			"message.completed",
 			"task.ended",
 		]);
-		const [first, next] = store.runs(session.id) as [RunRecord, RunRecord];
-		const firstEnd = events[6];
+		// 进程事件记在单独的 run 里，不在会话树的路径上
+		expect(
+			events
+				.filter((event) => event.task_id === null)
+				.map((event) => event.type),
+		).toEqual(["run.started", "process.started", "process.exited"]);
+		const [first, next] = store
+			.runs(session.id)
+			.filter((run) => run.task_id !== null) as [RunRecord, RunRecord];
+		const firstEnd = tasks[11];
 		expect(first.base).toBeNull();
 		expect(next.base).toEqual({ run_id: firstEnd?.run_id, seq: firstEnd?.seq });
 		expect(store.sessions()).toMatchObject([
@@ -102,7 +135,7 @@ test("会存储的事件都写进项目的 session 记录，新的 run 接在上
 				title: "第一个任务",
 			},
 		]);
-		expect(events[1]).toMatchObject({
+		expect(tasks[1]).toMatchObject({
 			source: "host",
 			data: {
 				source: "user",

@@ -1,11 +1,26 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { toolRegistry } from "@ospreycode/agent-runtime";
 import { builtinModels, type StreamModel, streamModel } from "@ospreycode/api";
-import type { ApprovalAnswer } from "@ospreycode/sandbox";
+import type { ReasoningEffort } from "@ospreycode/api/protocol";
+import {
+	type ApprovalAnswer,
+	type ApprovalPolicy,
+	type GranularApproval,
+	loadShellParser,
+	type SandboxMode,
+	type ShellParser,
+} from "@ospreycode/sandbox";
 import { checkSandboxSupport } from "@ospreycode/sandbox/backends";
 import { SessionStore, type SessionWriter } from "@ospreycode/session-store";
+import { SessionRules } from "../actions/session-rules.js";
 import { ConfigError } from "../config/errors.js";
+import {
+	loadRuleFiles,
+	userRulesDirectory,
+} from "../config/permission-rules.js";
+import { profileDomainRules } from "../config/sandbox-mode.js";
 import {
 	resolveSessionConfig,
 	type SessionConfig,
@@ -16,18 +31,33 @@ import {
 	type LoadedCredential,
 	loadCredential,
 } from "../credentials/sources.js";
+import {
+	type CredentialStatus,
+	type CredentialStatusOptions,
+	credentialStatus,
+	defaultService,
+} from "../credentials/status.js";
 import { type CredentialStore, macosKeychain } from "../credentials/store.js";
 import { DiagnosticLog } from "../diagnostics/log.js";
+import type { BackgroundCommandInfo } from "../processes/background.js";
 import {
 	bootId,
 	type ProcessIdentity,
 	processStartTime,
 } from "../processes/info.js";
+import { installDirectories } from "../processes/install-location.js";
+import { Placeholders } from "../processes/placeholders.js";
 import { ProcessRegistry } from "../processes/registry.js";
+import {
+	runInSandbox,
+	type SandboxRunOptions,
+	type SandboxRunResult,
+} from "../processes/sandbox-run.js";
 import {
 	sandboxedSession,
 	unsandboxedSession,
 } from "../processes/sandboxed.js";
+import { type ClearCacheOptions, clearCache } from "../project/cache.js";
 import { projectKey, Registry } from "../project/identity.js";
 import {
 	acquireExclusiveLock,
@@ -42,8 +72,18 @@ import {
 	resolveWorkspace,
 } from "../project/workspace.js";
 import { redact } from "../redaction/redact.js";
-import { HostSession } from "../sessions/host-session.js";
+import {
+	HostSession,
+	type ReloadedSettings,
+} from "../sessions/host-session.js";
 import { newId } from "../sessions/ids.js";
+import type { InputQueueSnapshot, QueuedInput } from "../sessions/inputs.js";
+import {
+	type ListSessionsOptions,
+	listSessions,
+	type SessionInfo,
+} from "../sessions/list.js";
+import type { UserInput } from "../sessions/user-input.js";
 import type { HostEvent } from "./events.js";
 
 /** 创建 Host 的选项。SDK 不改进程级的状态，依赖都由调用方传入。 */
@@ -83,12 +123,96 @@ export interface Session {
 	readonly id: string;
 	/** session 关闭后兑现，包括 agent 进程意外退出。 */
 	readonly ended: Promise<void>;
-	/** 在 session 空闲时开始一个 task，返回 `task_id`。 */
-	submit(input: string): Promise<string>;
+	/**
+	 * 当前生效的配置：会话中换过的模型、推理强度、沙盒模式和审批策略已经并在里面。配置文件的改动要到
+	 * `reload()` 之后才在里面，所以前端显示当前的设置时用它，不要自己再调 `resolveConfig`。
+	 */
+	config(): SessionConfig;
+	/**
+	 * 在 session 空闲时开始一个 task，返回 `task_id`。输入是一段文字，或分好段的输入：其中 `@` 提及的
+	 * 路径由 runtime 在这条输入进入上下文时在沙盒里读取，文件内容放进这条用户消息。`steer` 和
+	 * `followUp` 的输入相同。
+	 */
+	submit(input: string | UserInput[]): Promise<string>;
+	/**
+	 * task 运行时的输入，并入当前 task（steering）：在下一次模型请求之前插入，返回这条输入的编号。
+	 * 取消时还没插入的 steering 立即交给模型，同一个 task 接着进行；task 结束时还没插入的随
+	 * `input.dequeued`（`reason: "task_ended"`）交还，前端把它放回输入框。没有进行中的 task 时抛出。
+	 */
+	steer(input: string | UserInput[]): string;
+	/**
+	 * 排进 follow-up 列表，返回这条输入的编号：当前 task 以 `completed` 结束后，列表里的输入逐条作为
+	 * 新的 task 开始（`task.started` 的 `source` 为 `follow_up`）；别的结果让列表暂停。session 空闲时
+	 * 只有列表暂停着才能排，否则抛出。
+	 */
+	followUp(input: string | UserInput[]): string;
+	/** 取回排队的 steering 和 follow-up：给了编号只取那一条，不给取回全部；返回取回的输入。 */
+	dequeue(inputId?: string): QueuedInput[];
+	/** 当前排队的 steering 和 follow-up，以及列表是不是暂停着。 */
+	inputQueue(): InputQueueSnapshot;
+	/**
+	 * 让暂停的 follow-up 列表继续：session 空闲时马上开始列表的第一条。用户的下一次 `submit`
+	 * 也会让列表继续。
+	 */
+	resumeFollowUps(): Promise<void>;
+	/**
+	 * 切换模型（`/model`），可以同时换推理强度：从下一次模型请求起生效，task 运行中也可以换。
+	 * 切换前做和启动时相同的检查，不满足时抛出、session 不受影响：模型不在清单里或开启费用上限而
+	 * 模型没有价格是 `ConfigError`，没有凭据是 `CredentialError`。实际换了之后，在用到新模型的
+	 * 第一次请求之前发出 `model.changed`。新模型的凭据来自另一个文件、沙盒还读得到它时，按 `reload()`
+	 * 处理（重启 agent 进程），只能在 session 空闲时做，否则抛出 `SessionCommandError`。
+	 */
+	setModel(model: string, reasoningEffort?: ReasoningEffort): Promise<void>;
+	/**
+	 * 切换推理强度（`/effort`）：从下一次模型请求起生效，task 运行中也可以换。实际换了之后，在用到
+	 * 新级别的第一次请求之前发出 `reasoning_effort.changed`。
+	 */
+	setReasoningEffort(reasoningEffort: ReasoningEffort): Promise<void>;
+	/**
+	 * 运行中的后台命令和监视（`/bg`），按开始的顺序。它们属于 session，task 结束后继续运行；开始和结束
+	 * 另有 `background.started`、`background.ended` 事件，非交互模式据此等它们结束。
+	 */
+	backgroundCommands(): BackgroundCommandInfo[];
+	/**
+	 * 停止一条后台命令，等它和它的子孙进程结束；没有这个编号或已经结束时返回 false。用户停掉的命令
+	 * 产生一条不唤醒 session 的通知，等下一次开始 task 时交给模型。
+	 */
+	stopBackgroundCommand(backgroundId: string): Promise<boolean>;
+	/**
+	 * 等 session 空闲下来：没有进行中的 task，task 结束后接着要开始的（follow-up、后台通知的唤醒）
+	 * 也都结束了；session 关闭后立即兑现。还在运行的后台命令不算在内，用 `backgroundCommands()` 看。
+	 * 非交互模式用它判断主任务之后还有没有通知要处理。
+	 */
+	whenIdle(): Promise<void>;
 	/** 回答 `approval.requested`；询问已经有了结果时返回 false。 */
 	respond(requestId: string, answer: ApprovalAnswer): boolean;
+	/**
+	 * 切换审批策略（`/approval`）：马上生效，task 进行中也可以，完成后发出 `approval_policy.changed`。
+	 * 挂起的询问在新策略下不该再问的，立即答为拒绝（`approval.decided` 的 `denied_by_policy`）。
+	 * 和启动参数排在同一层：仓库配置收紧过的策略放不松，实际生效的策略以事件里的 `to` 为准。
+	 * `granular` 按类别覆盖配置文件里的 `[approval_granular]`；换成 `granular` 而七个类别没有写全时
+	 * 抛出 `ConfigError`。
+	 */
+	setApprovalPolicy(
+		policy: ApprovalPolicy,
+		granular?: Partial<GranularApproval>,
+	): void;
 	/** 取消当前的 run，task 以 `cancelled` 结束。 */
 	cancel(): Promise<void>;
+	/**
+	 * 切换沙盒模式（`/sandbox`）：按新模式准备沙盒、重启 agent 进程，新进程按 session 记录重建发给
+	 * 模型的历史，完成后发出 `sandbox_mode.changed`。只能在 session 空闲时做，`danger-full-access`
+	 * 只能在启动时指定：这两种情况抛出 `SessionCommandError`，session 不受影响。模式不存在时抛出
+	 * `ConfigError`，当前平台没有沙盒后端时抛出 `SandboxUnavailableError`。agent 进程没能重新启动时
+	 * session 关闭，抛出 `AgentStartError`。
+	 */
+	setSandboxMode(mode: SandboxMode): Promise<void>;
+	/**
+	 * 重新加载配置（`/reload`）：重新读取全部配置和凭据，会话中切换过的沙盒模式保留；重新准备沙盒、
+	 * 重启命令辅助进程和 agent 进程。只能在 session 空闲时做，否则抛出 `SessionCommandError`；
+	 * 配置有错时抛出 `ConfigError` 或 `CredentialError`，session 照旧用原来的配置。
+	 */
+	reload(): Promise<void>;
 	/** 关闭 session，结束其中的全部进程，释放工作区锁。 */
 	close(): Promise<void>;
 }
@@ -129,6 +253,35 @@ export interface Host {
 	saveCredential(id: string, value: string): Promise<void>;
 	/** 从系统凭据库删除凭据（`ospreycode logout`），本来就没有时返回 false。 */
 	deleteCredential(id: string): Promise<boolean>;
+	/**
+	 * 用户级配置选用的默认模型所属的服务（`login`、`logout` 不写 `--service` 时用它）；没有选用模型，
+	 * 或者选用的模型不在清单里时为空。只读用户级配置，和当前目录无关；它加载出错时抛出 `ConfigError`。
+	 */
+	defaultService(): string | undefined;
+	/**
+	 * 各个模型服务的凭据取自哪一层（`ospreycode login status`）：启动参数、用户级配置还是系统凭据库。
+	 * 只说明来源，不返回凭据的值。用户级配置加载出错时抛出 `ConfigError`，系统凭据库锁定或不可用时
+	 * 抛出 `CredentialError`。
+	 */
+	credentialStatus(
+		options?: CredentialStatusOptions,
+	): Promise<CredentialStatus[]>;
+	/**
+	 * 列出 session（`ospreycode session list`），最近写过的在前；给了目录只列它所在项目的。
+	 * 只读 session 记录，不取工作区锁。目录不存在时抛出 `WorkspaceError`。
+	 */
+	listSessions(options?: ListSessionsOptions): SessionInfo[];
+	/**
+	 * 清空构建缓存（`ospreycode cache clear`），返回清空了的项目的 `project_id`；给了目录只清它所在
+	 * 项目的。只删缓存目录里的内容，不管有没有打开的 session；没有缓存时什么也不做。
+	 */
+	clearCache(options?: ClearCacheOptions): string[];
+	/**
+	 * 用和 session 的命令沙盒同一套策略运行一条命令（`ospreycode sandbox`）：不询问，权限规则没有
+	 * 放行的域名直接拒绝，标准输入输出直通。配置有错时抛出 `ConfigError` 或 `WorkspaceError`，
+	 * 当前平台没有沙盒后端时抛出 `SandboxUnavailableError`。
+	 */
+	runInSandbox(options: SandboxRunOptions): Promise<SandboxRunResult>;
 }
 
 function resolveEntry(specifier: string): string {
@@ -162,6 +315,30 @@ export function createHost(options: HostOptions): Host {
 		process.execPath,
 	];
 	const owner = selfIdentity();
+	// 越界执行的命令也不能写的位置：Host 根目录下 Host 会读的条目（不存在的也列出），和安装目录
+	const hostEntries = [
+		"config.toml",
+		"mcp.json",
+		"hooks.json",
+		"rules",
+		"AGENTS.md",
+		"data",
+		"hooks",
+		"plugins",
+		"plugin-data",
+		"server-data",
+		"snapshots",
+		"cache",
+		"tmp",
+		"output",
+	];
+	const install = installDirectories(programFiles, process.execPath);
+	// 规则匹配用的 bash 解析器：加载一次 WASM，这个 Host 的 session 共用
+	let parser: Promise<ShellParser> | undefined;
+	const shellParser = () => {
+		parser ??= loadShellParser();
+		return parser;
+	};
 	const registry = new Registry(data, owner);
 	const processes = new ProcessRegistry(data, owner);
 	const store =
@@ -210,6 +387,43 @@ export function createHost(options: HostOptions): Host {
 		return { credential: { id, value } };
 	};
 
+	/** 一份配置对应的凭据和权限规则，以及沙盒读写不到、任何批准也放不开的路径。 */
+	const settingsFor = async (
+		config: SessionConfig,
+	): Promise<ReloadedSettings> => {
+		const { credential, file } = await credentialFor(config);
+		secrets.add(credential.value);
+		const parser = await shellParser();
+		return {
+			config,
+			credential,
+			rules: new SessionRules({
+				files: loadRuleFiles({
+					root,
+					projectRoot: config.projectRoot,
+					startup: config.ruleFiles,
+					parser,
+				}),
+				...(config.permissionProfile === undefined
+					? {}
+					: {
+							profile: profileDomainRules(
+								config.sandboxMode,
+								config.permissionProfile,
+							),
+						}),
+				parser,
+				userRulesDir: userRulesDirectory(root),
+				lockDir: join(data, "locks"),
+				owner,
+			}),
+			denied: {
+				read: [root, ...(file === undefined ? [] : [file]), ...config.denyRead],
+				write: [...config.denyWrite],
+			},
+		};
+	};
+
 	const resolveConfig = (sessionOptions: SessionOptions): SessionConfig => {
 		const workspace = resolveWorkspace(sessionOptions.workspace);
 		checkSeparate(root, workspace);
@@ -221,6 +435,8 @@ export function createHost(options: HostOptions): Host {
 			git: project.git,
 			home: options.env.HOME,
 			catalog: builtinModels,
+			toolNames: [...toolRegistry.keys()],
+			install,
 		});
 	};
 
@@ -230,10 +446,10 @@ export function createHost(options: HostOptions): Host {
 		const config = resolveConfig(sessionOptions);
 		const { workspace } = config;
 		checkInstallLocation(workspace, programFiles);
-		const { credential, file } = await credentialFor(config);
-		secrets.add(credential.value);
-		const mode = config.sandboxMode;
-		if (mode !== "danger-full-access") checkSandboxSupport(process.platform);
+		const settings = await settingsFor(config);
+		if (config.sandboxMode !== "danger-full-access") {
+			checkSandboxSupport(process.platform);
+		}
 		const userId = await registry.userId();
 		const projectId = await registry.projectId(projectKey(config.projectRoot));
 		const lock = await acquireWorkspaceLock(
@@ -269,8 +485,7 @@ export function createHost(options: HostOptions): Host {
 				writer,
 				sessionId,
 				root,
-				config,
-				credential,
+				...settings,
 				scrub,
 				onSecret: (value) => secrets.add(value),
 				log,
@@ -281,7 +496,11 @@ export function createHost(options: HostOptions): Host {
 				lock,
 				userId,
 				projectId,
-				createSandbox: async ({ bash, env, directories, tracker }) => {
+				// 切换沙盒模式和重新加载配置时再调用，所以模式和路径都取这一次给的
+				createSandbox: async (context) => {
+					const { denied, bash, env, directories, tracker } = context;
+					const mode = context.config.baseSandboxMode;
+					const profile = context.config.permissionProfile;
 					if (mode === "danger-full-access") {
 						return unsandboxedSession(agentCommand, bash);
 					}
@@ -296,20 +515,30 @@ export function createHost(options: HostOptions): Host {
 							mode,
 							workspace,
 							tmpdir: directories.tmp,
+							cache: directories.cache,
 							readOnly: [directories.output],
-							denyRead: [
-								root,
-								...(file === undefined ? [] : [file]),
-								...config.denyRead,
-							],
-							denyWrite: [...config.denyWrite],
+							denyRead: [...denied.read],
+							denyWrite: [...denied.write],
 							home: env.HOME,
+							hostRoot: root,
+							hostEntries,
+							install,
+							...(profile === undefined ? {} : { profile }),
 						},
+						capabilities: checkSandboxSupport(process.platform),
 						env,
 						bash,
 						agentCommand,
 						applyEditsCommand: [process.execPath, applyEditsEntry],
 						tracker,
+						network: context.rules.networkLists(),
+						ask: context.askNetwork,
+						...(options.env.SSH_AUTH_SOCK === undefined
+							? {}
+							: { sshAuthSock: options.env.SSH_AUTH_SOCK }),
+						placeholders: new Placeholders(data, owner, workspace),
+						onWarning: context.onWarning,
+						onProcess: context.onProcess,
 					});
 				},
 				onEvent: sessionOptions.onEvent,
@@ -320,13 +549,65 @@ export function createHost(options: HostOptions): Host {
 			lock.release();
 			throw error;
 		}
+		// 会话中换过的设置和启动参数排在同一层：重新加载配置时不被配置文件盖掉
+		let current: SessionOptions = sessionOptions;
 		return {
 			id: session.sessionId,
 			ended: session.ended,
+			config: () => session.config,
 			submit: (input) => session.submit(input),
+			steer: (input) => session.steer(input),
+			followUp: (input) => session.followUp(input),
+			dequeue: (inputId) => session.dequeue(inputId),
+			inputQueue: () => session.inputQueue(),
+			resumeFollowUps: () => session.resumeFollowUps(),
+			async setModel(model, reasoningEffort) {
+				const next = {
+					...current,
+					model,
+					...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+				};
+				await session.setModel(await settingsFor(resolveConfig(next)));
+				current = next;
+			},
+			async setReasoningEffort(reasoningEffort) {
+				const next = { ...current, reasoningEffort };
+				await session.setModel(await settingsFor(resolveConfig(next)));
+				current = next;
+			},
+			backgroundCommands: () => session.backgroundCommands(),
+			stopBackgroundCommand: (backgroundId) =>
+				session.stopBackgroundCommand(backgroundId),
+			whenIdle: () => session.whenIdle(),
 			respond: (requestId, answer) => session.respond(requestId, answer),
+			setApprovalPolicy(policy, granular) {
+				const next = {
+					...current,
+					approvalPolicy: policy,
+					...(granular === undefined ? {} : { granular }),
+				};
+				const config = resolveConfig(next);
+				session.setApprovalPolicy(config.approvalPolicy, config.granular);
+				current = next;
+			},
 			cancel: () => session.cancel(),
 			close: () => session.close(),
+			async setSandboxMode(mode) {
+				const next = { ...current, sandboxMode: mode };
+				const resolved = resolveConfig(next);
+				if (resolved.baseSandboxMode !== "danger-full-access") {
+					checkSandboxSupport(process.platform);
+				}
+				await session.setSandboxMode(resolved);
+				current = next;
+			},
+			async reload() {
+				const reloaded = await settingsFor(resolveConfig(current));
+				if (reloaded.config.sandboxMode !== "danger-full-access") {
+					checkSandboxSupport(process.platform);
+				}
+				await session.reload(reloaded);
+			},
 		};
 	};
 
@@ -356,5 +637,24 @@ export function createHost(options: HostOptions): Host {
 		},
 		saveCredential: async (id, value) => requireStore().set(id, value),
 		deleteCredential: async (id) => requireStore().delete(id),
+		defaultService: () => defaultService(root, options.env.HOME),
+		credentialStatus: (statusOptions = {}) =>
+			credentialStatus({ root, home: options.env.HOME, store }, statusOptions),
+		listSessions: (listOptions = {}) =>
+			listSessions(data, registry, listOptions),
+		clearCache: (cacheOptions = {}) => clearCache(root, registry, cacheOptions),
+		runInSandbox: (runOptions) =>
+			runInSandbox(runOptions, {
+				root,
+				data,
+				owner,
+				env: options.env,
+				helperEntry,
+				hostEntries,
+				install,
+				registry,
+				resolveConfig,
+				shellParser,
+			}),
 	};
 }

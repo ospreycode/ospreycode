@@ -116,12 +116,12 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 **换了模型或协议时，按固定规则处理带不过去的内容。** 文本、工具调用和工具结果照常转换，工具调用编号按目标协议改写并保留对应关系。推理内容按协议处理，处理都记入事件，不悄悄丢弃：
 
 - `anthropic.messages` 内换模型时原样带回，目标模型读不了的由服务端丢弃，不计费；客户端自己从历史中间删除反而会让之后的推理内容失效。服务端丢弃了哪些，从 beta 字段 `input_transformations` 读（要带 beta header `thinking-binding-controls-2026-08-01`）。绑定账号的推理内容换成其他组织的密钥后也被丢弃。
-- `openai.responses` 在同一服务（同一地址和账号）上换模型时同样原样带回全部推理 item，由服务端略去读不了的：推理只能在同一模型系列内复用，换系列时服务端略去不兼容的推理、不报错；手动管理历史时要重发每一个输出 item。`reasoning.context` 不显式设置，取模型的默认值，实际生效的值记入事件。assistant 消息上的 `phase` 原样保存并带回，转换到没有 `phase` 的协议时去掉。
+- `openai.responses` 在同一服务（同一地址和账号）上换模型时同样原样带回全部推理 item，由服务端略去读不了的：推理只能在同一模型系列内复用，换系列时服务端略去不兼容的推理、不报错；手动管理历史时要重发每一个输出 item。经中转服务实测（2026-11-10，每种换法一次，同一段带约 220 个推理 token 的历史）：`gpt-5.6-sol` 和 `gpt-6-sol` 互换时请求照常完成，带不带推理 item 的 `input_tokens` 相同，被略去的推理不计入；`gpt-6-sol` 换到 `gpt-6-astra` 和 `gpt-6.1-sol` 时，带着推理 item 的 `input_tokens` 多出的数目和不换模型时一样、和原来的推理 token 数相当，GPT-6 的这几个型号之间照常计入。`reasoning.context` 不显式设置，取模型的默认值，实际生效的值记入事件。assistant 消息上的 `phase` 原样保存并带回，转换到没有 `phase` 的协议时去掉。
 - `openai.chat` 换模型后不再发送推理内容。换服务或换协议时一律丢弃：加密推理只有产生它的服务能解密。
 
 **发给模型的历史只追加、不改写。** 系统指令和工具声明在对话开始时确定，之后的变化都追加：Host 和 runtime 自己的状态变化作为追加的指令（如 Anthropic 在 messages 中追加 `role: "system"` 的消息）；其他内容按来源放进 user 消息或工具结果（见[追加指令的来源](#追加指令的来源)）。这一条同时决定提示缓存能否命中。
 
-- **Anthropic 追加 system 消息的限制**：只有 Fable 5.1/5、Mythos 5.1/5、Opus 5.5/5/4.8、Sonnet 5.5 和 Haiku 5.5 支持，Sonnet 5 不支持。它不能是第一条消息，必须紧跟 user 轮（包括只有工具结果的 user 轮）或以服务端工具结果结尾的 assistant 轮，后面必须是 assistant 轮或者它就是最后一条，不能插在工具调用和它的结果之间，否则返回 400。所以两轮之间产生的指令要等到下一条 user 消息之后再追加；只改 effort、内容为空的消息可以放在任何位置；增减工具的块不能紧跟在 `pause_turn` 暂停的 assistant 轮后面。Sonnet 5.5 和 Haiku 5.5 可能把紧跟在工具结果后面的 system 消息当作不可信的文字忽略，所以用户在工具循环中途输入的话作为最后一个 `tool_result` 之后的 `text` 块转交。
+- **Anthropic 追加 system 消息的限制**：只有 Fable 5.1/5、Mythos 5.1/5、Opus 5.5/5/4.8、Sonnet 5.5 和 Haiku 5.5 支持，Sonnet 5 不支持。它不能是第一条消息，必须紧跟 user 轮（包括只有工具结果的 user 轮）或以服务端工具结果结尾的 assistant 轮，后面必须是 assistant 轮或者它就是最后一条，不能插在工具调用和它的结果之间，否则返回 400。所以两轮之间产生的指令要等到下一条 user 消息之后再追加；只改 effort、内容为空的消息可以放在任何位置；增减工具的块不能紧跟在 `pause_turn` 暂停的 assistant 轮后面。Sonnet 5.5 和 Haiku 5.5 可能把紧跟在工具结果后面的 system 消息当作不可信的文字忽略，所以用户在工具循环中途输入的话作为最后一个 `tool_result` 之后的 `text` 块转交。后台命令的通知也这样转交。两个型号都用真实模型核对过（2026-11-10，各三次）：这样转交的 steering 模型照着做，只在通知里出现的退出码模型答得出来。
 - **转换结果必须是确定的**：同样的内部消息每次生成相同的请求。Anthropic 从 Claude 5.1 起的模型（Fable 5.1、Mythos 5.1、Opus 5.5、Sonnet 5.5、Haiku 5.5）会检查推理内容之前的全部内容有没有被改过：重建系统指令或工具声明、修改或删除较早的轮次、往较早的轮次里插入每次都变的文字，都会让之后的推理内容失效（见[前缀校验失败](#前缀校验失败)）。校验比较的是值，逐字节相同另外关系到提示缓存。
 - **不算改写的改动**：从历史的开头或末尾删掉推理块、修改 `cache_control` 或 effort（修改顶层 effort 会让提示缓存重新开始，按消息设置 effort 可以避免）。服务端的阈值压缩和 context editing 也不受影响，因为校验比较的是客户端发出的内容。
 - **不得不改写时**（如客户端生成摘要的上下文压缩），之前的推理内容全部丢弃。改写较早的工具结果、重新编码较早的图片也会让之后的推理内容失效；通过 URL 引用的图片和文档，下次请求时内容变了也一样，所以保存实际发送的字节。
@@ -133,7 +133,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 **兼容接口的差异写进模型配置**：是否支持 `developer` 角色、流式响应里是否返回用量、工具是否支持 strict 模式、推理参数的写法、是否接受 `store`，以及推理内容放在哪个字段（`reasoning_content`、`reasoning`，或带加密条目的 `reasoning_details`；DeepSeek 要求带回的 assistant 消息附上 `reasoning_content`）。转换模块按配置处理，不按服务地址猜。`strict` 总是显式写明：不写时 Responses 会把 schema 规范化成 strict 模式，Chat 不会。
 
-**工具结果里的图片**：`openai.chat` 的 tool 消息只能放文本，图片移到这组工具结果之后追加的 user 消息里（照 pi）；Responses 的 `function_call_output` 能直接带 `input_image`；Anthropic 对 `is_error` 为真的工具结果只接受文本，图片移到同一条 user 消息里这组 `tool_result` 块之后。清单标明不读图片的模型收到图片时，转换模块换成一句文字占位。
+**工具结果里的图片**：`openai.chat` 的 tool 消息只能放文本，图片移到这组工具结果之后追加的 user 消息里（照 pi）；Responses 的 `function_call_output` 能直接带 `input_image`；Anthropic 对 `is_error` 为真的工具结果只接受文本，图片移到同一条 user 消息里这组 `tool_result` 块之后。清单标明不读图片的模型收到图片时，转换模块换成一句文字占位。这几种放法都用真实模型核对过（2026-11-10，`gpt-5.6-sol` 的 Responses 和 Chat Completions，`claude-haiku-5-5` 的 `is_error` 为真和为假）：请求被接受，模型答得出图片的颜色。
 
 **模型能力以模型清单为准**：上下文长度、最大输出长度，是否支持工具、并行工具调用、图片、推理和提示缓存，是否支持中途 system 消息、能否在对话中增减工具，`tool_choice` 允许的值，服务档位的价格倍率，都从清单读取（这几项 models.dev v2 已经提供），context 和转换模块据此决定做法。
 
@@ -143,7 +143,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 
 | 来源 | 位置 |
 |---|---|
-| Host 和 runtime 按自己掌握的状态生成的文字：沙盒模式和审批策略的切换、工具增减和系统指令段落的补丁、换模型、预算和压缩通知 | system 级追加（Anthropic 的中途 `role: "system"` 消息、OpenAI 的 `developer` 消息），写成事实陈述，不写成压过用户的命令。推理强度的变化只改请求的顶层参数，不追加消息（见[请求参数](#请求参数)） |
+| Host 和 runtime 按自己掌握的状态生成的文字：沙盒模式和审批策略的切换、工具增减和系统指令段落的补丁、预算和压缩通知 | system 级追加（Anthropic 的中途 `role: "system"` 消息、OpenAI 的 `developer` 消息），写成事实陈述，不写成压过用户的命令。换模型和推理强度的变化只改请求的顶层参数，不追加消息（见[请求参数](#请求参数)） |
 | 用户本人写的文字：steering、follow-up、用户级规则文件、用户要求记住的内容 | user 消息 |
 | 来自仓库、扩展、工具和网络的内容：仓库规则文件、记忆、hooks 输出、后台命令的通知、skill 内容、MCP 结果、网页 | 有对应工具调用的放工具结果；没有的由 runtime 放进 user 消息里单独的文本块，标明来源，不和用户的话放在同一块 |
 
@@ -222,10 +222,9 @@ P3 以客户端压缩为基线，所有协议共用：runtime 决定压缩的时
 
 P1：
 
-- 用 `input_tokens` 对比实测 `openai.responses` 换模型后被略去的推理是否计入 `input_tokens`、GPT-6 各型号之间能否复用推理、换成另一个组织的密钥后是被略去还是报错。
-- 用便宜的模型实测工具结果里的图片在 `openai.chat`、Responses 和 Anthropic `is_error` 为真这三种情况下的处理。
-- 实测纯工具循环中途产生的 Host 通知放在 `tool_result` 之后，会不会被 Sonnet 5.5 和 Haiku 5.5 忽略。
+- 实测 `openai.responses` 换成另一个组织的密钥后，带回的推理是被略去还是报错（测试用的中转服务只有一个密钥，做不了）；`gpt-6-luna` 和 `gpt-6.1-terra` 能否沿用 `gpt-6-sol` 的推理也没有测，中转服务上没有这两个型号。
 - 用 Haiku 5.5 故意改动历史，核对前缀校验失败的错误体里有没有错误码、请求下标能否准确映射回内部的块。经中转服务实测（2026-11-07）做不到：改动推理块之前的 user 消息照常返回 200，也没有 `input_transformations`，中转服务可能没有转发 beta header 或 `prefix_mismatch_behavior`；签名被改坏时返回 400，错误信息末尾被加上 `(request id: …)`，`error.type` 为 `<nil>`。要在能直连 Anthropic 的账号上核对；映射本身由脚本模型的测试覆盖。
+
 P3：
 
 - 采用 OpenAI 的 `compaction_trigger` 前，实测它的压缩 item 换模型系列后怎样处理。

@@ -20,29 +20,30 @@
 | 沙盒模式、命名权限配置、审批策略（含 `granular` 的七个类别）、权限规则（命令、域名、MCP 工具三种）、越界申请（含 `unix_sockets`、`local_binding`） | P1 | 进行中 | [sandbox](packages/sandbox.md) |
 | macOS（Seatbelt）和 Linux（bubblewrap，Ubuntu 24.04）两个沙盒后端，辅助进程（离线、命令、按需单独启动的）；CI 上四个 runner 的真实沙盒测试 | P1 | 进行中 | sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)；overview 的[支持的平台](overview.md#支持的平台) |
 | 命令沙盒：每条命令由 Host 单独启动沙盒，macOS 上用收尾进程结束全部进程 | P1 | 进行中 | sandbox 的[命令的执行](packages/sandbox.md#命令的执行)和[macOS 上结束全部进程](packages/sandbox.md#macos-上结束全部进程) |
-| 沙盒的环境变量白名单 | P1 | 进行中 | sandbox 的[沙盒模式](packages/sandbox.md#沙盒模式) |
-| 受保护的路径和占位登记表、构建工具的缓存 | P1 | 未开始 | sandbox 的[受保护的路径](packages/sandbox.md#受保护的路径)和[构建工具的缓存](packages/sandbox.md#构建工具的缓存) |
-| 网络访问的审批，`request_permissions` 申请的域名 | P1 | 未开始 | sandbox 的[网络访问的审批](packages/sandbox.md#网络访问的审批) |
-| agent 进程的重启：从 session 记录重建发给模型的历史（切换沙盒模式、取消超时、异常退出、Linux 上发现新仓库） | P1 | 未开始 | agent-host 的 [agent 进程的重启](packages/agent-host.md#agent-进程的重启) |
+| 沙盒的环境变量白名单 | P1 | 已完成 | sandbox 的[沙盒模式](packages/sandbox.md#沙盒模式) |
+| 受保护的路径和占位登记表、构建工具的缓存 | P1 | 进行中 | sandbox 的[受保护的路径](packages/sandbox.md#受保护的路径)和[构建工具的缓存](packages/sandbox.md#构建工具的缓存) |
+| 网络访问的审批，`request_permissions` 申请的域名 | P1 | 已完成 | sandbox 的[网络访问的审批](packages/sandbox.md#网络访问的审批) |
+| agent 进程的重启：从 session 记录重建发给模型的历史（切换沙盒模式、取消超时、异常退出、Linux 上发现新仓库） | P1 | 进行中 | agent-host 的 [agent 进程的重启](packages/agent-host.md#agent-进程的重启) |
 | 三种模型协议的转换、模型清单、原样重放、拒绝和回退的作废事件、前缀校验失败的恢复 | P1 | 已完成 | [api](packages/api.md) |
 | token 估算（算 `max_tokens`、判断上下文超长） | P1 | 已完成 | api 的 [token 计数](packages/api.md#token-计数) |
 | 模型测试的每次运行费用账本、按 `api` 的错误类别重跑一次、不稳定测试的报告 | P1 | 已完成 | overview 的 [CI 和真实模型测试](overview.md#ci-和真实模型测试) |
 | loop，`read`、`edit`、`write`、`shell` 和 `request_permissions` 工具 | P1 | 已完成 | agent-runtime 的[工具执行](packages/agent-runtime.md#工具执行) |
-| 规则文件（`AGENTS.md` 等）的加载、系统指令和会话开始的上下文消息 | P1 | 未开始 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
-| Host；CLI 的交互和非交互模式，P1 的子命令和会话内命令 | P1 | 未开始 | agent-host 的 [CLI](packages/agent-host.md#cli) |
-| task 的开始、结束和取消，工具调用的处理 | P1 | 进行中 | agent-host 的 [task 的开始、结束和取消](packages/agent-host.md#task-的开始结束和取消)和[工具调用的处理](packages/agent-host.md#工具调用的处理) |
+| 可选工具 `grep`、`ls`（用 `[tools]` 打开） | P1 | 已完成 | agent-runtime 的[工具](packages/agent-runtime.md#工具)；agent-host 的[配置项](packages/agent-host.md#配置项) |
+| 规则文件（`AGENTS.md` 等）的加载、系统指令和会话开始的上下文消息 | P1 | 已完成 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
+| Host；CLI 的交互和非交互模式，P1 的子命令和会话内命令 | P1 | 已完成 | agent-host 的 [CLI](packages/agent-host.md#cli) |
+| task 的开始、结束和取消，工具调用的处理 | P1 | 已完成 | agent-host 的 [task 的开始、结束和取消](packages/agent-host.md#task-的开始结束和取消)和[工具调用的处理](packages/agent-host.md#工具调用的处理) |
 | 项目身份、`user_id`、目录位置、工作区锁和进程登记表 | P1 | 已完成 | agent-host 的[项目身份](packages/agent-host.md#项目身份)、[目录位置](packages/agent-host.md#目录位置)和 [session 的打开和关闭](packages/agent-host.md#session-的打开和关闭) |
 | 密钥检测和脱敏（`redaction/`），用于日志、错误信息、session 导出和记忆 | P1 | 已完成 | agent-host 的[模块](packages/agent-host.md#模块) |
 | 凭据：macOS 钥匙串，显式指定的文件或环境变量 | P1 | 已完成 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
-| 配置的分层和配置项 | P1 | 进行中 | agent-host 的[配置的分层](packages/agent-host.md#配置的分层) |
+| 配置的分层和配置项 | P1 | 已完成 | agent-host 的[配置的分层](packages/agent-host.md#配置的分层) |
 | session 记录的存储（含每条消息在目标协议里的原文） | P1 | 已完成 | session-store 的[存储格式](packages/session-store.md#存储格式)和[事件格式](packages/session-store.md#事件格式) |
 | 上下文超长时明确报错停止 | P1 | 已完成 | agent-runtime 的[上下文](packages/agent-runtime.md#上下文) |
-| sandbox 专项评测、一组小规模编码题（SWE-bench Pro V2 的 60 道） | P1 | 未开始 | evaluation 的[首批 benchmark](packages/evaluation.md#首批-benchmark)和 [Sandbox 专项评测的运行环境](packages/evaluation.md#sandbox-专项评测的运行环境) |
+| sandbox 专项评测、一组小规模编码题（SWE-bench Pro V2 的 60 道） | P1 | 进行中 | evaluation 的[首批 benchmark](packages/evaluation.md#首批-benchmark)、[Sandbox 专项评测的组成](packages/evaluation.md#sandbox-专项评测的组成)和 [Sandbox 专项评测的运行环境](packages/evaluation.md#sandbox-专项评测的运行环境) |
 | 每个 run 的费用、请求次数和时间上限 | P1 | 已完成 | agent-host 的[预算](packages/agent-host.md#预算) |
-| 切换模型和推理强度 | P1 | 未开始 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
-| 后台命令和监视，后台通知的唤醒 | P1 | 未开始 | agent-runtime 的[后台命令](packages/agent-runtime.md#后台命令) |
-| steering 和 follow-up | P1 | 未开始 | agent-runtime 的[运行中的用户输入](packages/agent-runtime.md#运行中的用户输入) |
-| `@` 提及文件和粘贴图片，`read` 读图片 | P1 | 未开始 | agent-host 的[提及文件和附件](packages/agent-host.md#提及文件和附件) |
+| 切换模型和推理强度 | P1 | 已完成 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
+| 后台命令和监视，后台通知的唤醒 | P1 | 已完成 | agent-runtime 的[后台命令](packages/agent-runtime.md#后台命令) |
+| steering 和 follow-up | P1 | 已完成 | agent-runtime 的[运行中的用户输入](packages/agent-runtime.md#运行中的用户输入) |
+| `@` 提及文件和粘贴图片，`read` 读图片 | P1 | 已完成 | agent-host 的[提及文件和附件](packages/agent-host.md#提及文件和附件) |
 | skills、MCP、插件的接入，`skill_load` 工具；插件的安装、更新和启用 | P2 | 未开始 | [skills](packages/skills.md)、[mcp](packages/mcp.md)、[agent-plugins](packages/agent-plugins.md)；agent-host 的[扩展的存放和安装来源](packages/agent-host.md#扩展的存放和安装来源) |
 | MCP 的 OAuth 授权、远程 server 的静态令牌、本地 server 密钥的 mask | P2 | 未开始 | mcp 的[授权](packages/mcp.md#授权)；agent-host 的[插件之外的 `mcp.json`](packages/agent-host.md#插件之外的-mcpjson) |
 | OAuth 客户端元数据文件在 `https://ospreycode.dev/oauth/client-metadata.json` 上线 | P2 | 未开始 | mcp 的[授权](packages/mcp.md#授权) |
@@ -71,6 +72,7 @@
 | 单文件可执行程序、Intel Mac、musl | 见 overview | overview 的[语言和运行环境](overview.md#语言和运行环境)和[支持的平台](overview.md#支持的平台) |
 | Linux 桌面的系统凭据库 | P1 的 Linux 只用于评测容器和 CI。Linux 桌面列入支持时接 Secret Service，并固定后端，不让它悄悄改用重启即丢失的 keyutils | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | Linux 上的 `unix_sockets` 申请、跨命令的本机端口访问和访问宿主上的本地服务 | seccomp 不能按路径放行 Unix socket；每个命令沙盒有自己的网络命名空间和 127.0.0.1。sandbox-runtime 在 Linux 上支持按路径放行 socket 后加入 `unix_sockets`；支持多个命令沙盒共用网络命名空间、并能按端口放行宿主的 127.0.0.1 后加入后两项 | sandbox 的[本机服务和本地端口](packages/sandbox.md#本机服务和本地端口) |
+| 命名权限配置里更深的嵌套：重新放开读的路径里禁止的目录里再放开；可写路径里设成只读的目录（和其中的密钥位置）里再放开写 | sandbox-runtime 的读取规则只有"禁止、放开、再禁止"三层，写入规则里禁止优先于允许，这些写法现在加载报错。sandbox-runtime 支持按最具体的路径匹配，或者换用能这样匹配的后端后加入 | sandbox 的[命名权限配置](packages/sandbox.md#命名权限配置) |
 | 用 ChatGPT 账号登录（P5 之前） | P2 的 MCP OAuth 已提供令牌存储、刷新加锁和回环回调，并且这项服务结束预览、刷新失败的问题解决后，在 P5 加入；预览版只能调用 Responses API 的一个子集 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | Claude 订阅登录 | Anthropic 的条款不允许 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | 输出凭据的命令（`apiKeyHelper` 一类） | 要在沙盒外以用户的全部权限运行程序。接入需要短期令牌的服务（云厂商、网关）时，照 Codex 的 `model_providers.<id>.auth` 加入：程序加参数数组、不经 shell，只认用户级配置和启动参数 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |

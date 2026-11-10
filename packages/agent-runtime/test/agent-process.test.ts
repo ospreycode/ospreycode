@@ -10,10 +10,11 @@ import {
 	ChannelRequestError,
 	type HostChannel,
 	openHostChannel,
+	type RequestMessage,
 	type TaskEndParams,
 	version,
 } from "@ospreycode/agent-runtime";
-import type { AssistantMessage, Message } from "@ospreycode/api/protocol";
+import type { AssistantMessage } from "@ospreycode/api/protocol";
 import { afterEach, beforeEach, expect, test } from "vitest";
 
 const usage = {
@@ -69,6 +70,7 @@ afterEach(() => {
 
 function serveInitialize(): Promise<string> {
 	const reported = Promise.withResolvers<string>();
+	host.on("record/append", () => {});
 	host.handle("initialize", async (params) => {
 		reported.resolve(params.version);
 		const config: AgentConfig = {
@@ -105,7 +107,7 @@ function waitForTaskEnd(): Promise<TaskEndParams> {
 test("握手报告包版本，task 经通道请求模型、执行工具后报告完成", async () => {
 	const reported = serveInitialize();
 	const ended = waitForTaskEnd();
-	const requests: Message[][] = [];
+	const requests: RequestMessage[][] = [];
 	host.handle("model/request", async ({ message_id, request }) => {
 		requests.push(request.messages);
 		if (requests.length === 1) {
@@ -156,13 +158,15 @@ test("握手报告包版本，task 经通道请求模型、执行工具后报告
 	expect(toolCalls).toEqual(['shell {"command":"ls"}']);
 	expect(requests).toHaveLength(2);
 	const second = requests[1] ?? [];
+	// 系统指令、会话开始的上下文消息、用户的输入，然后是这一轮的回复和工具结果
 	expect(second.map((m) => m.role)).toEqual([
 		"system",
+		"user",
 		"user",
 		"assistant",
 		"tool_result",
 	]);
-	expect(second[3]).toMatchObject({
+	expect(second[4]).toMatchObject({
 		call_id: "call_1",
 		tool_call_id: "tc-1",
 		is_error: false,

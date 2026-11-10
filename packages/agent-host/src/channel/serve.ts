@@ -1,12 +1,20 @@
 import type {
 	AgentConfig,
+	BlobReadParams,
+	BlobReadResult,
 	Empty,
 	HandlerContext,
 	HostChannel,
+	ImagePutParams,
+	ImageReadParams,
+	ImageReadResult,
 	InitializeParams,
+	InputTakeResult,
 	ModelRequestParams,
 	ModelRequestResult,
 	RecordAppendParams,
+	RecordReadParams,
+	RecordReadResult,
 	RuntimeRequests,
 	TaskEndParams,
 	TaskEndResult,
@@ -34,6 +42,11 @@ export interface ChannelHandlers {
 	): Promise<ToolCallRegisterResult>;
 	toolCallComplete(params: ToolCallCompleteParams): Promise<Empty>;
 	recordAppend(params: RecordAppendParams): void;
+	inputTake(): Promise<InputTakeResult>;
+	recordRead(params: RecordReadParams): Promise<RecordReadResult>;
+	blobRead(params: BlobReadParams): Promise<BlobReadResult>;
+	imagePut(params: ImagePutParams): Promise<Empty>;
+	imageRead(params: ImageReadParams): Promise<ImageReadResult>;
 }
 
 /** 在 Host 一侧的通道上注册 runtime 的全部操作。 */
@@ -56,4 +69,9 @@ export function serveChannel(
 		handlers.toolCallComplete(params),
 	);
 	channel.on("record/append", (params) => handlers.recordAppend(params));
+	channel.handle("input/take", () => handlers.inputTake());
+	channel.handle("record/read", (params) => handlers.recordRead(params));
+	channel.handle("blob/read", (params) => handlers.blobRead(params));
+	channel.handle("image/put", (params) => handlers.imagePut(params));
+	channel.handle("image/read", (params) => handlers.imageRead(params));
 }

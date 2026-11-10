@@ -32,6 +32,7 @@
 	},
 	"dependencies": {
 		"@ospreycode/api": "0.1.0",
+		"@silvia-odwyer/photon-node": "0.3.4",
 		"typebox": "1.4.3"
 	},
 	"devDependencies": {

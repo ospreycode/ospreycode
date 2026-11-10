@@ -1,0 +1,1 @@
+FROM registry.example/coding-tasks:instance_example__counter-3333333333333333333333333333333333333333-vnan

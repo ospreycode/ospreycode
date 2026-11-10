@@ -1,0 +1,1 @@
+FROM registry.example/coding-tasks:instance_example__greeter-2222222222222222222222222222222222222222-vnan

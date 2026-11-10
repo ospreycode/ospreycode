@@ -23,7 +23,7 @@ agent-host/
   diagnostics/  调试日志，经过 redaction/ 去掉凭据：`data/logs/<UTC 日期>.log`，一行一个 JSON，每行一次追加写入
 ```
 
-`redaction/` 用已知密钥格式的正则（`sk-`、`ghp_`、`AKIA` 前缀、PEM 块、JWT）加高熵字符串判断，Host 读进内存的凭据另按原文替换。命中时：日志、错误信息（`error`、`warning` 事件和 `task.ended` 的 `error`）和 session 导出里替换成 `[REDACTED]`；记忆候选直接拒绝；session 记录原样保存，存储文件只对当前用户可读。
+`redaction/` 用已知密钥格式的正则（`sk-`、`ghp_`、`AKIA` 前缀、PEM 块、JWT）加高熵字符串判断，Host 读进内存的凭据另按原文替换。高熵判断按 `/` 分段看文件路径（两个以上 `/`、平均每段不超过 16 个字符）：整条路径的熵会超过阈值，报错里的路径不能被换掉。命中时：日志、错误信息（`error`、`warning` 事件和 `task.ended` 的 `error`）和 session 导出里替换成 `[REDACTED]`；记忆候选直接拒绝；session 记录原样保存，存储文件只对当前用户可读。
 
 ## Host 负责
 
@@ -64,15 +64,25 @@ agent-host/
   - Host 让通道上未完成的请求失败，记进程事件，并按取消的方式收尾这个 run：结束它的前台命令沙盒和越界进程，把挂起的批准和网络询问答为拒绝。
   - 已登记、还没有结果的工具调用由 Host 补上结果：Host 代为执行的取实际结果，未结束的记 `cancelled`；文件工具按登记的 `{path, old_sha256, new_sha256}` 核对磁盘，是新内容记成功，是旧内容记失败，都不是记结果不确定。
   - run 记 `failed` 并带退出码或信号，follow-up 列表暂停，后台命令不动。用户下一次输入时按下文的重启路径起新的 agent 进程再开始 task；同一 session 连续 3 次异常退出、中间没有正常结束的 task，就关闭 session 并报错。
+  - "正常结束的 task"指 runtime 自己报告了结束的 task，不论结果：它能报告就说明进程在正常工作。task 运行中退出发 `error`，空闲时退出只发 `warning`；它的 `message` 以原因开头（task 运行中退出时就是 `task.ended` 的 `error`），另起一行接着 agent 进程输出的末尾，前端据此不把同一个原因显示两遍。连续 3 次后关闭 session 的原因，崩溃记 `agent_exited`，协议错误记 `error`。Host 自己关闭 session（连续 3 次异常退出、重启失败）之前都先发一条写明 session 已关闭的 `error`，前端不用再按 `session.ended` 的原因另写一句。
+  - Host 自己结束 run 时（异常退出、取消超时、关闭 session），先等这个 run 里被中止的模型请求和 Host 代为执行的工具调用各自写下结果，再记 `task.ended`：结果和用量都记在 task 结束之前，重建历史时才对得上。
 
 ### agent 进程的重启
 
 切换沙盒模式（见 sandbox 的[分层](sandbox.md#分层)）、取消后 runtime 5 秒内没有结束 task、异常退出之后、Linux 上发现新仓库（见 sandbox 的[命令的执行](sandbox.md#命令的执行)）、`/reload`，都走同一条重启路径，P1 交付。P3 的恢复、回退和分叉也从这个入口进入：回退时 `resume` 指向新的当前位置，分叉出的 session 第一次启动时 `resume` 指向父 session 里的分叉点。
 
 - 重启只发生在 session 空闲时：切换沙盒模式和发现新仓库本来就在两个 task 之间；取消超时和异常退出时，Host 已经把 run 结束（`cancelled` 或 `failed`），并给未完成的工具调用补上了结果。所以重启时没有执行中的工具调用和待批准的请求，批准也只对应一个 task，不用处理 P3 恢复里结果不确定的调用。
+- **发现新仓库**（只在 Linux 上、`workspace-write` 模式）：准备沙盒之前记下工作区里受保护的路径（`sessions/protected-watch.ts`，和包装时相同的扫描），runtime 报告 task 结束后再扫一遍。`.git` 的集合变了，就按当前设置重新准备沙盒再重启 agent 进程：agent 进程的启动命令是包装时定下的，只换进程换不了保护范围。下一个 task（包括 follow-up）等检查和重启做完才开始；这段时间里的 `/sandbox`、`/reload` 也等它做完再执行，不当成 session 在忙：用户看到的是 task 已经结束。新出现的其他受保护路径和扫描超时各发一条 `warning`。Host 自己结束的 run（取消超时、异常退出）不另外扫描：比较的基准是准备沙盒时记下的，之后第一个由 runtime 报告结束的 task 会发现变化；`read-only` 模式下 agent 沙盒写不了工作区，不用比较。
 - Host 结束旧的 agent 进程，按当前设置启动新的，新进程重新走 `initialize`。响应里带 `resume: {run_id, seq}`，runtime 从 session 记录重建发给模型的历史（当前路径上最近一次压缩之后的内容）。
 - `agent_id` 不变，进程更替只记进程事件。重启期间的用户输入排队，`initialize` 完成后作为新 task 开始。命令沙盒、后台命令和 MCP server 由 Host 启动，不受影响。
 - 重启失败就按正常关闭流程收尾 session，退出码 1，提示重新启动 CLI（P3 起可以恢复这个 session）。
+- **重建用的记录**：模型代理收到每次模型请求时，把请求里还没记过的 system、user 和工具结果消息各记一条 `message.sent` 事件（按 `message_id` 判断，只存储，不发给前端），模型的回复照旧是 `message.completed`。runtime 用通道的 `record/read` 读出当前路径上的这些事件，按 agent-runtime 的[上下文](agent-runtime.md#上下文)里的规则重建。在模型代理这一处记，loop 发给模型的每一种消息（上下文消息、steering、后台通知、系统指令的补丁）都有记录，不用逐种上报；记的是实际发出的内容（请求里只带引用的图片先换回图片块，见 agent-runtime 的[消息格式](agent-runtime.md#消息格式)；图片的字节存成大内容，见[提及文件和附件](#提及文件和附件)），重建出的前缀和原来相同，提示缓存不失效。
+- 没有发给过模型的输入不在重建的历史里：task 在第一次模型请求到达 Host 之前就结束时，它的输入只留在 `task.started` 里。模型没有见过它，用户重新输入即可。
+- **进程事件**：`process.started` 和 `process.exited` 带 `kind` 和 `pid`，退出另带退出码和信号。它们不属于任何 task，记在每个 session 自己的一个 run 里（见 session-store 的[事件格式](session-store.md#事件格式)），对外事件只带 `run_id`；沙盒模式的切换 `sandbox_mode.changed`、审批策略的切换 `approval_policy.changed`（都带 `from`、`to`）也记在这个 run 里。握手没有完成的进程不记，它的失败由打开 session 或重启的错误报告。
+  - 记的是随 session 存在的进程，每个进程的启动和退出各记一条，按 `kind` 区分：agent 进程是 `agent`，沙盒的离线辅助进程和命令辅助进程是 `helper`（见 sandbox 的[辅助进程](sandbox.md#辅助进程)；两者不再细分，要对应到具体的进程看 `pid`）。只属于一次工具调用的进程（命令沙盒、越界进程、apply-edits、为一条命令单独启动的辅助进程）由这次调用的事件记录，不另记进程事件。
+  - 辅助进程在 `session.started` 之前启动，它们的 `process.started` 记在 `session.started` 之后、agent 进程的之前；没能打开的 session 不记。关闭 session、换沙盒时停掉的辅助进程照常记 `process.exited`，都在 `session.ended` 之前。
+- **取消超时**时 Host 先结束不响应的进程，再结束 run，然后启动新的进程：`task.ended` 发出时已经在重启，这时到来的输入排在新进程握手之后。
+- **切换沙盒模式和 `/reload`** 先按新的设置把沙盒准备好，再结束旧的 agent 进程和旧的命令辅助进程：准备失败（配置有错、没有沙盒后端）时报错，session 照旧用原来的设置。会话中切换过的设置（沙盒模式）和启动参数排在同一层，`/reload` 重新读配置时不被配置文件盖掉；重新读到的配置要把沙盒模式换成 `danger-full-access` 时拒绝，它只能在启动时指定。
 
 ## 标识
 
@@ -177,10 +187,10 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 |---|---|---|
 | `model` | 默认模型，取模型清单里的 ID；没有内置默认值，各层都没写时报错 | 忽略 |
 | `reasoning_effort` | 推理强度：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，默认 `medium` | 可以覆盖 |
-| `sandbox_mode` | `read-only`、`workspace-write`、`danger-full-access` 或命名权限配置的名字；`danger-full-access` 只能由启动参数指定 | 只能设 `read-only` |
+| `sandbox_mode` | `read-only`、`workspace-write`、`danger-full-access` 或命名权限配置的名字；`danger-full-access` 只能由启动参数指定 | 只能设 `read-only`；用户级选用了命名权限配置时忽略（见 sandbox 的[命名权限配置](sandbox.md#命名权限配置)） |
 | `approval_policy` | `on-request`、`never`、`granular` | 只能改严 |
 | `[approval_granular]` | `granular` 下七个类别各自是否询问（见 sandbox 的[审批策略](sandbox.md#审批策略)），合并后要写全 | 只能关闭类别 |
-| `[permissions.<名字>]` | 命名权限配置（见 sandbox 的[沙盒模式](sandbox.md#沙盒模式)） | 忽略 |
+| `[permissions.<名字>]` | 命名权限配置（见 sandbox 的[命名权限配置](sandbox.md#命名权限配置)） | 忽略 |
 | `[environment]` | 额外传给沙盒的环境变量；不能设 Host 自己设置的 `HOME`、`SHELL`、`TMPDIR`、`TERM`、`NO_COLOR`、`OSPREYCODE_WORKSPACE` 和缓存变量 | 忽略 |
 | `[budget]` | `max_cost_usd`、`max_requests`、`max_duration`（写成 `"30m"` 这样的时长，单位 `s`、`m`、`h`），写 `"none"` 表示不设（见[预算](#预算)）；启动参数 `--max-cost`、`--max-requests` 覆盖前两项 | 只能调低 |
 | `deny_read`、`deny_write` | 额外禁止读、写的路径，各层取并集 | 可以设，路径只能在仓库之内 |
@@ -189,8 +199,8 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 | `[mcp_clients.<标签>]` | 预先注册的 MCP OAuth 客户端：`client_id`，可选的 `callback_port`（P2，见 mcp 的[授权](mcp.md#授权)） | 忽略 |
 | `proxy` | 访问模型服务和远程 MCP server 用的 HTTP 代理；不设时取 Host 启动环境里的 `HTTPS_PROXY`；由 CLI 入口应用（见 overview 的[语言和运行环境](../overview.md#语言和运行环境)） | 忽略 |
 | `session_retention_days` | session 记录的保存天数，默认 30，最小 1（P3，见 session-store 的[保存期限](session-store.md#保存期限)）；启动参数也不能改 | 忽略 |
-| `[tools]` | 可选工具的开关（如 `grep`、`ls`） | 可以覆盖 |
-| `[ui]` | 显示设置 | 可以覆盖 |
+| `[tools]` | 可选工具的开关，写成 `<工具名> = true` 或 `false`。可选工具是 runtime 提供、默认不启用的工具（如 `grep`、`ls`）；写了默认启用的工具或不存在的工具名时报错：默认工具关掉后 agent 没法工作。打开的可选工具排在默认工具之后 | 可以覆盖 |
+| `[ui]` | 显示设置：`show_reasoning` 是否显示模型的推理内容，默认 `true`。Host 只读取和合并，交给前端使用 | 可以覆盖 |
 | `[server_tools]` | 模型服务自带的服务端工具（P5，见 api 的[在系统中的位置](api.md#在系统中的位置)） | 只能关闭 |
 
 ## 凭据和登录
@@ -227,22 +237,22 @@ task 的开始和结束都由 Host 决定，runtime 只报告 task 结束。新�
 - **后台通知的唤醒**：session 空闲时，后台命令结束或监视收到事件，Host 开始一个新的 task 处理它，来源标为后台通知，不继承之前 task 的批准；几条排队的通知合并进一次模型调用。
   - follow-up 列表里也有条目时，先开始 follow-up。
   - 连续由后台通知开始、中间没有用户输入的 task 最多 3 个，之后到达的通知只在 CLI 显示，等用户下一次输入时一次交给模型；唤醒 task 运行期间到达的通知并入它，不再排新的唤醒。
-  - 不唤醒的情况：follow-up 列表暂停期间（自动继续会违背取消的意图，或反复撞上同一个错误、绕过预算）；唤醒开始的 task 有调用被内置 `forbidden` 规则或 hook 阻止之后，直到用户下一次输入；以及用户操作（切换沙盒模式、在 CLI 里停止后台命令）导致的结束。这些通知照常记录并在 CLI 显示，等用户下一次开始 task 时追加交给模型。
+  - 不唤醒的情况：follow-up 列表暂停期间（自动继续会违背取消的意图，或反复撞上同一个错误、绕过预算），列表里没有条目时，task 的 `outcome` 不是 `completed` 之后也按暂停处理，直到用户下一次输入；唤醒开始的 task 有调用被内置 `forbidden` 规则或 hook 阻止之后，直到用户下一次输入；以及用户操作（切换沙盒模式、在 CLI 里停止后台命令）导致的结束。这些通知照常记录并在 CLI 显示，等用户下一次开始 task 时追加交给模型。
   - 通知怎样进入上下文，见 agent-runtime 的[后台命令](agent-runtime.md#后台命令)。
 - **取消**：Host 收到取消先自己做——结束本 run 的前台命令沙盒和越界进程、取消本 run 进行中的 MCP 调用、把挂起的批准和网络询问答为拒绝、把挂起的 elicitation 答为 `cancel`、以 `cancelled` 结束挂起的模型请求——再发 `run/cancel`。runtime 5 秒内没有报告 task 结束，Host 就重启 agent 进程（见 [agent 进程的重启](#agent-进程的重启)），run 记 `cancelled`。
   - 取消时还没插入的 steering 立即交给模型，沿用同一个 task 和 run 接着进行（见 agent-runtime 的[运行中的用户输入](agent-runtime.md#运行中的用户输入)）；取消超时、重启了 agent 进程时 run 已经结束，这些 steering 放回输入框。
-  - session 空闲或 run 已取消后，runtime 仍发来需要进行中 task 的请求，以 `no_active_task` 错误拒绝；取消后迟到的通知丢弃并记一次事件。
+  - session 空闲或 run 已取消后，runtime 仍发来需要进行中 task 的请求，以 `no_active_task` 错误拒绝；取消后迟到的通知丢弃并记一次事件。例外是 runtime 报告它已经做了的事：输入插入的位置（`input.inserted`）和已告诉模型的系统指令（`instructions.recorded`）在 run 取消之后、task 结束之前到的照常记录，前者见 agent-runtime 的[运行中的用户输入](agent-runtime.md#运行中的用户输入)，后者 runtime 只报告一次，丢了的话之后重启时就没有它可以重建历史。
 
 ## 工具调用的处理
 
 - **顺序固定**：登记（Host 分配 `tool_call_id`）→ 工具调用前 hooks → Permission（含询问）→ 快照（P3 起）→ 执行。被 hook 阻止或被拒绝的调用不询问、不做快照。
 - **两种请求**：Host 代为执行的工具（shell、MCP 工具、越界动作）用 `tool_call/run`，结果 Host 直接知道；runtime 一侧执行的工具（文件工具、`skill_load`、`memory_*`）用 `tool_call/register` 登记、`tool_call/complete` 提交结果（见 agent-runtime 的[通道](agent-runtime.md#通道)）。`tool_call.started` 和 `tool_call.completed` 一律由 Host 写入，事件格式由 agent-runtime 的 `contracts/` 定义。
 - **登记的检查**：没有启用的工具不允许执行。文件改动的路径要是规范化的绝对路径、只有编辑工具能登记，否则按协议错误处理；路径不在 agent 沙盒的可写根内的不允许执行。task 结束时（正常结束、取消和异常退出都一样）登记过、还没有提交结果的调用，由 Host 按[异常退出](#agent-进程的启动和结束)的规则补上结果，写在 `task.ended` 之前。Host 核对磁盘时不阻塞地打开文件、确认是普通文件再读：路径来自沙盒内。
-- **结果的状态**：成功、失败、运行中（转入后台）、已取消、超时、`interrupted`（结果不确定：异常退出时核对不上的文件工具、恢复时选择跳过的调用）、`denied`。`denied` 带 `reason`（`policy`、`user`、`hook`、`forbidden_rule`）和 `message`（用户或 hook 写的原文）；批准对话框允许用户在拒绝时输入一句话给模型。
+- **结果的状态**：成功、失败、运行中（转入后台）、已取消、超时、`interrupted`（结果不确定：异常退出时核对不上的文件工具、恢复时选择跳过的调用）、`denied`。`denied` 带 `reason`（`policy`、`user`、`hook`、`forbidden_rule`）和 `message`（用户或 hook 写的原文）；批准对话框允许用户在拒绝时输入一句话给模型。`reason` 是 `policy` 时另带 `categories`，列出这次调用要询问的全部类别（审批策略不询问其中至少一类；等着回答时被新策略拒绝的也一样）：取值是 `granular` 的类别名，其中危险命令判断单独记作 `dangerous_command`，`sandbox_approval` 在这里只表示越界申请。问不问仍然按 `granular` 的类别决定，分开记是因为评测报告要分别统计这两种原因（见 evaluation 的[评测时的权限配置](evaluation.md#评测时的权限配置)）。
 - **询问**：Host 把权限申请作为事件交给前端，再把用户的决定交给 Permission 重新检查。等待批准期间，同一轮里已获准、互不影响的调用可以继续。批准和取消只作用于对应的 run 和 tool call。
 - **切换审批策略**时重新评估全部挂起的询问，新策略下不该问的立即答为 `denied_by_policy`。
 - **前台命令的输出**：完整输出由 Host 写到 `output/<session>/<tool_call_id>`，经通道只流回上限以内的部分，结果带文件路径和总长度，模型用读文件工具续读，和后台命令同一套。交给模型的输出上限 32 KiB，超出时保留开头和结尾各一半，中间写明省略的字节数和文件路径。
-- **前台命令的进程**：命令退出、超时或被取消时，Host 结束它的整个进程组，留在后台的进程不跟着这条命令继续运行；要一直运行的进程用后台命令启动。
+- **前台命令的进程**：命令退出或被取消时，Host 结束它的整个进程组，留在后台的进程不跟着这条命令继续运行；要一直运行的进程用后台命令启动。进程组结束之后输出的管道最多再等 2 秒，到时还被别的进程占着就由 Host 关掉，结果里写明有进程留下、它之后的输出不再读：只有脱离了进程组又没被沙盒结束的进程会这样占着（不启用沙盒时结束不了它们，见 sandbox 的[分层](sandbox.md#分层)），等它退出会让这次调用、后台命令的结束和 session 的关闭都没有期限。后台命令结束、被停止和 session 关闭时同样处理。到了时限还没退出的命令整个转入后台继续运行，后台命令已到上限时才按超时结束（见 agent-runtime 的[后台命令](agent-runtime.md#后台命令)）。
 - runtime 请求配置之外的模型按协议错误处理：它只会请求启动配置里的模型。转换模块抛出的错误（响应里出现没有列出的内容）让这次模型请求以"请求格式错误"失败，不让通道失效。
 - 单条命令的沙盒启动失败记 `failed`、原因 `sandbox_launch`；只有后端能力检查失败才关闭 session。
 - MCP 工具的声明属性由 Host 决定：按不只读、不能安全重复、不能和其他调用同时执行处理，不采信 server 的标注。
@@ -273,6 +283,7 @@ P3 交付。恢复由 Host 发起、runtime 执行，入口和 [agent 进程的�
 | 状态 | 恢复后 |
 |---|---|
 | 发给模型的历史 | 按 session 记录重建：当前路径上最近一次压缩之后的内容 |
+| Host 留着的图片 | 不用另外恢复：runtime 用 `record/read` 读回路径上的 `message.sent` 时，Host 从大内容取回里面的图片收进来、换成通道上的引用交回（见 agent-runtime 的[消息格式](agent-runtime.md#消息格式)） |
 | 模型和推理强度 | 按路径上的记录 |
 | 沙盒模式和审批策略 | 用这次启动时的设置，不从历史恢复 |
 | 中断前给出的批准 | 一律失效，需要时重新批准；界面说明这一点 |
@@ -402,32 +413,37 @@ Hooks 在固定时机运行用户配置的命令，检查或补充 agent 的行�
 CLI 是单独的 `cli` 包，只依赖 `agent-host` 的 `sdk/` 入口和终端界面库，用 esbuild 按进程入口打包（见 overview 的[语言和运行环境](../overview.md#语言和运行环境)）。Evaluation 直接调用 `sdk/`，不模拟终端操作。
 
 - **交互模式**：对话式输入任务，实时显示模型输出和工具执行过程，在终端里批准或拒绝动作（显示将要执行的具体内容，见 sandbox 的[审批策略](sandbox.md#审批策略)），查看代码改动。
-- **非交互模式**：一条命令执行一个任务，输出文本或 JSON 事件流，供脚本和 evaluation 使用。审批策略固定为 `never`，需要批准的动作只有被权限规则放行才执行，其余直接拒绝。主任务结束时还有它启动的后台命令在运行，就等它们结束或到达各自的时限（非交互运行默认 10 分钟、最长 2 小时，见 agent-runtime 的[后台命令](agent-runtime.md#后台命令)），再处理一轮通知后退出；处理通知的 task 结束后不再等待，剩余后台命令直接结束。主任务的 `outcome` 不是 `completed` 时，结束后台命令后直接退出。退出码取主任务的 `outcome`，通知 task 的结果只在事件里。
+- **非交互模式**：一条命令执行一个任务，输出文本或 JSON 事件流，供脚本和 evaluation 使用。审批策略固定为 `never`，需要批准的动作只有被权限规则放行才执行，其余直接拒绝。主任务结束时还有它启动的后台命令在运行，就等它们结束或到达各自的时限（非交互运行默认 10 分钟、最长 2 小时，见 agent-runtime 的[后台命令](agent-runtime.md#后台命令)），再处理一轮通知后退出；处理通知的 task 结束后不再等待，剩余后台命令直接结束。主任务的 `outcome` 不是 `completed` 时，结束后台命令后直接退出。退出码取主任务的 `outcome`，通知 task 的结果只在事件里。等的时候被信号或 `--timeout` 打断的，结束后台命令和处理通知的 task 后退出，`session.ended` 的 `outcome` 记 `cancelled` 或 `budget_exceeded`，退出码相应是 130/143 或 3，主任务的 `task.ended` 仍是 `completed`：调用方要知道整个运行没有做完。CLI 用 SDK 的 `session.whenIdle()` 判断 Host 还会不会为通知开始 task，不靠事件的先后猜：Linux 上 task 结束和下一个 task 开始之间隔着一次扫描。
 - **运行中的输入**：task 运行时，按 Enter 发送 steering，按 Alt+Enter 加入 follow-up 列表。界面上分开显示等待插入的 steering 和 follow-up 列表，条目可以修改、调整顺序、删除和取回到输入框。插入的规则见 agent-runtime 的[运行中的用户输入](agent-runtime.md#运行中的用户输入)。
 - **切换模型的按键**（照 pi）：Ctrl+P、Shift+Ctrl+P 在可用的模型之间向前、向后循环切换，Shift+Tab 循环切换推理强度；切换前的检查和 `/model` 相同。
 - **取消**：Ctrl+C 先取消当前动作，会话保留；再按一次才退出。
 - **退出码**：0 完成、1 失败、2 参数或配置错误、3 超出预算、130/143 被信号取消。
+- **命令行的解析**：子命令写在命令行的最前面，其余的参数都归它；开头的词不是子命令的名字时是根命令，这个词就是 `PROMPT`，这样任务里出现 `doctor` 这样的词不会被当成命令。解析、`--help` 和补全脚本都从同一张命令表生成，用 Node 自带的 `parseArgs`，不加解析参数的依赖。命令行写错（未知的选项、缺少或多余的参数）时把原因和查看帮助的办法写到 stderr，退出码 2。
+- **非交互模式的文本输出**：不带 `--json` 时 stdout 只有主任务最后一条回复的文本，过程（每次工具调用、没有成功的工具结果、等待和结束的后台命令、警告和错误、没有完成时的原因）每条一行写到 stderr：管道的下游拿到的就是答案。主任务因 agent 进程异常退出而失败时，原因只在"没有完成"那一行写一次，随后那条错误只写原因之后的内容，没有就不写。
+- **路径参数**：`-o` 和 `--credential-file` 的相对路径相对运行命令时的当前目录，`--rules` 的相对路径相对 `-C` 之后的工作区：前两个是调用方自己的文件，权限规则文件通常跟着项目。`-o` 的文件在打开 session 之前先清空，路径写错时在任务开始之前就报出来；主任务结束时写入，没有回复时是空文件。
+- **代理**：配置的 `proxy` 顶替启动环境里的 `HTTPS_PROXY`，`NO_PROXY` 照启动环境；只代理 https，本机上用 http 的模型服务不经代理。
+- **打包的布局**：四个入口文件（`ospreycode.js`、`agent.js`、`apply-edits.js`、`sandbox-helper.js`）在包的 `dist/bundle/` 里，CLI 入口按文件名找到其余三个，经 `createHost` 的 `agentEntry`、`applyEditsEntry`、`sandboxHelperEntry` 交给 Host。带原生模块的 `@napi-rs/keyring` 和 `@earendil-works/pi-tui` 不打包，运行时从 `node_modules` 加载：它们按自己文件的位置找随包发布的 `.node` 文件；两个都写在 `cli` 包自己的依赖里，入口文件直接加载它们。WASM（tree-sitter 的运行时和 bash 语法）和 sandbox-runtime 的 `vendor/` 二进制不能打进 JS，构建时复制到加载它们的代码找的位置：运行时在 `dist/bundle/`，bash 语法和 `vendor/` 二进制在包的 `vendor/`（入口文件往上两级，所以入口放在 `dist/bundle/` 而不是 `dist/`）。打进来的第三方包的名字、版本、许可证和许可证全文在构建时写进 `dist/THIRD-PARTY-LICENSES.txt`，按 esbuild 报告的输入文件找：写进去的正好是打进来的那些包。`apply-seccomp` 静态链接的 glibc 不是 npm 包，不写进这个文件：说明在二进制旁边的 `vendor/seccomp/NOTICE.txt`（构建时生成），LGPL-2.1 的文本在包的 `licenses/` 里（见 overview 的[许可证](../overview.md#许可证)）。
 
 ### 子命令
 
 | 命令 | 作用 | 阶段 |
 |---|---|---|
 | `ospreycode [PROMPT]` | 交互模式；`-C/--cd DIR`、`-m/--model`、`--sandbox MODE`、`--approval POLICY`、`--rules FILE`、`--credential-file ID=PATH`、`--credential-env ID=NAME` | P1 |
-| `ospreycode exec [PROMPT\|-]` | 非交互模式，审批策略固定 `never`；接受交互模式除 `--approval` 外的全部参数，另有 `--json`、`-o/--output-last-message FILE`（写主任务的最后一条回复）、`--max-cost`、`--max-requests`、`--timeout`（整个进程的时限，包括等后台命令的时间；到时取消，以 `budget_exceeded` 和退出码 3 结束） | P1 |
+| `ospreycode exec [PROMPT\|-]` | 非交互模式，审批策略固定 `never`；接受交互模式除 `--approval` 外的全部参数，另有 `--json`、`-o/--output-last-message FILE`（写主任务的最后一条回复）、`--max-cost`、`--max-requests`、`--timeout`（整个运行的时限，从主任务开始时算起，包括等后台命令和处理通知的时间；到时取消，以 `budget_exceeded` 和退出码 3 结束。主任务的时限交给 Host 作为它的时间上限，`task.ended` 记的才是 `budget_exceeded`；打开 session 另有自己的超时，不算在内） | P1 |
 | `ospreycode resume [SESSION_ID\|--last]` | 恢复会话，无参数时弹出选择器 | P3 |
 | `ospreycode exec resume <SESSION_ID\|--last> [PROMPT]` | 恢复会话并非交互地继续 | P3 |
-| `ospreycode session list` | 列出 session：标题取第一条用户输入的第一行；`--json`、`--all`（跨项目） | P1 |
+| `ospreycode session list` | 列出当前目录所在项目的 session，最近写过的在前：标题取第一条用户输入的第一行；`--json`（输出一个数组，字段和 SDK 的 `SessionInfo` 相同）、`--all`（跨项目）。只读 session 记录，不取工作区锁 | P1 |
 | `ospreycode session delete\|export\|rebuild` | 删除、导出 session 和重建索引；`--yes`（`delete` 不带它时确认） | P3 |
 | `ospreycode project list\|link` | 列出项目；把当前目录关联到已有项目 | P1 |
-| `ospreycode login [--service ID] [--with-api-key]`、`login status`、`logout` | 模型服务的凭据（只在 macOS 上）。`login` 隐藏输入；`--with-api-key` 从标准输入读入密钥，不回显，供密钥管理服务的输出一次写进钥匙串 | P1 |
+| `ospreycode login [--service ID] [--with-api-key]`、`login status`、`logout [--service ID]` | 模型服务的凭据（`login`、`logout` 只在 macOS 上，其他平台报错并提示用 `--credential-file`）。`login` 隐藏输入；`--with-api-key` 从标准输入读入密钥，不回显，供密钥管理服务的输出一次写进钥匙串；标准输入不是终端时必须写它。不写 `--service` 时是用户级配置选用的默认模型所属的服务，没有选用默认模型时报用法错误：凭据按服务存，不替用户猜。`login status` 逐个服务（内置清单和用户级配置里的模型用到的）列出凭据取自启动参数、用户级配置还是钥匙串，接受 `--credential-file`、`--credential-env`，不输出凭据的值 | P1 |
 | `ospreycode mcp list\|get\|add\|remove\|token\|login\|logout` | MCP server 的配置、静态令牌和 OAuth；`token`、`login` 交互；`token`、`login`、`logout` 只在 macOS 上，Linux 用 `--credential-file mcp:<标签>=PATH` | P2 |
 | `ospreycode plugin add\|remove\|list\|update` | 插件的安装、卸载、更新；`add`、`remove`、`update` 要确认 | P2 |
 | `ospreycode trust list\|review` | 扩展的信任记录；`review` 交互 | P2 |
 | `ospreycode hooks list` | 列出生效的 hooks 和来源 | P2 |
-| `ospreycode cache clear [--project]` | 清空构建缓存 | P1 |
-| `ospreycode sandbox [--permissions NAME] -- <COMMAND...>` | 用同一套沙盒运行任意命令，调试权限配置；不询问，未放行的域名直接拒绝 | P1 |
-| `ospreycode doctor [--json]` | 检查环境：Node 版本、沙盒后端的能力检查、钥匙串是否可用、git 版本（快照要求 2.32 以上）、根目录的属主和权限、socket 路径长度、配置和权限规则文件能否加载 | P1 |
-| `ospreycode completion <shell>` | 输出补全脚本 | P1 |
+| `ospreycode cache clear [--project]` | 清空构建缓存；`--project` 只清当前目录所在项目的。只删缓存目录里的内容、留下目录本身（打开着的 session 的沙盒按路径放开它），不检查有没有打开的 session：正在运行的构建可能因此失败，重新运行就会重建缓存 | P1 |
+| `ospreycode sandbox [--permissions NAME] -- <COMMAND...>` | 在当前目录用同一套沙盒运行任意命令，调试权限配置；不询问，未放行的域名直接拒绝。`--permissions` 不写时按配置解析出的沙盒模式。配置按打开 session 的同一条路径解析和检查，所以要先选用模型，没有时报配置错误（退出码 2）：命名权限配置和权限规则的检查都在这条路径里，不另写一条不带模型的。标准输入输出直通，命令留在终端的前台进程组里；退出码是命令的退出码，被信号结束时是 128 加信号的编号。不取工作区锁，不写 session 记录，临时目录用完就删 | P1 |
+| `ospreycode doctor [--json]` | 检查环境：Node 版本、沙盒后端的能力检查、钥匙串是否可用、git 版本（快照要求 2.32 以上）、根目录的属主和权限、socket 路径长度、配置和权限规则文件能否加载。每项给出是否通过和说明，有一项不通过也接着查完，退出码 1；`--json` 输出一个数组。钥匙串只检查原生模块能加载、登录钥匙串的文件在，不读条目：钥匙串锁着时读取会弹出解锁的对话框 | P1 |
+| `ospreycode completion <shell>` | 输出补全脚本：bash、zsh、fish | P1 |
 
 不提供：`-c key=value` 通用覆盖、任何 `--dangerously-*` 开关、自更新（用 `npm install -g` 升级）、后台守护进程命令。
 
@@ -465,7 +481,8 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 - 每个 task 以 `task.ended` 结束，带 `outcome`：`completed`、`failed`、`budget_exceeded`、`cancelled`、`refused`（模型拒绝回答，见 api 的[拒绝和回退](api.md#拒绝和回退)）。
 - 任何模式下关闭 session 时都发 `session.ended`，带关闭原因（`closed`、`agent_exited`、`error`）；session 打开之前就失败（配置错误、工作区锁冲突、会话开始的 hooks 阻止、`initialize` 超时）时，只写一条带 `format_version`、不带 `session_id` 的 `error` 事件，退出码按上文：参数、配置、凭据和工作区的错误为 2，其余为 1。
 - 格式由本包的 `sdk/` 定义：事件的类型、退出码（`exitCodeFor`、`startupExitCode`）、JSON 输出的一行（`toJsonLine`）和哪些事件写进 JSON 输出（`inJsonOutput`），CLI 照此输出。对外事件、api 的流式事件和 agent-runtime 的工具事件写在同一份 schema（`hostEventSchema`）里，内部协议和工具调用的部分取通道检查用的那份。schema 描述当前版本，Host 的测试按它检查发出的每个事件；消费方仍按上文忽略不认识的部分。
-- 非交互模式最后一条是 `session.ended`，另带主任务的 `outcome` 和退出码 `exit_code`：`completed` 为 0，`failed` 和 `refused` 为 1，`budget_exceeded` 为 3，`cancelled` 按信号为 130（SIGINT）或 143（SIGTERM）；2 留给参数或配置错误，超出预算不用它，因为脚本常把 2 当作参数错误。第一个信号取消任务并写出 `task.ended` 和 `session.ended`，第二个信号立即退出。
+- 非交互模式最后一条是 `session.ended`，另带主任务的 `outcome` 和退出码 `exit_code`：`completed` 为 0，`failed` 和 `refused` 为 1，`budget_exceeded` 为 3，`cancelled` 按信号为 130（SIGINT）或 143（SIGTERM）；2 留给参数或配置错误，超出预算不用它，因为脚本常把 2 当作参数错误。第一个信号取消任务并写出 `task.ended` 和 `session.ended`，第二个信号立即退出、不再输出，退出码按第二个信号。session 结束时主任务还没有结果（agent 进程反复退出）的，`session.ended` 不带 `outcome`，`exit_code` 为 1。
+- `exec --json` 在 session 打开之前失败时，stdout 上只有那一条 `error` 事件，同样的信息另写到 stderr：不读 stdout 的调用方也看得到原因。
 
 ### 交互界面
 
@@ -474,21 +491,41 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 - 它是 MIT 许可，3 个依赖都写确切版本，没有安装脚本，带 provenance。功能覆盖本节的设计：差分渲染、多行编辑器和输入历史、括号粘贴、Kitty 键盘协议（区分 Enter 和 Alt+Enter，steering 和 follow-up 要靠它）、Markdown、浮层和选择列表、图片显示，剪贴板里的图片由随包的预编译模块读取。
 - 没选 Ink：它的依赖写的是 `^` 范围，发布后无法固定间接依赖，也没有多行输入和 Markdown。
 - pi-tui 在 1.x 的次版本里也有破坏性改动，所以固定版本，升级时逐版核对它的 CHANGELOG；随包预编译的 `.node` 文件，引入时核对来源和许可证。
+- **布局**：从上到下是对话区、排队的输入、一行按键提示、输入框和状态行（模型、推理强度、沙盒模式、审批策略、工作区）。有询问时输入框的位置换成询问的面板，打开模型、后台命令或排队输入的列表时换成列表：同一时刻只有一处接收按键。状态行取 SDK 的 `session.config()`，不由 CLI 重新解析配置：配置文件改了而还没有 `/reload` 时，重新解析会把没生效的沙盒模式和审批策略显示出来。`/model`、`/effort` 成功后状态行马上变，`model.changed` 等事件到了（用到新设置的第一次模型请求之前）再在对话区记一行。
+- **显示**：对话区显示用户输入、流式的 Markdown 回复、推理内容（按 `[ui] show_reasoning`）、工具调用（名字、参数的要点、输出的最后 8 行、结果和耗时）、警告和错误、每个 task 的结果、用量和费用。对话区只留看得出进展的几行，完整的结果在 session 记录里。同一个原因只显示一行：agent 进程在 task 中途异常退出时，原因显示在这个 task 结束的那一行，随后那条错误只显示原因之后的内容（agent 进程输出的末尾），没有就不显示；session 被 Host 关闭时显示 Host 的那条错误，不另加一行。`edit`、`write` 的改动按工具参数画成增删行：事件只在越界的询问里带 diff。只用终端的 16 色，跟着终端的主题走，不探测终端的能力。
+- **启动和退出**：标准输入或标准输出不是终端时报用法错误（退出码 2），提示改用 `exec`。先打开 session 再接管终端：打不开时错误照常写到 stderr，终端没有动过。`/quit`、空输入框上的 Ctrl+D 和连按两次 Ctrl+C 关闭 session 后以 0 退出；session 因 agent 进程反复退出或出错而关闭时是 1；收到 SIGINT、SIGTERM 时关闭 session 后以 130、143 退出，关闭期间再来一个信号就不等了。
+- **Ctrl+C** 每按一次只做一件事，按这个顺序取第一件能做的：关掉打开的列表，取消运行中的 task（它挂起的询问由 Host 答为拒绝），拒绝没有 task 时的询问（来自后台命令），清空输入框，提示再按一次，退出。
+- **输入框的按键**：Enter 发送（task 运行时是 steering），Alt+Enter 排进 follow-up 列表（session 空闲、列表也没有暂停时和 Enter 一样开始 task：这时没有可排的列表），Shift+Enter 或 Ctrl+J 换行；Ctrl+P、Shift+Ctrl+P 换模型，Shift+Tab 换推理强度，Ctrl+V 粘贴剪贴板里的图片，Alt+↑ 打开排队的输入。输入排在上一个还没做完的 session 操作之后，轮到它时再按当时有没有 task 决定是开始 task 还是插入：agent 进程重启期间打的字不会发错地方。以 `/` 加小写字母开头的输入才当作会话内命令，`/usr/bin/x` 这样的路径照常发给模型；命令没做成的原因显示在对话区，session 继续。
+- **换模型的按键**只在有凭据的服务的模型之间循环（开着费用上限时还要有价格；第一次按时查一遍各服务的凭据，`/reload` 之后重查）：循环到一个换不过去的模型只会得到一条错误。`/model` 不带参数时列出清单里全部模型供选择。Shift+Tab 只在当前模型的 `thinking_level_map` 里有的级别之间循环：没有映射的级别发出去也不生效。`/sandbox` 的补全列出 `read-only`、`workspace-write` 和配置里的命名权限配置，没有 `danger-full-access`：它只能在启动时指定。
+- **询问的面板**显示要做的具体内容（命令和工作目录、文件改动、申请的路径和域名、要写进后台命令 stdin 的内容、网络询问的域名和当时在运行的调用和后台命令）和事件里的 `reasons`。选项按询问的种类给：批准这一次、本任务内批准、保存为规则（命令的询问带 `suggested_rule` 时和网络的询问才有，选中后先显示要保存的规则）、拒绝、拒绝并写一句话告诉模型；`request_permissions` 可以逐项勾选只批准一部分，一项都不选等于拒绝；预算的询问是追加额度或停止。面板出现时没有选中的选项，按过 ↑↓ 之后 Enter 才确认：task 运行时用户常在输入 steering，面板换上来的那一刻正要按下的 Enter 不能变成一次批准。Esc 拒绝：不执行是安全的一边。几个询问同时等着时一次显示一个，面板上写着还有几个；询问有了结果（包括被策略或取消答掉）面板就撤掉。
+- **来自模型和文件的文字**（命令、路径、工具输出、通知）显示前去掉终端控制序列：它们能改写屏幕上别处的内容，把询问伪装成别的样子。
+- **提及和补全**：输入 `/` 补全会话内命令和它的参数，输入 `@` 补全工作区里的路径，一次列一级目录，不做全仓库的模糊搜索（那要引入 `fd` 这样的外部程序）。提交时只有路径存在的 `@路径` 才作为提及，其余照文字发出；`@` 要在开头或跟在空白、标点之后，邮箱地址不算；带空白的路径写成 `@"路径"`。CLI 只判断路径存在，不读内容。补全列表在按键之后异步刷新，按键成批到达时 Enter 或 Tab 可能赶在刷新之前：列表不是为现在光标前的文字算的就不套用，Enter 按输入的内容提交，否则 `/quit` 会被改成列表里选中的另一条命令。
+- **图片**在输入框里用 `[图片 #N]` 占位，提交时按占位的位置放进输入；占位被删掉的图片不发送。剪贴板里的内容不是 PNG、JPEG、GIF、WebP 时不粘贴并说明。拖进终端的图片文件是一段粘贴进来的绝对路径，换成提及。
+- **排队的输入**显示在对话区和输入框之间，steering 和 follow-up 分开。Alt+↑ 打开列表（输入框里的方向键留给编辑）：↑↓ 选择，Enter 取回到输入框，D 或 Delete 删除，Shift+↑、Shift+↓ 调整顺序，R 让暂停的 follow-up 列表继续，Esc 关闭。修改一条排队的输入就是取回、改完再发。SDK 只能取回和排到末尾，调整顺序是把这一条之后的都取回、按新顺序重新排进去，编号会变。task 结束时还没插入的 steering 由 Host 交还，接在输入框已有的内容后面，不自动发送；取回的输入里图片是引用，重新占位后原样交回。
+- **后台命令**的开始、结束和通知在对话区各显示一行；`/bg` 列出运行中的，选中一条回车停止。
 
 ### 提及文件和附件
 
 - **`@` 提及**在 agent 沙盒里展开，Host 不读取仓库里的文件。CLI 只把路径作为"提及"块放进通道上的用户输入；这条输入进入上下文时（steering 在插入时，follow-up 在开始时），runtime 用读文件和列目录工具的同一实现读取：文件内容放进这条用户消息，目录只给列表，超过读文件工具的单次上限时只放前一段并注明总大小，读取失败时在原位置写明原因，同时记作一次读取，供编辑前核对。读取的检查由操作系统在打开文件时完成，Host 不用把读取规则再实现一遍。
+- **输入的格式**：`Session.submit`、`steer`、`followUp` 接受一段文字，或分好段的输入（`UserInput[]`：文字块、`{type: "mention", path}` 和图片块），路径照用户写的原样，相对路径按工作区根解析。`task.started` 和排队事件里记的是展开之前的输入，展开后的内容随这条消息第一次发给模型记进 `message.sent`：重启后按它重建，不重新读文件。session 的标题里提及写成 `@路径`。
+- **展开的样子**：提及的块在原位置换成一个文字块，文件是 `<file path="…">` 和 `</file>` 之间放 `read` 给出的内容（含截断时怎样续读的说明），目录是 `<directory path="…">` 里放一层的列表（按名字排序，子目录以 `/` 结尾，符号链接以 `@` 结尾），读不了时是 `<file path="…">` 里放一行原因。提及的是图片文件（PNG、JPEG、GIF、WebP，和 `read` 一样按文件头判断）时，`<file path="…">` 里放 `read` 给出的那一行格式和尺寸，后面紧跟缩放后的图片块：拖进终端的图片就是这样交给模型的。带路径的标记让模型分得清哪些是用户的话、哪些是文件内容。目录的列表和 `ls` 工具是同一实现（见 agent-runtime 的[工具](agent-runtime.md#工具)）。
 - 展开不登记为工具调用：这次读取不是模型发起的，登记会连带触发审批和快照。hooks 在 `UserPromptSubmit` 的 `mentioned_paths` 里拿到提及的路径，可以在那里拦下。不加载被提及文件所在目录的规则文件。
-- **粘贴的图片**由 CLI 读出剪贴板的原始字节，Host 按引用保存后经通道交给 runtime，在沙盒里解码并缩放到长边不超过 2000 px、base64 不超过 4.5 MB，会话保存实际发送的字节；拖入的图片路径按提及处理。尺寸一次定死、取最严的值：历史只追加，重新编码较早的图片会让推理内容失效，而 Anthropic 一次请求超过 20 张图片时会对全部图片用更严的上限。这两个值写成常量，不支持图片的模型改用文字占位。
-- 缩放用 `@silvia-odwyer/photon-node`（0.3.4，Apache-2.0，WASM，没有依赖和安装脚本）。工具结果里的图片在各家协议里怎样表示，见 api 的[转换规则](api.md#转换规则)。
+- **粘贴的图片**由 CLI 读出剪贴板的原始字节，Host 按引用保存后经通道交给 runtime，在沙盒里解码并缩放到长边不超过 2000 px、base64 不超过 4.5 MB，会话保存实际发送的字节；拖入的图片路径按提及处理。尺寸一次定死、取最严的值：历史只追加，重新编码较早的图片会让推理内容失效，而 Anthropic 一次请求超过 20 张图片时会对全部图片用更严的上限（2026-11-10 用 `claude-haiku-5-5` 实测：不超过 20 张时单边上限 8000 px，超过 20 张时是 3000 px，21 张 2000×2000 的图片被接受）。这两个值写成常量，不支持图片的模型改用文字占位。
+- **图片怎样经过 Host**：SDK 的输入里图片块带原始字节的 base64，Host 不解码，把字节存成 session-store 的大内容，输入里换成引用 `{type: "image_ref", sha256, bytes}`；`task.started`、排队事件和 `dequeue` 给出的都是引用，不带字节，原样交回 `steer`、`followUp` 就能重新排队（引用必须是这个 session 保存过的，否则抛出）。通道上传的也是引用，runtime 展开输入时用 `blob/read` 分页取字节：粘贴的截图可以超过通道单条消息的 16 MiB。缩放后的图片在模型请求之前逐张交回 Host，请求里只带引用，一条输入带多少张图片都不受单条消息上限的限制（见 agent-runtime 的[消息格式](agent-runtime.md#消息格式)）；它们随这条消息记进 `message.sent`，重启后按它重建。
+- **session 记录里的图片**只存一份（见 session-store 的[事件格式](session-store.md#事件格式)）：Host 写事件时把图片的字节（base64 解码后）存成大内容，事件里只留引用，引用里的 `sha256` 是这些字节的摘要，和通道上 `sent_image` 的摘要相同。带图片的事件有三种：
+  - `message.sent` 和 `tool_call.completed`（`read` 读到的图片在工具结果里）：图片块写成 `{type: "stored_image", media_type, sha256}`。
+  - `protocol.raw`：带图片的片段按图片的 base64 切开，写成数组，图片的位置是 `{image_sha256}`；没有图片的片段仍然是一个字符串。取回时把大内容编码成 base64 拼回去，和发出的原文逐字节相同。
+  - 所以 Host 收图片时（`image/put` 和 `tool_call/complete`）要求 base64 是规范写法、不是空的，否则按协议错误处理：存的是字节，写法不规范的换不回原样。
+  - 发给前端的 `tool_call.completed` 照旧带完整的图片块；`record/read` 交回 runtime 之前把引用换回图片。附带的图片不用缩放时，发给模型的字节和输入时保存的原始字节相同，两处是同一份大内容；缩放过的是另一份。
+- 缩放用 `@silvia-odwyer/photon-node`（0.3.4，Apache-2.0，WASM，没有依赖和安装脚本），做法见 agent-runtime 的[上下文](agent-runtime.md#上下文)。实测（Apple M4，Node 24）缩小一张 1200 万像素的 JPEG 约 1.6 秒，4800 万像素约 3.7 秒，1.08 亿像素约 8.5 秒，进程的内存不到 1 GB；这段时间 agent 进程不响应取消。工具结果里的图片在各家协议里怎样表示，见 api 的[转换规则](api.md#转换规则)。
 
 ## 实施时核对
 
 - P1：接入 bubblewrap 后端时在 Linux 上重复 fd 3 的继承检查（macOS 上已经确认经 sandbox-runtime 包装后 fd 3 仍在），以及 `ptrace_scope` 为 0 和 1 时同一沙盒的进程能否用 `pidfd_getfd` 复制它。
 - P1：在 Linux 上实测根目录的布局（tmpfs 加绑定回子目录，符号链接和硬链接读不到 `data/`）。
+- P1：在 Linux 上运行 `agent-host/test/restart.test.ts` 里"发现新仓库"的三个测试（只在 Linux 上运行，macOS 上跳过；Host 一侧的接线已经在 macOS 上把平台判断强制打开验证过，没验证的是 bubblewrap 沙盒里新建的仓库确实被扫描到并在重启后受保护）。
 - P1：用真实任务的请求次数和费用分布核对默认预算。
 - P1：检查 Terminal.app、iTerm2、Ghostty、VS Code 终端和 tmux 上 Enter 和 Alt+Enter 能否区分，中文输入法和宽字符是否正常。
-- P1：实测一次请求超过 20 张图片时的实际尺寸上限，以及大图解码的耗时和内存。
 - P2：用真实模型验证 MCP 工具调用的批准和取消（P0 已经用真实模型验证了 shell 的批准、拒绝、取消、事件和模型代理）。
 - P2：在 Linux 上实测插件版本目录和 `PLUGIN_DATA` 的读写范围（启动 server 之前建好目录）。
 - P2：用常见的本地 MCP server 实测密钥的 mask。

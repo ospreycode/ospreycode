@@ -31,15 +31,15 @@ export interface CommandRequest {
 	prefix_rule?: string[];
 }
 
-/** 一个文件的改动。`add` 要求文件不存在；移动写成删除加新增。 */
+/** 一个文件的改动：`add` 新建文件，要求它不存在；`update` 改已有的文件。 */
 export interface FileEdit {
-	op: "add" | "update" | "delete";
-	/** 规范化的绝对路径：父目录取真实路径，各级都不能是符号链接。 */
+	op: "add" | "update";
+	/** 规范化的绝对路径：各级都不能是符号链接。 */
 	path: string;
 	/** 改动前内容的 SHA-256；`add` 为空。 */
 	old_sha256: string | null;
-	/** 完整的新内容；`delete` 为空。 */
-	content: string | null;
+	/** 完整的新内容。 */
+	content: string;
 }
 
 /** 写到可写范围之外的文件改动，批准后由 apply-edits 执行。同一路径在一次申请里只出现一次。 */
@@ -57,12 +57,15 @@ export interface PermissionsRequest {
 	justification?: string;
 }
 
-/** 命令访问了还没放行的域名，由代理挂起连接后交给 Permission。 */
+/**
+ * 命令访问了还没放行的域名，由代理挂起连接后交给 Permission。没有协议：sandbox-runtime 的询问
+ * 回调只给出主机和端口。
+ */
 export interface NetworkRequest {
 	kind: "network";
+	/** 规范化后的主机：小写的 A-label，IPv6 地址写在方括号里。 */
 	host: string;
 	port: number;
-	protocol: "http" | "https" | "socks5";
 }
 
 /** MCP 工具调用：按越界处理，默认每次询问。 */
@@ -75,30 +78,61 @@ export interface McpToolRequest {
 	arguments: string;
 }
 
+/**
+ * 向运行中的后台命令的 stdin 写入。只有要重新批准时才成为一次申请：这条命令是越界或带额外权限
+ * 启动的，或者启动它的 task 已经结束。
+ */
+export interface StdinRequest {
+	kind: "stdin";
+	/** Host 分配的后台命令编号。 */
+	background_id: string;
+	/** 这条后台命令的命令行。 */
+	command: string;
+	/** 要写入的内容。 */
+	input: string;
+}
+
 /** 交给 Permission 判断的一个动作。 */
 export type PermissionRequest =
 	| CommandRequest
 	| FileEditsRequest
 	| PermissionsRequest
 	| NetworkRequest
-	| McpToolRequest;
+	| McpToolRequest
+	| StdinRequest;
+
+/**
+ * 一次询问的类别：`granular` 的类别，其中内置的危险命令判断从 `sandbox_approval` 里单独分出来
+ * 记作 `dangerous_command`，`sandbox_approval` 在这里只表示越界申请。问不问仍然按 `granular`
+ * 的类别决定；分开是为了让被拒绝的结果和评测报告能把这两种原因分别统计。
+ */
+export type AskCategory = GranularCategory | "dangerous_command";
 
 /**
  * Permission 的判断：
  *
  * - `allow`：按申请的权限执行，没有申请越界时就是当前策略的命令沙盒
- * - `ask`：询问用户，`category` 是 `granular` 下决定问不问的类别，`reasons` 列出要问的原因
- *   （命中的 `prompt` 规则的理由、危险命令判断、越界申请等）
- * - `deny`：不执行，`message` 告诉模型原因和替代做法
+ * - `ask`：询问用户，`category` 是 `granular` 下决定问不问的类别，`categories` 列出这次询问
+ *   涉及的全部类别，`reasons` 列出要问的原因（命中的 `prompt` 规则的理由、危险命令判断、
+ *   越界申请等）
+ * - `deny`：不执行，`message` 告诉模型原因和替代做法。`reason` 是 `policy` 时是要询问的动作被
+ *   拒绝了（审批策略不询问，或者这类动作固定拒绝），`categories` 同 `ask`
  */
 export type PermissionDecision =
 	| { action: "allow" }
-	| { action: "ask"; category: GranularCategory; reasons: string[] }
+	| {
+			action: "ask";
+			category: GranularCategory;
+			categories: AskCategory[];
+			reasons: string[];
+	  }
 	| {
 			action: "deny";
-			reason: "policy" | "forbidden_rule";
+			reason: "policy";
+			categories: AskCategory[];
 			message: string;
-	  };
+	  }
+	| { action: "deny"; reason: "forbidden_rule"; message: string };
 
 /** 批准的权限：`request_permissions` 申请的权限里的一部分。 */
 export interface GrantedPermissions {

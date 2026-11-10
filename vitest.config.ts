@@ -37,6 +37,8 @@ const alias = workspaces.flatMap((dir) => {
 export default defineConfig({
 	resolve: { alias },
 	test: {
+		// 许多测试要起真实的进程（agent 进程、沙盒、CLI）。全部包并行运行时，单独跑不到 1 秒的测试也会超过默认的 5 秒
+		testTimeout: 20_000,
 		tags: [
 			{
 				name: "model",

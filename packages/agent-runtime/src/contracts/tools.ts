@@ -21,6 +21,21 @@ export interface ToolSpec {
 /** 拒绝的来源：审批策略、用户、hook、`forbidden` 规则。 */
 export type DenialReason = "policy" | "user" | "hook" | "forbidden_rule";
 
+/**
+ * 被审批策略拒绝的调用要询问的类别：审批策略 `granular` 的类别，其中内置的危险命令判断从
+ * `sandbox_approval` 里单独分出来记作 `dangerous_command`，`sandbox_approval` 在这里只表示
+ * 越界申请。评测报告按它分别统计被拒的原因。
+ */
+export type DenialCategory =
+	| "dangerous_command"
+	| "sandbox_approval"
+	| "rules"
+	| "request_permissions"
+	| "skill_approval"
+	| "mcp_elicitations"
+	| "mcp_tools"
+	| "network";
+
 /** 命令沙盒的网络：不能联网、经 Host 的代理按域名放行、不受限制（`danger-full-access`）。 */
 export type SandboxNetwork = "denied" | "proxy" | "unrestricted";
 
@@ -46,7 +61,7 @@ export interface ShellOutcome {
 /**
  * 一次工具调用的结果。`content` 是交给模型的内容，其余字段供 Host、评测和界面使用。
  *
- * - `running`：前台命令超时后转入后台，`background_id` 是后台命令编号
+ * - `running`：命令在后台运行（模型要求的，或前台命令超时后转入的），`background_id` 是后台命令编号
  * - `interrupted`：结果不确定，例如异常退出时核对不上的文件工具、恢复时选择跳过的调用
  */
 export type ToolResult =
@@ -65,7 +80,15 @@ export type ToolResult =
 	| {
 			status: "denied";
 			content: UserContent[];
-			reason: DenialReason;
+			reason: "policy";
+			/** 这次调用要询问的全部类别；审批策略不询问其中至少一类。 */
+			categories: DenialCategory[];
+			message?: string;
+	  }
+	| {
+			status: "denied";
+			content: UserContent[];
+			reason: Exclude<DenialReason, "policy">;
 			/** 用户在批准对话框里写给模型的话，或 hook 给出的理由。 */
 			message?: string;
 	  };

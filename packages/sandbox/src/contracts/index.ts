@@ -19,6 +19,7 @@ export {
 export type {
 	AdditionalPermissions,
 	ApprovalAnswer,
+	AskCategory,
 	CommandRequest,
 	FileEdit,
 	FileEditsRequest,
@@ -29,11 +30,14 @@ export type {
 	PermissionRequest,
 	PermissionsRequest,
 	SandboxPermissions,
+	StdinRequest,
 } from "./requests.js";
 export type {
 	CommandRule,
 	McpRule,
 	NetworkRule,
 	RuleDecision,
+	RuleFile,
 	RuleSet,
+	RuleSource,
 } from "./rules.js";

@@ -6,12 +6,12 @@ import {
 	ChannelRequestError,
 	encodeMessage,
 	type HostChannel,
-	type ModelRequestParams,
 	openHostChannel,
 	openRuntimeChannel,
 	ProtocolError,
 	type RuntimeChannel,
 } from "@ospreycode/agent-runtime";
+import type { ModelRequest } from "@ospreycode/api/protocol";
 import { afterEach, describe, expect, test } from "vitest";
 import { socketPair } from "./socket-pair.js";
 
@@ -33,7 +33,7 @@ const config: AgentConfig = {
 	os: "test",
 };
 
-const modelRequest: ModelRequestParams = {
+const modelRequest: { message_id: string; request: ModelRequest } = {
 	message_id: "m-2",
 	request: {
 		model: "test-model",

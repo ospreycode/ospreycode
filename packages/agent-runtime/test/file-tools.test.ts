@@ -197,6 +197,7 @@ async function run(rounds: Call[][], options: Options = {}): Promise<Trace> {
 		ended.resolve();
 		return { continue: false };
 	});
+	channel.on("record/append", () => {});
 
 	const agent = runAgent(agentSide);
 	await channel.notify("task/start", {
@@ -622,6 +623,7 @@ test("Host 拒绝登记的改动不执行，拒绝的结果交回模型", async 
 	const denied: ToolResult = {
 		status: "denied",
 		reason: "policy",
+		categories: ["sandbox_approval"],
 		content: [{ type: "text", text: "That path is protected." }],
 	};
 	const trace = await run(

@@ -1,0 +1,248 @@
+import { setTimeout as delay } from "node:timers/promises";
+import { type Terminal, visibleWidth } from "@earendil-works/pi-tui";
+
+/** 按键在终端上的字节，都是没有开 Kitty 键盘协议时的写法。 */
+export const key = {
+	enter: "\r",
+	altEnter: "\x1b\r",
+	tab: "\t",
+	shiftTab: "\x1b[Z",
+	escape: "\x1b",
+	up: "\x1b[A",
+	down: "\x1b[B",
+	altUp: "\x1b[1;3A",
+	shiftUp: "\x1b[1;2A",
+	space: " ",
+	backspace: "\x7f",
+	ctrlC: "\x03",
+	ctrlD: "\x04",
+	ctrlP: "\x10",
+	shiftCtrlP: "\x1b[112;6u",
+	ctrlV: "\x16",
+};
+
+// 颜色之类不占位置的控制序列：CSI（光标移动的几种另外处理）、OSC 和 APC
+const ignored =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
+	/^\x1b(?:\[[0-9;?<>=]*[ -/]*[@-~]|[\]_][^\x07\x1b]*(?:\x07|\x1b\\))/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
+const cursorMove = /^\x1b\[(\d*)([ABGHJK])/;
+
+/**
+ * 测试用的终端：固定的行列数，把界面写出来的内容还原成屏幕上的文字，把按键送进界面。
+ * 只认界面库的主屏渲染用到的那几种控制序列；屏幕之上滚出去的行也留着，和真终端的滚动历史一样。
+ */
+export class TestTerminal implements Terminal {
+	readonly columns: number;
+	readonly rows: number;
+	readonly kittyProtocolActive = false;
+	#onInput: ((data: string) => void) | undefined;
+	#lines: string[] = [""];
+	#row = 0;
+	#column = 0;
+
+	constructor(columns = 100, rows = 40) {
+		this.columns = columns;
+		this.rows = rows;
+	}
+
+	start(onInput: (data: string) => void): void {
+		this.#onInput = onInput;
+	}
+
+	stop(): void {
+		this.#onInput = undefined;
+	}
+
+	async drainInput(): Promise<void> {}
+
+	hideCursor(): void {}
+
+	showCursor(): void {}
+
+	setTitle(): void {}
+
+	setProgress(): void {}
+
+	setProgramStatus(): void {}
+
+	moveBy(lines: number): void {
+		this.#moveTo(this.#row + lines);
+	}
+
+	clearLine(): void {
+		this.#lines[this.#row] = "";
+	}
+
+	clearFromCursor(): void {
+		this.#lines.length = this.#row + 1;
+		this.#lines[this.#row] = this.#before();
+	}
+
+	clearScreen(): void {
+		this.#lines = [""];
+		this.#row = 0;
+		this.#column = 0;
+	}
+
+	write(data: string): void {
+		let rest = data;
+		while (rest !== "") {
+			const move = cursorMove.exec(rest);
+			const skipped = move ?? ignored.exec(rest);
+			if (move !== null) this.#control(move[2], move[1]);
+			if (skipped !== null) {
+				rest = rest.slice(skipped[0].length);
+			} else if (rest.startsWith("\r")) {
+				this.#column = 0;
+				rest = rest.slice(1);
+			} else if (rest.startsWith("\n")) {
+				this.#moveTo(this.#row + 1);
+				rest = rest.slice(1);
+			} else {
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: 文字到下一个控制字符为止
+				const text = /^[^\x1b\r\n]+/.exec(rest);
+				if (text === null) {
+					throw new Error(
+						`测试终端不认识的控制序列：${JSON.stringify(rest.slice(0, 20))}`,
+					);
+				}
+				this.#lines[this.#row] = this.#before() + text[0];
+				this.#column += visibleWidth(text[0]);
+				rest = rest.slice(text[0].length);
+			}
+		}
+	}
+
+	/** 光标之前的内容，不够长时用空格补到光标的位置。 */
+	#before(): string {
+		const line = this.#lines[this.#row];
+		if (visibleWidth(line) <= this.#column) {
+			return line + " ".repeat(this.#column - visibleWidth(line));
+		}
+		let kept = "";
+		for (const character of line) {
+			if (visibleWidth(kept + character) > this.#column) break;
+			kept += character;
+		}
+		return kept;
+	}
+
+	#moveTo(row: number): void {
+		this.#row = Math.max(0, row);
+		while (this.#lines.length <= this.#row) this.#lines.push("");
+	}
+
+	#control(command: string, argument: string): void {
+		const count = argument === "" ? 1 : Number(argument);
+		switch (command) {
+			case "A":
+				this.#moveTo(this.#row - count);
+				break;
+			case "B":
+				this.#moveTo(this.#row + count);
+				break;
+			case "G":
+				this.#column = count - 1;
+				break;
+			case "H":
+				this.#row = 0;
+				this.#column = 0;
+				break;
+			case "J":
+				// 界面库清屏时连滚动历史一起清：2J、H、3J 连着发
+				if (argument === "2" || argument === "3") this.clearScreen();
+				else this.clearFromCursor();
+				break;
+			case "K":
+				if (argument === "2") this.clearLine();
+				else this.#lines[this.#row] = this.#before();
+				break;
+		}
+	}
+
+	/** 终端上的全部文字，包括滚出屏幕的。 */
+	text(): string {
+		return this.#lines.map((line) => line.trimEnd()).join("\n");
+	}
+
+	/** 屏幕上现在看得到的那几行。 */
+	visible(): string {
+		return this.#lines
+			.slice(-this.rows)
+			.map((line) => line.trimEnd())
+			.join("\n");
+	}
+
+	/** 等终端上出现这段文字（或匹配这个模式）；等不到时报错并带上当时的屏幕。 */
+	async waitFor(expected: string | RegExp, timeoutMs = 10_000): Promise<void> {
+		const found = () =>
+			typeof expected === "string"
+				? this.text().includes(expected)
+				: expected.test(this.text());
+		const deadline = Date.now() + timeoutMs;
+		while (!found()) {
+			if (Date.now() > deadline) {
+				throw new Error(`终端上没有等到 ${expected}：\n${this.text()}`);
+			}
+			await delay(10);
+		}
+	}
+
+	/** 等屏幕上现在看得到的部分出现这段文字。 */
+	async waitForVisible(expected: string, timeoutMs = 10_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (!this.visible().includes(expected)) {
+			if (Date.now() > deadline) {
+				throw new Error(`屏幕上没有等到 ${expected}：\n${this.visible()}`);
+			}
+			await delay(10);
+		}
+	}
+
+	/** 等屏幕上现在看得到的部分不再有这段文字。 */
+	async waitForGone(text: string, timeoutMs = 10_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (this.visible().includes(text)) {
+			if (Date.now() > deadline) {
+				throw new Error(`屏幕上一直有 ${text}：\n${this.visible()}`);
+			}
+			await delay(10);
+		}
+	}
+
+	/** 依次按下这些键：每个键单独送进界面，中间让出事件循环，和人按键一样。 */
+	async press(...keys: string[]): Promise<void> {
+		for (const data of keys) {
+			if (this.#onInput === undefined) {
+				throw new Error("界面已经停了，按键送不进去");
+			}
+			this.#onInput(data);
+			await delay(0);
+		}
+	}
+
+	/**
+	 * 终端一次读到的几个键：挨个送进界面，中间不让出事件循环。机器忙或者连接有延迟时按键就是这样成批
+	 * 到达的，界面来不及在两个键之间做异步的更新。
+	 */
+	async pressTogether(...keys: string[]): Promise<void> {
+		for (const data of keys) {
+			if (this.#onInput === undefined) {
+				throw new Error("界面已经停了，按键送不进去");
+			}
+			this.#onInput(data);
+		}
+		await delay(0);
+	}
+
+	/** 逐个字符地输入一段文字。 */
+	async type(text: string): Promise<void> {
+		await this.press(...text);
+	}
+
+	/** 粘贴一段文字：终端把粘贴的内容包在一对标记里一次送来。 */
+	async paste(text: string): Promise<void> {
+		await this.press(`\x1b[200~${text}\x1b[201~`);
+	}
+}

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	copyFileSync,
 	mkdirSync,
@@ -20,6 +21,44 @@ export function readmeExamples(markdown: string): string[] {
 		markdown.matchAll(/^```ts\n([\s\S]*?)^```$/gm),
 		(match) => match[1] ?? "",
 	);
+}
+
+/** gnu.org 上 LGPL-2.1 文本的 SHA-256：许可证的文本不允许改动。 */
+const LGPL_2_1_SHA256 =
+	"20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95";
+
+/**
+ * sandbox-runtime 的 `apply-seccomp` 静态链接了 glibc（LGPL-2.1-or-later）：带着它发布的包要有一字不改的
+ * LGPL-2.1 文本，并在二进制旁边的说明里写明 glibc 和它的版本。`dir` 是装好的包的目录，`files` 是包里的
+ * 文件；返回缺的东西，不带这个二进制的包没有要求。
+ */
+export function glibcLicenseProblems(
+	dir: string,
+	files: readonly string[],
+): string[] {
+	if (!files.some((file) => basename(file) === "apply-seccomp")) return [];
+	const problems: string[] = [];
+	const lgpl = "licenses/LGPL-2.1.txt";
+	if (!files.includes(lgpl)) {
+		problems.push(`没有 ${lgpl}`);
+	} else if (
+		createHash("sha256")
+			.update(readFileSync(join(dir, lgpl)))
+			.digest("hex") !== LGPL_2_1_SHA256
+	) {
+		problems.push(`${lgpl} 和 gnu.org 上 LGPL-2.1 的文本不一致`);
+	}
+	const notice = "vendor/seccomp/NOTICE.txt";
+	if (!files.includes(notice)) {
+		problems.push(`没有 ${notice}`);
+	} else if (
+		!/^GNU C Library \(glibc\) \d+\.\d+$/m.test(
+			readFileSync(join(dir, notice), "utf8"),
+		)
+	) {
+		problems.push(`${notice} 里没有写明 glibc 和它的版本`);
+	}
+	return problems;
 }
 
 function run(command: string, args: readonly string[], cwd: string): string {
@@ -56,7 +95,7 @@ function main(): void {
 				],
 				rootDir,
 			),
-		) as { filename: string }[];
+		) as { name: string; filename: string; files: { path: string }[] }[];
 
 		const project = join(temp, "project");
 		mkdirSync(project);
@@ -81,6 +120,16 @@ function main(): void {
 			],
 			project,
 		);
+
+		for (const { name, files } of packed) {
+			const problems = glibcLicenseProblems(
+				join(project, "node_modules", name),
+				files.map(({ path }) => path),
+			);
+			if (problems.length > 0) {
+				throw new Error(`${name}：${problems.join("；")}`);
+			}
+		}
 
 		// 按包名导入每个入口，exports 指向的文件没打进包里就会失败
 		for (const specifier of specifiers) {

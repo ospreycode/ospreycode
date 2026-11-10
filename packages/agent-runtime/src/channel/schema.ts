@@ -90,6 +90,16 @@ const FallbackBlock = Type.Object(
 
 const UserContent = Type.Union([TextBlock, ImageBlock]);
 
+const InputContent = Type.Union([
+	TextBlock,
+	ImageBlock,
+	Type.Object({ type: Type.Literal("mention"), path: Type.String() }, closed),
+	Type.Object(
+		{ type: Type.Literal("image_ref"), sha256: Type.String(), bytes: Count },
+		closed,
+	),
+]);
+
 const Usage = Type.Object(
 	{
 		input: Count,
@@ -179,6 +189,36 @@ const Message = Type.Union([
 	ToolResultMessage,
 ]);
 
+const RequestContent = Type.Array(
+	Type.Union([
+		TextBlock,
+		Type.Object(
+			{ type: Type.Literal("sent_image"), sha256: Type.String() },
+			closed,
+		),
+	]),
+);
+
+const RequestMessage = Type.Union([
+	SystemMessage,
+	Type.Object(
+		{ role: Type.Literal("user"), message_id: Id, content: RequestContent },
+		closed,
+	),
+	AssistantMessage,
+	Type.Object(
+		{
+			role: Type.Literal("tool_result"),
+			message_id: Id,
+			call_id: Type.String(),
+			tool_call_id: Type.Optional(Id),
+			content: RequestContent,
+			is_error: Type.Boolean(),
+		},
+		closed,
+	),
+]);
+
 const ToolDeclaration = Type.Object(
 	{
 		name: Type.String(),
@@ -210,7 +250,7 @@ const ModelRequest = Type.Object(
 			Type.Literal("short"),
 			Type.Literal("long"),
 		]),
-		messages: Type.Array(Message),
+		messages: Type.Array(RequestMessage),
 		tools: Type.Array(ToolDeclaration),
 		metadata: Type.Optional(Type.Record(Type.String(), Type.String())),
 	},
@@ -286,8 +326,28 @@ const ToolResult = Type.Union([
 		{
 			status: Type.Literal("denied"),
 			content: Content,
+			reason: Type.Literal("policy"),
+			categories: Type.Array(
+				Type.Union([
+					Type.Literal("dangerous_command"),
+					Type.Literal("sandbox_approval"),
+					Type.Literal("rules"),
+					Type.Literal("request_permissions"),
+					Type.Literal("skill_approval"),
+					Type.Literal("mcp_elicitations"),
+					Type.Literal("mcp_tools"),
+					Type.Literal("network"),
+				]),
+			),
+			message: Type.Optional(Type.String()),
+		},
+		closed,
+	),
+	Type.Object(
+		{
+			status: Type.Literal("denied"),
+			content: Content,
 			reason: Type.Union([
-				Type.Literal("policy"),
 				Type.Literal("user"),
 				Type.Literal("hook"),
 				Type.Literal("forbidden_rule"),
@@ -313,10 +373,55 @@ const Invalidation = Type.Object(
 	closed,
 );
 
-const RuntimeEvent = Type.Object(
-	{ type: Type.Literal("blocks.invalidated"), data: Invalidation },
+const InstructionSection = Type.Object(
+	{ name: Type.String(), text: Type.String() },
 	closed,
 );
+
+const RecordedRuleFile = Type.Object(
+	{
+		path: Type.String(),
+		source: Type.Union([Type.Literal("user"), Type.Literal("repository")]),
+		sha256: Type.String(),
+		bytes: Count,
+		included: Type.Boolean(),
+	},
+	closed,
+);
+
+const RuntimeEvent = Type.Union([
+	Type.Object(
+		{ type: Type.Literal("blocks.invalidated"), data: Invalidation },
+		closed,
+	),
+	Type.Object(
+		{
+			type: Type.Literal("instructions.recorded"),
+			data: Type.Object(
+				{
+					sections: Type.Array(InstructionSection),
+					rule_files: Type.Array(RecordedRuleFile),
+				},
+				closed,
+			),
+		},
+		closed,
+	),
+	Type.Object(
+		{
+			type: Type.Literal("input.inserted"),
+			data: Type.Object(
+				{
+					input_ids: Type.Array(Id, { minItems: 1 }),
+					message_id: Id,
+					after_tool_call_id: Type.Union([Id, Type.Null()]),
+				},
+				closed,
+			),
+		},
+		closed,
+	),
+]);
 
 const ModelErrorInfo = Type.Object(
 	{
@@ -412,7 +517,11 @@ const ToolCallCompleted = Type.Object(
  * 和通道上的检查是同一份。
  */
 export const protocolSchemas = {
+	textBlock: TextBlock,
+	imageBlock: ImageBlock,
 	userContent: UserContent,
+	/** 用户输入的一段，含 `@` 提及的路径：Host 记进事件的是展开之前的输入。 */
+	inputContent: InputContent,
 	message: Message,
 	assistantMessage: AssistantMessage,
 	usage: Usage,
@@ -494,6 +603,18 @@ const requestParams = {
 		{ tool_call_id: Id, result: ToolResult },
 		closed,
 	),
+	"input/take": Empty,
+	"record/read": Type.Object(
+		{
+			until: Type.Object({ run_id: Id, seq: Count }, closed),
+			types: Type.Array(Type.String()),
+			offset: Count,
+		},
+		closed,
+	),
+	"blob/read": Type.Object({ sha256: Type.String(), offset: Count }, closed),
+	"image/put": Type.Object({ image: ImageBlock }, closed),
+	"image/read": Type.Object({ sha256: Type.String() }, closed),
 } satisfies Record<keyof Protocol.RuntimeRequests, TSchema>;
 
 /** runtime 发给 Host 的通知的参数。 */
@@ -525,7 +646,8 @@ type Equal<A, B> =
 function sameType<A, B>(_same: Equal<A, B>): void {}
 
 sameType<Static<typeof Message>, Api.Message>(true);
-sameType<Static<typeof ModelRequest>, Api.ModelRequest>(true);
+sameType<Static<typeof InputContent>, Protocol.InputContent>(true);
+sameType<Static<typeof RequestMessage>, Protocol.RequestMessage>(true);
 sameType<Static<typeof ToolResult>, Contracts.ToolResult>(true);
 sameType<Static<typeof RuntimeEvent>, Contracts.RuntimeEvent>(true);
 sameType<Static<typeof ModelErrorInfo>, Api.ModelErrorInfo>(true);

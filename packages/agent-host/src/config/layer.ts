@@ -57,6 +57,15 @@ export interface ConfigLayer {
 	models?: Record<string, ModelFields>;
 	credentials?: Record<string, CredentialSource>;
 	proxy?: string;
+	/** 可选工具的开关，键是工具名。 */
+	tools?: Record<string, boolean>;
+	ui?: UiLayer;
+}
+
+/** `[ui]`：交互界面的显示设置。 */
+export interface UiLayer {
+	/** 是否显示模型的推理内容。 */
+	show_reasoning?: boolean;
 }
 
 /**
@@ -80,6 +89,8 @@ export const keyClasses: Readonly<Record<keyof ConfigLayer, KeyClass>> = {
 	models: "user_only",
 	credentials: "user_only",
 	proxy: "user_only",
+	tools: "normal",
+	ui: "normal",
 };
 
 const variableName = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -92,6 +103,8 @@ export interface LayerContext {
 	projectRoot: string;
 	/** Host 环境里的 HOME，展开 `~/` 用。 */
 	home: string | undefined;
+	/** runtime 提供、默认不启用的工具，`[tools]` 只能开关它们。 */
+	optionalTools: readonly string[];
 }
 
 function isTable(value: unknown): value is Record<string, unknown> {
@@ -316,6 +329,43 @@ function credentials(
 	return result;
 }
 
+function tools(
+	value: unknown,
+	key: string,
+	optional: readonly string[],
+): Record<string, boolean> {
+	const result: Record<string, boolean> = {};
+	for (const [name, enabled] of Object.entries(table(value, key))) {
+		const itemKey = joinKey(key, name);
+		if (!optional.includes(name)) {
+			throw new KeyError(
+				itemKey,
+				optional.length === 0
+					? "不是可选工具：现在没有可以开关的工具"
+					: `不是可选工具：可以开关的有 ${optional.join("、")}`,
+			);
+		}
+		if (typeof enabled !== "boolean") {
+			throw new KeyError(itemKey, "要是 true（启用）或 false（不启用）");
+		}
+		result[name] = enabled;
+	}
+	return result;
+}
+
+function ui(value: unknown, key: string): UiLayer {
+	const result: UiLayer = {};
+	for (const [name, item] of Object.entries(table(value, key))) {
+		const itemKey = joinKey(key, name);
+		if (name !== "show_reasoning") throw new KeyError(itemKey, "不认识的键");
+		if (typeof item !== "boolean") {
+			throw new KeyError(itemKey, "要是 true 或 false");
+		}
+		result.show_reasoning = item;
+	}
+	return result;
+}
+
 function proxy(value: unknown, key: string): string {
 	const url = URL.parse(string(value, key));
 	if (url === null || (url.protocol !== "http:" && url.protocol !== "https:")) {
@@ -392,6 +442,12 @@ export function parseConfigTable(
 				break;
 			case "proxy":
 				layer.proxy = proxy(value, key);
+				break;
+			case "tools":
+				layer.tools = tools(value, key, context.optionalTools);
+				break;
+			case "ui":
+				layer.ui = ui(value, key);
 				break;
 		}
 	}

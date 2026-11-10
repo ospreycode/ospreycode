@@ -8,6 +8,7 @@
 	},
 	"include": [
 		".",
-		"../packages/api/scripts"
+		"../packages/api/scripts",
+		"../packages/cli/scripts"
 	]
 }

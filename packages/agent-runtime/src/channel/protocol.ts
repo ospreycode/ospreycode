@@ -1,10 +1,13 @@
 import type {
 	AssistantMessage,
+	ImageBlock,
 	ModelErrorInfo,
 	ModelRequest,
 	ProtocolName,
 	ReasoningEffort,
 	StreamEvent,
+	SystemMessage,
+	TextBlock,
 	UserContent,
 } from "@ospreycode/api/protocol";
 import type { FileEditOp } from "../apply-edits/apply.js";
@@ -44,8 +47,8 @@ export interface AgentConfig {
 	approval_policy: ApprovalPolicyName;
 	/** 启用的工具。 */
 	tools: string[];
-	/** 用户级规则文件的内容；没有时为空。 */
-	user_instructions: string | null;
+	/** 用户级规则文件：Host 读到的路径和内容；没有时为空。 */
+	user_instructions: { path: string; content: string } | null;
 	/** 当前日期，`YYYY-MM-DD`。 */
 	date: string;
 	/** 操作系统的说明，如 `macOS 26.1 (arm64)`。 */
@@ -59,9 +62,31 @@ export interface ConfigUpdate {
 	tools?: string[];
 }
 
+/** 用户输入里 `@` 提及的路径，照用户写的原样；相对路径按工作区根解析。 */
+export interface MentionBlock {
+	type: "mention";
+	path: string;
+}
+
+/**
+ * 用户输入里附带的图片：原始字节由 Host 按引用保存，这里只有它的 SHA-256 和字节数。runtime 在这条
+ * 输入进入上下文时用 `blob/read` 取来，在沙盒里解码和缩放。
+ */
+export interface ImageReference {
+	type: "image_ref";
+	sha256: string;
+	bytes: number;
+}
+
+/**
+ * 通道上的用户输入：提及的路径和附带的图片由 runtime 在这条输入进入上下文时读取
+ * （见 `context/mentions.ts`），Host 不读取仓库里的文件，也不解码图片。
+ */
+export type InputContent = UserContent | MentionBlock | ImageReference;
+
 /** `task/start` 的参数：开始新的 task。 */
 export interface TaskStartParams {
-	input: UserContent[];
+	input: InputContent[];
 }
 
 /** runtime 报告的 task 结果。 */
@@ -84,6 +109,20 @@ export interface TaskEndResult {
 	continue: boolean;
 }
 
+/** Host 交给 runtime、要插进当前 task 的一条输入。 */
+export interface PendingInput {
+	/** Host 分配的编号，runtime 报告插入位置时带回。 */
+	input_id: string;
+	/** `steering` 是用户的话；`notification` 是后台命令的通知，Host 已经写好前缀，不是用户的输入。 */
+	kind: "steering" | "notification";
+	content: InputContent[];
+}
+
+/** `input/take` 的响应：待插入的输入，steering 在前、通知在后，各按到达的顺序；取出后 Host 不再保留。 */
+export interface InputTakeResult {
+	inputs: PendingInput[];
+}
+
 /** `status` 的响应：runtime 当前在做什么。 */
 export interface StatusResult {
 	state: "idle" | "model" | "tools";
@@ -91,11 +130,53 @@ export interface StatusResult {
 	tool_call_ids: string[];
 }
 
+/**
+ * 消息里的一张图片：只带图片字节（base64 解码后）的 SHA-256，图片本身另外单独过通道（`image/put`、
+ * `image/read`，或者在工具结果里），每张只过一次。图片留在消息里的话，一条消息带几张大图，或者每次
+ * 请求都带上历史里的全部图片，都会超过单条消息的上限。
+ */
+export interface SentImage {
+	type: "sent_image";
+	sha256: string;
+}
+
+/** 通道上的 user 消息：图片都是引用。 */
+export interface RequestUserMessage {
+	role: "user";
+	message_id: string;
+	content: (TextBlock | SentImage)[];
+}
+
+/** 通道上的工具结果消息：图片都是引用。 */
+export interface RequestToolResultMessage {
+	role: "tool_result";
+	message_id: string;
+	call_id: string;
+	tool_call_id?: string;
+	content: (TextBlock | SentImage)[];
+	is_error: boolean;
+}
+
+/**
+ * `model/request` 和 `record/read` 读回的 `message.sent` 里的一条消息：内部协议的消息，其中的图片
+ * 都换成了引用。
+ */
+export type RequestMessage =
+	| SystemMessage
+	| RequestUserMessage
+	| AssistantMessage
+	| RequestToolResultMessage;
+
 /** `model/request` 的参数。 */
 export interface ModelRequestParams {
 	/** runtime 为这次回复生成的消息编号。 */
 	message_id: string;
-	request: ModelRequest;
+	/** 内部协议的模型请求，消息里的图片都是引用：runtime 先用 `image/put` 把 Host 没收到过的交过去。 */
+	request: {
+		[Key in keyof ModelRequest]: Key extends "messages"
+			? RequestMessage[]
+			: ModelRequest[Key];
+	};
 }
 
 /** `model/request` 的最终响应：模型出错时 `message` 是已收到的部分，`stop_reason` 为 `error`。 */
@@ -170,6 +251,60 @@ export interface RecordAppendParams {
 	event: RuntimeEvent;
 }
 
+/** `record/read` 的参数：读会话树上从根到 `until` 这条路径上的事件，一次一页。 */
+export interface RecordReadParams {
+	until: { run_id: string; seq: number };
+	/** 只要这些类型的事件。 */
+	types: string[];
+	/** 从筛选后的第几个事件开始，第一页为 0。 */
+	offset: number;
+}
+
+/**
+ * session 记录里的一个事件：类型、在会话树上的位置和内容。`message.sent` 的内容是
+ * `{message: RequestMessage}`，图片是引用，runtime 用 `image/read` 逐张取回。
+ */
+export interface RecordedEvent {
+	type: string;
+	run_id: string;
+	seq: number;
+	data: unknown;
+}
+
+/** `record/read` 的响应：一页事件；后面还有时 `next_offset` 是下一页的起点。 */
+export interface RecordReadResult {
+	events: RecordedEvent[];
+	next_offset?: number;
+}
+
+/** `blob/read` 的参数：按 SHA-256 读这个 session 引用过的大内容，一次一页。 */
+export interface BlobReadParams {
+	sha256: string;
+	/** 从第几个字节开始，第一页为 0。 */
+	offset: number;
+}
+
+/** `blob/read` 的响应：一页内容的 base64；后面还有时 `next_offset` 是下一页的起点。 */
+export interface BlobReadResult {
+	data: string;
+	next_offset?: number;
+}
+
+/** `image/put` 的参数：一张 Host 还没有收到过的图片，之后的消息里按它的 SHA-256 引用。 */
+export interface ImagePutParams {
+	image: ImageBlock;
+}
+
+/** `image/read` 的参数：按图片字节的 SHA-256 取一张 Host 收到过的图片。 */
+export interface ImageReadParams {
+	sha256: string;
+}
+
+/** `image/read` 的响应。 */
+export interface ImageReadResult {
+	image: ImageBlock;
+}
+
 /** `cancel` 的参数：取消自己发出、对方还在处理的请求。 */
 export interface CancelParams {
 	request_id: number;
@@ -217,6 +352,23 @@ export interface RuntimeRequests {
 		result: Empty;
 		stream: never;
 	};
+	"input/take": { params: Empty; result: InputTakeResult; stream: never };
+	"record/read": {
+		params: RecordReadParams;
+		result: RecordReadResult;
+		stream: never;
+	};
+	"blob/read": {
+		params: BlobReadParams;
+		result: BlobReadResult;
+		stream: never;
+	};
+	"image/put": { params: ImagePutParams; result: Empty; stream: never };
+	"image/read": {
+		params: ImageReadParams;
+		result: ImageReadResult;
+		stream: never;
+	};
 }
 
 /** Host 发给 runtime 的请求。 */
@@ -234,6 +386,8 @@ export interface RuntimeNotifications {
 export interface HostNotifications {
 	"config/update": ConfigUpdate;
 	"task/start": TaskStartParams;
+	/** 有 steering 或后台命令的通知等待插入：runtime 在下一次模型请求之前用 `input/take` 取出。 */
+	"input/available": Empty;
 }
 
 /** Host 发给 runtime 的流式通知的方法名。 */

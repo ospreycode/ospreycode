@@ -1,5 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import {
 	type ApprovalRequestedEvent,
 	createHost,
@@ -116,14 +122,14 @@ test("没有沙盒时没有可申请的权限：直接告诉模型不需要", as
 	expect(asked()).toEqual([]);
 });
 
-test("申请写得不对时不询问：什么都没申请、相对路径、不存在的路径、还不支持的域名", async () => {
+test("申请写得不对时不询问：什么都没申请、相对路径、不存在的路径、写得不对的域名", async () => {
 	await open([
 		call("request_permissions", { justification: "just in case" }),
 		call("request_permissions", { file_system: { read: ["relative/dir"] } }),
 		call("request_permissions", {
 			file_system: { write: [join(outside, "missing")] },
 		}),
-		call("request_permissions", { network: ["registry.npmjs.org"] }),
+		call("request_permissions", { network: ["https://registry.npmjs.org/"] }),
 		call("request_permissions", { file_system: { delete: [outside] } }),
 	]);
 	await runTask("申请权限");
@@ -135,14 +141,16 @@ test("申请写得不对时不询问：什么都没申请、相对路径、不�
 		expect.stringContaining("Nothing was requested"),
 		"Paths must be absolute: relative/dir",
 		`${join(outside, "missing")} does not exist.`,
-		expect.stringContaining("Network access cannot be granted"),
+		expect.stringContaining("Not a valid domain: https://registry.npmjs.org/"),
 		expect.stringContaining("Invalid arguments: /file_system"),
 	]);
 	expect(asked()).toEqual([]);
 });
 
+// 真实沙盒的测试每个都要启动几个进程，机器忙的时候（CI 的 runner、同时在跑别的测试）默认的 5 秒不够
 describe.runIf(process.platform === "darwin")(
 	"沙盒模式下（macOS 真实沙盒，脚本模型）",
+	{ timeout: 20_000 },
 	() => {
 		const sandboxed = {
 			sandboxMode: "workspace-write",
@@ -293,25 +301,109 @@ describe.runIf(process.platform === "darwin")(
 				{ sandboxMode: "workspace-write", approvalPolicy: "never" },
 			);
 			await runTask("不询问");
-			expect(results()).toMatchObject([{ status: "denied", reason: "policy" }]);
+			expect(results()).toMatchObject([
+				{
+					status: "denied",
+					reason: "policy",
+					categories: ["request_permissions"],
+				},
+			]);
 			expect(asked()).toEqual([]);
 		});
 
-		test("Host 根目录和包含它的目录不能申请", async () => {
+		test("任何批准都放不开的位置不能申请，也不拿去问用户：Host 根目录、凭据文件、配置里禁止读写的路径，以及包含它们的目录", async () => {
+			const noRead = join(dirs.home, "no-read");
+			const noWrite = join(dirs.home, "no-write");
+			mkdirSync(noRead);
+			mkdirSync(noWrite);
+			const request = (access: "read" | "write", path: string) =>
+				call("request_permissions", { file_system: { [access]: [path] } });
+			answer = () => ({ decision: "approve", scope: "task" });
 			await open(
 				[
-					call("request_permissions", { file_system: { read: [dirs.root] } }),
-					call("request_permissions", { file_system: { write: [dirs.home] } }),
+					request("read", dirs.root),
+					request("write", dirs.home),
+					request("read", dirs.credentialFile),
+					request("write", dirname(dirs.credentialFile)),
+					request("read", noRead),
+					// 批准写入也就批准了读取，所以禁止读的路径也不能申请写
+					request("write", noRead),
+					request("write", noWrite),
+					// 禁止写的路径还可以申请读
+					request("read", noWrite),
+				],
+				{ ...sandboxed, denyRead: [noRead], denyWrite: [noWrite] },
+			);
+			await runTask("申请放不开的位置");
+
+			expect(results().map((result) => result.status)).toEqual([
+				...Array.from({ length: 7 }, () => "denied"),
+				"succeeded",
+			]);
+			expect(results().slice(0, 7)).toMatchObject(
+				Array.from({ length: 7 }, () => ({ reason: "forbidden_rule" })),
+			);
+			expect(asked()).toMatchObject([
+				{ request: { file_system: { read: [noWrite] } } },
+			]);
+		});
+
+		test("命令申请的额外路径按真实路径询问；经符号链接指到放不开的位置时直接拒绝", async () => {
+			symlinkSync(outside, join(dirs.workspace, "out-link"));
+			symlinkSync(
+				dirname(dirs.credentialFile),
+				join(dirs.workspace, "secret-link"),
+			);
+			const withPermissions = (
+				command: string,
+				access: "read" | "write",
+				path: string,
+			) =>
+				call("shell", {
+					command,
+					sandbox_permissions: "with_additional_permissions",
+					additional_permissions: { file_system: { [access]: [path] } },
+				});
+			answer = () => ({ decision: "approve", scope: "once" });
+			await open(
+				[
+					withPermissions(
+						`echo ok > '${join(outside, "via-link.txt")}'`,
+						"write",
+						join(dirs.workspace, "out-link"),
+					),
+					withPermissions(
+						`echo stolen > '${dirs.credentialFile}'`,
+						"write",
+						join(dirs.workspace, "secret-link"),
+					),
+					withPermissions(
+						`cat '${dirs.credentialFile}'`,
+						"read",
+						dirs.credentialFile,
+					),
 				],
 				sandboxed,
 			);
-			await runTask("申请 Host 根目录");
+			await runTask("经符号链接申请");
 
+			// 用户看到的是符号链接指向的真实位置
+			expect(asked()).toMatchObject([
+				{
+					request: {
+						kind: "command",
+						additional_permissions: { file_system: { write: [outside] } },
+					},
+					reasons: [`申请写入 ${outside}`],
+				},
+			]);
 			expect(results()).toMatchObject([
+				{ status: "succeeded" },
 				{ status: "denied", reason: "forbidden_rule" },
 				{ status: "denied", reason: "forbidden_rule" },
 			]);
-			expect(asked()).toEqual([]);
+			expect(readFileSync(join(outside, "via-link.txt"), "utf8")).toBe("ok\n");
+			expect(readFileSync(dirs.credentialFile, "utf8")).toBe("test-key\n");
 		});
 
 		test("回答里批准的超出了申请的范围是前端的错误", async () => {

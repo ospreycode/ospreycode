@@ -1,10 +1,15 @@
 export type {
+	InputInserted,
+	InstructionSection,
+	RecordedInstructions,
+	RecordedRuleFile,
 	RuntimeEvent,
 	ToolCallCompleted,
 	ToolCallEvent,
 	ToolCallStarted,
 } from "./events.js";
 export type {
+	DenialCategory,
 	DenialReason,
 	SandboxNetwork,
 	SandboxSummary,

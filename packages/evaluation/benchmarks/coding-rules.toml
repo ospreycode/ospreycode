@@ -1,0 +1,5 @@
+# 编码能力评测用的权限规则，经 --rules 传入，和 danger-full-access、never 一起用。
+# 只放行 rm：审批策略是 never 时，危险命令判断会直接拒绝 rm -rf build/ 这类常见的命令。
+[[rules]]
+pattern = ["rm"]
+decision = "allow"

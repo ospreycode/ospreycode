@@ -1,6 +1,11 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createHost, type Session } from "@ospreycode/agent-host";
+import { crc32, deflateSync } from "node:zlib";
+import {
+	createHost,
+	type Session,
+	type UserInput,
+} from "@ospreycode/agent-host";
 import type { ModelFields } from "@ospreycode/api";
 import { afterEach, beforeEach, expect, inject, test } from "vitest";
 import {
@@ -28,7 +33,7 @@ afterEach(async () => {
 });
 
 /** 用真实模型做完一个 task，返回 `task.ended`。 */
-async function runTask(input: string) {
+async function runTask(input: string | UserInput[]) {
 	// 内置清单里的条目，只把地址换成中转服务
 	const entry: ModelFields = {
 		base_url: inject("modelBaseUrl"),
@@ -99,5 +104,100 @@ test("真实模型用 write 新建文件，再用 edit 改其中一处", {
 	).toEqual(["alpha", "gamma"]);
 	expect(toolCalls()).toContainEqual(["write", "succeeded"]);
 	expect(toolCalls()).toContainEqual(["edit", "succeeded"]);
+	expect(log.invalid).toEqual([]);
+});
+
+/** 模型最后一条回复里的文字。 */
+function lastReply(): string {
+	const completed = log.events.filter((e) => e.type === "message.completed");
+	return (completed.at(-1)?.message.content ?? [])
+		.map((block) => (block.type === "text" ? block.text : ""))
+		.join("");
+}
+
+/** 一张纯色的 PNG。 */
+function png(width: number, height: number, rgb: number[]): Buffer {
+	const chunk = (type: string, data: Buffer) => {
+		const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+		const length = Buffer.alloc(4);
+		length.writeUInt32BE(data.length);
+		const checksum = Buffer.alloc(4);
+		checksum.writeUInt32BE(crc32(body));
+		return Buffer.concat([length, body, checksum]);
+	};
+	const header = Buffer.alloc(13);
+	header.writeUInt32BE(width, 0);
+	header.writeUInt32BE(height, 4);
+	// 8 位、RGB、不隔行；每行开头一个过滤类型的字节
+	header.set([8, 2, 0, 0, 0], 8);
+	const row = Buffer.from([
+		0,
+		...Array.from({ length: width }, () => rgb).flat(),
+	]);
+	return Buffer.concat([
+		Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+		chunk("IHDR", header),
+		chunk(
+			"IDAT",
+			deflateSync(Buffer.concat(Array.from({ length: height }, () => row))),
+		),
+		chunk("IEND", Buffer.alloc(0)),
+	]);
+}
+
+test("真实模型看得到输入里提及的文件，不用再调用工具去读", {
+	tags: ["model"],
+}, async () => {
+	writeFileSync(
+		join(dirs.workspace, "notes.txt"),
+		"The code word is kestrel-42.\n",
+	);
+	const ended = await runTask([
+		{ type: "text", text: "What is the code word in " },
+		{ type: "mention", path: "notes.txt" },
+		{ type: "text", text: "? Reply with the code word only." },
+	]);
+
+	expect(ended.outcome).toBe("completed");
+	expect(lastReply()).toContain("kestrel-42");
+	expect(toolCalls()).toEqual([]);
+	expect(log.invalid).toEqual([]);
+});
+
+test("真实模型看得到输入里附带的图片：超过尺寸上限的在沙盒里缩小后发出", {
+	tags: ["model"],
+}, async () => {
+	const ended = await runTask([
+		{
+			type: "image",
+			media_type: "image/png",
+			data: png(2600, 1300, [255, 0, 0]).toString("base64"),
+		},
+		{
+			type: "text",
+			text: "What single color fills this image? Reply with one lowercase word.",
+		},
+	]);
+
+	expect(ended.outcome).toBe("completed");
+	expect(lastReply().toLowerCase()).toContain("red");
+	expect(log.invalid).toEqual([]);
+});
+
+test("真实模型用 read 读工作区里的图片：图片随工具结果发给模型，超过尺寸上限的先缩小", {
+	tags: ["model"],
+}, async () => {
+	writeFileSync(
+		join(dirs.workspace, "picture.png"),
+		png(2600, 1300, [0, 0, 255]),
+	);
+	const ended = await runTask(
+		// 不说"不要用别的工具"时，模型有时会再用 shell 跑脚本数像素，答案就不一定来自图片
+		"Use the read tool to look at picture.png in the workspace. Do not use any other tool. What single color fills it? Reply with one lowercase word.",
+	);
+
+	expect(ended.outcome).toBe("completed");
+	expect(toolCalls()).toEqual([["read", "succeeded"]]);
+	expect(lastReply().toLowerCase()).toContain("blue");
 	expect(log.invalid).toEqual([]);
 });

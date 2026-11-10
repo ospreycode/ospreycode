@@ -27,21 +27,38 @@ export {
 export {
 	type AgentConfig,
 	type ApprovalPolicyName,
+	type BlobReadParams,
+	type BlobReadResult,
 	type CancelParams,
 	type ConfigUpdate,
 	type Empty,
 	type HostNotifications,
 	type HostRequests,
 	hostStreamMethods,
+	type ImagePutParams,
+	type ImageReadParams,
+	type ImageReadResult,
+	type ImageReference,
 	type InitializeParams,
+	type InputContent,
+	type InputTakeResult,
+	type MentionBlock,
 	type ModelEventParams,
 	type ModelInfo,
 	type ModelRequestParams,
 	type ModelRequestResult,
+	type PendingInput,
 	type RecordAppendParams,
+	type RecordedEvent,
+	type RecordReadParams,
+	type RecordReadResult,
+	type RequestMessage,
 	type RequestSpec,
+	type RequestToolResultMessage,
+	type RequestUserMessage,
 	type RuntimeNotifications,
 	type RuntimeRequests,
+	type SentImage,
 	type StatusResult,
 	type StreamNotification,
 	type TaskEndOutcome,
@@ -61,6 +78,7 @@ export {
 	createRuntimeMessageValidator,
 	protocolSchemas,
 } from "./channel/schema.js";
+export { ReceivedImages } from "./channel/sent-images.js";
 export {
 	estimateContext,
 	imageTokens,
@@ -68,7 +86,12 @@ export {
 } from "./context/estimate.js";
 export {
 	contractsVersion,
+	type DenialCategory,
 	type DenialReason,
+	type InputInserted,
+	type InstructionSection,
+	type RecordedInstructions,
+	type RecordedRuleFile,
 	type RuntimeEvent,
 	type SandboxNetwork,
 	type SandboxSummary,
@@ -81,6 +104,7 @@ export {
 	type ToolResult,
 	type ToolSpec,
 } from "./contracts/index.js";
+export { maxRuleFilesBytes, ruleFileNames } from "./instructions/rule-files.js";
 export { runAgent, toolRegistry } from "./runtime/run-agent.js";
 export {
 	type RequestPermissionsArguments,

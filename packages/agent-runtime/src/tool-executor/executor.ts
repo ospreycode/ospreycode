@@ -1,6 +1,8 @@
-import type { ToolCallBlock } from "@ospreycode/api/protocol";
+import type { ToolCallBlock, UserContent } from "@ospreycode/api/protocol";
 import { Compile, type Validator } from "typebox/compile";
 import type { RuntimeChannel } from "../channel/open.js";
+import type { BlobReadResult, InputContent } from "../channel/protocol.js";
+import { expandInput } from "../context/mentions.js";
 import type { ToolResult } from "../contracts/index.js";
 import { isFileSystemError, ToolFailure, text } from "../tools/files.js";
 import type {
@@ -40,6 +42,26 @@ export class ToolExecutor {
 				{ tool, validator: Compile(tool.schema) },
 			]),
 		);
+	}
+
+	/**
+	 * 展开用户输入里提及的路径和附带的图片：和文件工具用同一份读取记录，提及过的文件可以直接编辑；
+	 * 图片的字节一页一页向 Host 取，单条消息有大小上限。
+	 */
+	expand(content: readonly InputContent[]): Promise<UserContent[]> {
+		return expandInput(content, this.#context, async (sha256) => {
+			const pages: Buffer[] = [];
+			let offset: number | undefined = 0;
+			while (offset !== undefined) {
+				const page: BlobReadResult = await this.#channel.request("blob/read", {
+					sha256,
+					offset,
+				});
+				pages.push(Buffer.from(page.data, "base64"));
+				offset = page.next_offset;
+			}
+			return Buffer.concat(pages);
+		});
 	}
 
 	/**
@@ -123,15 +145,16 @@ export class ToolExecutor {
 		signal: AbortSignal,
 	): Promise<ToolResult> {
 		if ("status" in prepared) return prepared;
-		if (signal.aborted) {
-			return {
-				status: "cancelled",
-				content: text("The tool call was cancelled."),
-			};
-		}
+		const cancelled: ToolResult = {
+			status: "cancelled",
+			content: text("The tool call was cancelled."),
+		};
+		if (signal.aborted) return cancelled;
 		try {
-			return { status: "succeeded", content: await prepared.run() };
+			return { status: "succeeded", content: await prepared.run(signal) };
 		} catch (error) {
+			// 工具在途中发现被取消时抛出的是取消的原因，不是它自己的失败
+			if (signal.aborted && error === signal.reason) return cancelled;
 			return failed(error);
 		}
 	}

@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import type { Socket } from "node:net";
 import type { ApplyEditsResult, FileEditOp } from "@ospreycode/agent-runtime";
 import { killGroup } from "./group.js";
+import { ReaperPipe } from "./reaper.js";
 import type { ProcessTracker } from "./registry.js";
 
 /** apply-edits 的时限：它只核对和写入几个文件。 */
@@ -26,6 +28,8 @@ export interface ApplyEditsOptions {
 	signal: AbortSignal;
 	/** 进程记进进程登记表。 */
 	tracker: ProcessTracker;
+	/** 沙盒实例里有收尾进程（macOS）：在 fd 3 上传入它的管道。 */
+	reaper: boolean;
 }
 
 function parseResult(stdout: string): ApplyEditsResult {
@@ -65,11 +69,24 @@ export async function runApplyEdits(
 	const child = spawn(command, args, {
 		cwd: options.cwd,
 		env: options.env,
-		stdio: ["pipe", "pipe", "pipe"],
+		stdio: [
+			"pipe",
+			"pipe",
+			"pipe",
+			...(options.reaper ? ["pipe" as const] : []),
+		],
 		detached: true,
 	});
 	const pid = child.pid;
 	if (pid === undefined) throw new Error(`启动 apply-edits 失败：${command}`);
+	const reaper = options.reaper
+		? new ReaperPipe(child.stdio[3] as Socket)
+		: undefined;
+	// 先让收尾进程结束实例里的进程，再结束进程组
+	const end = async () => {
+		await reaper?.reap();
+		killGroup(pid);
+	};
 	// 两个事件都在这里就开始等：close 可能紧跟着 exit 同步发出
 	const exited = once(child, "exit") as Promise<
 		[number | null, NodeJS.Signals | null]
@@ -90,7 +107,7 @@ export async function runApplyEdits(
 	try {
 		await options.tracker.add(pid, "apply_edits");
 	} catch (error) {
-		killGroup(pid);
+		await end();
 		await closed;
 		throw error;
 	}
@@ -98,16 +115,16 @@ export async function runApplyEdits(
 	let timedOut = false;
 	const timer = setTimeout(() => {
 		timedOut = true;
-		killGroup(pid);
+		void end();
 	}, timeoutMs);
-	const onAbort = () => killGroup(pid);
+	const onAbort = () => void end();
 	options.signal.addEventListener("abort", onAbort, { once: true });
 	if (options.signal.aborted) onAbort();
 
 	const [exitCode, signal] = await exited;
 	clearTimeout(timer);
 	options.signal.removeEventListener("abort", onAbort);
-	killGroup(pid);
+	await end();
 	await options.tracker.remove(pid);
 	await closed;
 	if (options.signal.aborted) return "cancelled";

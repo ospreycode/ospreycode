@@ -1,0 +1,34 @@
+name: Linux sandbox prerequisites
+description: 安装沙盒后端在 Ubuntu 24.04 上需要的程序和 AppArmor 配置，并确认 bwrap 能启动
+
+runs:
+  using: composite
+  steps:
+    - name: Install bubblewrap, socat and ripgrep
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends bubblewrap socat ripgrep
+    # 和 packages/sandbox/README.md 给用户的配置相同：只对 bwrap 放开 user namespace，
+    # 不把 kernel.apparmor_restrict_unprivileged_userns 设为 0，CI 要和用户的设置一致
+    - name: Allow bwrap to use user namespaces
+      shell: bash
+      run: |
+        sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+        abi <abi/4.0>,
+        include <tunables/global>
+
+        profile bwrap /usr/bin/bwrap flags=(unconfined) {
+          userns,
+
+          include if exists <local/bwrap>
+        }
+        EOF
+        sudo apparmor_parser -r /etc/apparmor.d/bwrap
+    # 启动不了就判红，不跳过沙盒测试
+    - name: Probe bwrap
+      shell: bash
+      run: |
+        echo "image ${ImageVersion:-unknown}, kernel $(uname -r)"
+        bwrap --version
+        bwrap --unshare-user --unshare-pid --unshare-net --ro-bind / / --proc /proc --dev /dev true

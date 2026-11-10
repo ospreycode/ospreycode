@@ -1,0 +1,435 @@
+{
+	"repository": "scaleapi/SWE-bench_Pro-os",
+	"commit": "66f92766bba642462d4bbe5479e83f91f9211862",
+	"tasks_path": "v2/tasks",
+	"image_repository": "ghcr.io/scaleapi/swe-bench_pro-v2",
+	"seed": "osprey-p1",
+	"attempts": 3,
+	"holdout_repositories": {
+		"go": "future-architect/vuls",
+		"python": "ansible/ansible",
+		"javascript": "NodeBB/NodeBB"
+	},
+	"tasks": [
+		{
+			"id": "instance_element-hq__element-web-27139ca68eb075a4438c18fca184887002a4ffbc-vnan",
+			"repository": "element-hq/element-web",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:321aba556aa0cfe3236987016708c35080df91797da17c3c3bc197ea8c75636c"
+		},
+		{
+			"id": "instance_element-hq__element-web-459df4583e01e4744a52d45446e34183385442d6-vnan",
+			"repository": "element-hq/element-web",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:36650b0994050e190577ebbbcfe8c145995a1bfa97641529303af29399947a90"
+		},
+		{
+			"id": "instance_element-hq__element-web-4c6b0d35add7ae8d58f71ea1711587e31081444b-vnan",
+			"repository": "element-hq/element-web",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:e43d1e89ff498d90fe49860ed4ab28a4ece19cd9716fcc2ddeca77a33178c605"
+		},
+		{
+			"id": "instance_element-hq__element-web-72a8f8f03b1a01bb70ef8a5bb61759416991b32c-vnan",
+			"repository": "element-hq/element-web",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:afd6314b457251b0b0571ec7db1c2fc4d00b03bb90552b0827f69ccbb13aaf7c"
+		},
+		{
+			"id": "instance_flipt-io__flipt-2ce8a0331e8a8f63f2c1b555db8277ffe5aa2e63",
+			"repository": "flipt-io/flipt",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:6d7c0a46ca318e3d60d7c6338aee05d907b1093f3237afd93f085f6481d700e7"
+		},
+		{
+			"id": "instance_flipt-io__flipt-406f9396ad65696d58865b3a6283109cd4eaf40e",
+			"repository": "flipt-io/flipt",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:51ffaca4b2a69ec0314c863cf4cce060c289bcb84bca1528573ff710195c1567"
+		},
+		{
+			"id": "instance_flipt-io__flipt-56a620b8fc9ef7a0819b47709aa541cdfdbba00b",
+			"repository": "flipt-io/flipt",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:9b09c8a56bc429926f9f1a5318ce9939a3e2b726c99697902c1d4318d310c2e7"
+		},
+		{
+			"id": "instance_flipt-io__flipt-b3cd920bbb25e01fdb2dab66a5a913363bc62f6c",
+			"repository": "flipt-io/flipt",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:614f78b70022a7424d83dce002ca2b3e4279e024655941803e0be1f3d3d1ea98"
+		},
+		{
+			"id": "instance_flipt-io__flipt-cd2f3b0a9d4d8b8a6d3d56afab65851ecdc408e8",
+			"repository": "flipt-io/flipt",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:d50db0bd68be82c516c60f093aa63dfb072d26320404114f28603ae47a4cfd27"
+		},
+		{
+			"id": "instance_flipt-io__flipt-dbe263961b187e1c5d7fe34c65b000985a2da5a0",
+			"repository": "flipt-io/flipt",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:f0ec09fbc3643b1a917afbb441405487d09fc6cf814746a8283b04f5e707964d"
+		},
+		{
+			"id": "instance_gravitational__teleport-a95b3ae0667f9e4b2404bf61f51113e6d83f01cd",
+			"repository": "gravitational/teleport",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:7f825e3fb3d476fd5516b87d9a83b8c7f499926f4a906fb2a27c657ea4011256"
+		},
+		{
+			"id": "instance_gravitational__teleport-ac2fb2f9b4fd1896b554d3011df23d3d71295779",
+			"repository": "gravitational/teleport",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:5c311eb10c4f53af3b6c547eb7d675b289cee008b7adc48e148a26073df00cf5"
+		},
+		{
+			"id": "instance_internetarchive__openlibrary-00bec1e7c8f3272c469a58e1377df03f955ed478-v13642507b4fc1f8d234172bf8129942da2c2ca26",
+			"repository": "internetarchive/openlibrary",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:38dd58ffa8246da2d1dea01c9a123214a99370337c4dfdc716e38642a06b62bc"
+		},
+		{
+			"id": "instance_internetarchive__openlibrary-09865f5fb549694d969f0a8e49b9d204ef1853ca-ve8c8d62a2b60610a3c4631f5f23ed866bada9818",
+			"repository": "internetarchive/openlibrary",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:e04dd30070a6cbf5ef534dac1d96fb0257f2f7dc27b03c2283bd18f1766333f3"
+		},
+		{
+			"id": "instance_internetarchive__openlibrary-5069b09e5f64428dce59b33455c8bb17fe577070-v8717e18970bcdc4e0d2cea3b1527752b21e74866",
+			"repository": "internetarchive/openlibrary",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:740537cc4585e6a17c18ddb71b86c938dcedde22adee71248397b1706870570f"
+		},
+		{
+			"id": "instance_internetarchive__openlibrary-60725705782832a2cb22e17c49697948a42a9d03-v298a7a812ceed28c4c18355a091f1b268fe56d86",
+			"repository": "internetarchive/openlibrary",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:36bf03089f1232392fb7e988dfcfd8d56915a49f7593f175ffb01a2953856e28"
+		},
+		{
+			"id": "instance_internetarchive__openlibrary-6fdbbeee4c0a7e976ff3e46fb1d36f4eb110c428-v08d8e8889ec945ab821fb156c04c7d2e2810debb",
+			"repository": "internetarchive/openlibrary",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:1ea326f45144ca2c6f207374bca77e86f47e0c367aee587fee18664099e33eb3"
+		},
+		{
+			"id": "instance_internetarchive__openlibrary-7edd1ef09d91fe0b435707633c5cc9af41dedddf-v76304ecdb3a5954fcf13feb710e8c40fcf24b73c",
+			"repository": "internetarchive/openlibrary",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:47d0c6723c4797823a74425ba3a7fd79c1f1557bf63b986d24c14c581a187c24"
+		},
+		{
+			"id": "instance_internetarchive__openlibrary-7f6b722a10f822171501d027cad60afe53337732-ve8c8d62a2b60610a3c4631f5f23ed866bada9818",
+			"repository": "internetarchive/openlibrary",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:774a83f5f7da4ce769a91111dfc5cef372716e503365cf996d1287aa0031fb86"
+		},
+		{
+			"id": "instance_internetarchive__openlibrary-e010b2a13697de70170033902ba2e27a1e1acbe9-v0f5aece3601a5b4419f7ccec1dbda2071be28ee4",
+			"repository": "internetarchive/openlibrary",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:f24841bd9524674578a9cdab896994d8d32241831a1744414fac40c972c80855"
+		},
+		{
+			"id": "instance_navidrome__navidrome-27875ba2dd1673ddf8affca526b0664c12c3b98b",
+			"repository": "navidrome/navidrome",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:83f26744aa8946bcf70490a647e2693040718c49096d9ced23a32255226df1f3"
+		},
+		{
+			"id": "instance_navidrome__navidrome-31799662706fedddf5bcc1a76b50409d1f91d327",
+			"repository": "navidrome/navidrome",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:fc3a3ec486cde2a60d7faf57e1a40671ea20fdfb6d2aa35e69ea1ef8dd7ee3e9"
+		},
+		{
+			"id": "instance_navidrome__navidrome-5e549255201e622c911621a7b770477b1f5a89be",
+			"repository": "navidrome/navidrome",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:560421d03f73f29858fa83d7f1aee06cfe55f99d6d11ebbc63dbe10ebf29b5ac"
+		},
+		{
+			"id": "instance_navidrome__navidrome-669c8f4c49a7ef51ac9a53c725097943f67219eb",
+			"repository": "navidrome/navidrome",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:6666c1bb81518bf977185f4a0961108d625ec6485e85208670de3c9c707b6d77"
+		},
+		{
+			"id": "instance_navidrome__navidrome-66b74c81f115c78cb69910b0472eeb376750efc4",
+			"repository": "navidrome/navidrome",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:924bc74d8e26fde833fb466c39d93644fe76f71860efb6bef5a856526684675d"
+		},
+		{
+			"id": "instance_navidrome__navidrome-8383527aaba1ae8fa9765e995a71a86c129ef626",
+			"repository": "navidrome/navidrome",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:f27ba966d38b0433317a652df92bb31a791b3136b01890d2db0eca7a632be736"
+		},
+		{
+			"id": "instance_navidrome__navidrome-d5df102f9f97c21715c756069c9e141da2a422dc",
+			"repository": "navidrome/navidrome",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:04e3f9caa5f6510cef3d0bfea803b4bbaa5f1faa77aa8662082ff1938862e742"
+		},
+		{
+			"id": "instance_navidrome__navidrome-dfa453cc4ab772928686838dc73d0130740f054e",
+			"repository": "navidrome/navidrome",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:f3c53262911a38f966ca33f95bf1587a30642ced4c372072d04ea67c665adddb"
+		},
+		{
+			"id": "instance_navidrome__navidrome-fa85e2a7816a6fe3829a4c0d8e893e982b0985da",
+			"repository": "navidrome/navidrome",
+			"language": "go",
+			"split": "development",
+			"image_digest": "sha256:f667ba1467feb0914ef66fbd5dcb2d5e61cfac2732f616e2f2c9d73f71b70eae"
+		},
+		{
+			"id": "instance_protonmail__webclients-6e1873b06df6529a469599aa1d69d3b18f7d9d37",
+			"repository": "protonmail/webclients",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:fc3c867ad010832886951359395ad2d3bcf31872b432317fa499d55eec0bc0cf"
+		},
+		{
+			"id": "instance_protonmail__webclients-944adbfe06644be0789f59b78395bdd8567d8547",
+			"repository": "protonmail/webclients",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:8f2bec714ebaeca5db3e8a6ffb433e562db4d10b678301b44d06c64c8d542a25"
+		},
+		{
+			"id": "instance_protonmail__webclients-b9387af4cdf79c2cb2a221dea33d665ef789512e",
+			"repository": "protonmail/webclients",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:b2302a63c631f2fefe657a3aeb86e53f7d7fefba5dedbb51aa3cace7bad8b8e3"
+		},
+		{
+			"id": "instance_protonmail__webclients-bf2e89c0c488ae1a87d503e5b09fe9dd2f2a635f",
+			"repository": "protonmail/webclients",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:eed1c67d1f9c9538b1d8685f5a61c499f63683bc1e6ad436fd2b64bedd43336a"
+		},
+		{
+			"id": "instance_protonmail__webclients-caf10ba9ab2677761c88522d1ba8ad025779c492",
+			"repository": "protonmail/webclients",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:326504a3842ba57689c0924ec4679822e8616ab6f7cc0523886d5b9500bbdaf4"
+		},
+		{
+			"id": "instance_protonmail__webclients-cba6ebbd0707caa524ffee51c62b197f6122c902",
+			"repository": "protonmail/webclients",
+			"language": "typescript",
+			"split": "development",
+			"image_digest": "sha256:303e62b020025ebfdcba1ba247b7113746f0a5ccf2d86db7e9d8efa6dc136d85"
+		},
+		{
+			"id": "instance_qutebrowser__qutebrowser-16de05407111ddd82fa12e54389d532362489da9-v363c8a7e5ccdf6968fc7ab84a2053ac78036691d",
+			"repository": "qutebrowser/qutebrowser",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:1702dcababb68e147c5c8d12215c2493bdda9bf4a2d9bfd7b7e43a3987063d6f"
+		},
+		{
+			"id": "instance_qutebrowser__qutebrowser-1af602b258b97aaba69d2585ed499d95e2303ac2-v2ef375ac784985212b1805e1d0431dc8f1b3c171",
+			"repository": "qutebrowser/qutebrowser",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:b34bd26f1ea144a0ac3095d5705cb4155a0ee1592ca552fd6bd138f829c3a7f0"
+		},
+		{
+			"id": "instance_qutebrowser__qutebrowser-34a13afd36b5e529d553892b1cd8b9d5ce8881c4-vafb3e8e01b31319c66c4e666b8a3b1d8ba55db24",
+			"repository": "qutebrowser/qutebrowser",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:6bad05909281185096ebe6027663060920f1bbe15feb0f262c242201af7a2824"
+		},
+		{
+			"id": "instance_qutebrowser__qutebrowser-e57b6e0eeeb656eb2c84d6547d5a0a7333ecee85-v2ef375ac784985212b1805e1d0431dc8f1b3c171",
+			"repository": "qutebrowser/qutebrowser",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:6fc7f49ea93ff345fcf5a06b57ad11e9eabda56a3da95b138606f8185211450e"
+		},
+		{
+			"id": "instance_qutebrowser__qutebrowser-fcfa069a06ade76d91bac38127f3235c13d78eb1-v5fc38aaf22415ab0b70567368332beee7955b367",
+			"repository": "qutebrowser/qutebrowser",
+			"language": "python",
+			"split": "development",
+			"image_digest": "sha256:1c1bd1667ddda3cf27a6128548ab7bcc4887a796063c6073fe83aeee946277c5"
+		},
+		{
+			"id": "instance_NodeBB__NodeBB-4327a09d76f10a79109da9d91c22120428d3bdb9-vnan",
+			"repository": "NodeBB/NodeBB",
+			"language": "javascript",
+			"split": "holdout",
+			"image_digest": "sha256:462fdee4f8ea9c200c4719e2bc890c190f356f6f874541c93f2883ab5683e60f"
+		},
+		{
+			"id": "instance_NodeBB__NodeBB-7b8bffd763e2155cf88f3ebc258fa68ebe18188d-vf2cf3cbd463b7ad942381f1c6d077626485a1e9e",
+			"repository": "NodeBB/NodeBB",
+			"language": "javascript",
+			"split": "holdout",
+			"image_digest": "sha256:09158ced85c5393d42b7d3264d6322f2ae5d446be60d2068400a31bdcdd89f48"
+		},
+		{
+			"id": "instance_NodeBB__NodeBB-97c8569a798075c50e93e585ac741ab55cb7c28b-vf2cf3cbd463b7ad942381f1c6d077626485a1e9e",
+			"repository": "NodeBB/NodeBB",
+			"language": "javascript",
+			"split": "holdout",
+			"image_digest": "sha256:0c1bda3771a33dc39070bf3b130b7217a352a144a7e2a9e1360d88113840ed1b"
+		},
+		{
+			"id": "instance_NodeBB__NodeBB-b398321a5eb913666f903a794219833926881a8f-vd59a5728dfc977f44533186ace531248c2917516",
+			"repository": "NodeBB/NodeBB",
+			"language": "javascript",
+			"split": "holdout",
+			"image_digest": "sha256:61de2fb9cef03db400efad215804572eba57fcb656c97d42889396105c1c52ed"
+		},
+		{
+			"id": "instance_NodeBB__NodeBB-bd80d36e0dcf78cd4360791a82966078b3a07712-v4fbcfae8b15e4ce5d132c408bca69ebb9cf146ed",
+			"repository": "NodeBB/NodeBB",
+			"language": "javascript",
+			"split": "holdout",
+			"image_digest": "sha256:f4960d23773b218aa4106768288151c52c5409d521de7172a07fd320f9605342"
+		},
+		{
+			"id": "instance_NodeBB__NodeBB-da0211b1a001d45d73b4c84c6417a4f1b0312575-vf2cf3cbd463b7ad942381f1c6d077626485a1e9e",
+			"repository": "NodeBB/NodeBB",
+			"language": "javascript",
+			"split": "holdout",
+			"image_digest": "sha256:883835ec48aa8f36fcf6771a4806cc23a978ef0e23eada627cb17b5529a312f3"
+		},
+		{
+			"id": "instance_ansible__ansible-5e88cd9972f10b66dd97e1ee684c910c6a2dd25e-v906c969b551b346ef54a2c0b41e04f632b7b73c2",
+			"repository": "ansible/ansible",
+			"language": "python",
+			"split": "holdout",
+			"image_digest": "sha256:4c2d44a85a5823c596c70b3c5a07c0bac77aefb514cd231a0b520237e321dfad"
+		},
+		{
+			"id": "instance_ansible__ansible-7e1a347695c7987ae56ef1b6919156d9254010ad-v390e508d27db7a51eece36bb6d9698b63a5b638a",
+			"repository": "ansible/ansible",
+			"language": "python",
+			"split": "holdout",
+			"image_digest": "sha256:0a5360eb6e59a37ea947ff041fdbe95bdb7a35e6e0999d7fd3c65de3d339505e"
+		},
+		{
+			"id": "instance_ansible__ansible-949c503f2ef4b2c5d668af0492a5c0db1ab86140-v0f01c69f1e2528b935359cfe578530722bca2c59",
+			"repository": "ansible/ansible",
+			"language": "python",
+			"split": "holdout",
+			"image_digest": "sha256:9a68267f4ca0c9b7978feab149035ba8f293104a8924c6cd1edcebea57cb87cd"
+		},
+		{
+			"id": "instance_ansible__ansible-be2c376ab87e3e872ca21697508f12c6909cf85a-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+			"repository": "ansible/ansible",
+			"language": "python",
+			"split": "holdout",
+			"image_digest": "sha256:0d27bbdf3e80220896aeec1dcac2a59fa768dccc2c9f90117a12d144b4e556f0"
+		},
+		{
+			"id": "instance_ansible__ansible-d58e69c82d7edd0583dd8e78d76b075c33c3151e-v173091e2e36d38c978002990795f66cfc0af30ad",
+			"repository": "ansible/ansible",
+			"language": "python",
+			"split": "holdout",
+			"image_digest": "sha256:a5bdafefecbf0ac06b2a5565849ad5da5cb15e50afb9f59d153f5edc779fbc35"
+		},
+		{
+			"id": "instance_ansible__ansible-e64c6c1ca50d7d26a8e7747d8eb87642e767cd74-v0f01c69f1e2528b935359cfe578530722bca2c59",
+			"repository": "ansible/ansible",
+			"language": "python",
+			"split": "holdout",
+			"image_digest": "sha256:fdf992955806b982e0cff01e0867c99ddaa2113995cd98113ac8f99df1d1f4ef"
+		},
+		{
+			"id": "instance_ansible__ansible-ed6581e4db2f1bec5a772213c3e186081adc162d-v0f01c69f1e2528b935359cfe578530722bca2c59",
+			"repository": "ansible/ansible",
+			"language": "python",
+			"split": "holdout",
+			"image_digest": "sha256:c8040cd2988dd40c74a19536bba4a88627810267a5d3330486c6dde567bc3cd4"
+		},
+		{
+			"id": "instance_future-architect__vuls-3f8de0268376e1f0fa6d9d61abb0d9d3d580ea7d",
+			"repository": "future-architect/vuls",
+			"language": "go",
+			"split": "holdout",
+			"image_digest": "sha256:1e7cb6cbefa3b549a3749a91f158f2aa9be73abad62c9beeb2d53ef2daed9d15"
+		},
+		{
+			"id": "instance_future-architect__vuls-4b680b996061044e93ef5977a081661665d3360a",
+			"repository": "future-architect/vuls",
+			"language": "go",
+			"split": "holdout",
+			"image_digest": "sha256:b6aa9f0c02801219983b8832051a2dabef7f5ba6cb3dca6f65c180a586e3b91a"
+		},
+		{
+			"id": "instance_future-architect__vuls-4c04acbd9ea5b073efe999e33381fa9f399d6f27",
+			"repository": "future-architect/vuls",
+			"language": "go",
+			"split": "holdout",
+			"image_digest": "sha256:f1a8d18b7a23afb9805b74808c3a322732277e89de8f6d9d683dd128ca7682e5"
+		},
+		{
+			"id": "instance_future-architect__vuls-878c25bf5a9c9fd88ac32eb843f5636834d5712d",
+			"repository": "future-architect/vuls",
+			"language": "go",
+			"split": "holdout",
+			"image_digest": "sha256:c6f9fa4470e719365ba8524967c5d9e0437564c1c378fc30ba812ae623cf6b5f"
+		},
+		{
+			"id": "instance_future-architect__vuls-abd80417728b16c6502067914d27989ee575f0ee",
+			"repository": "future-architect/vuls",
+			"language": "go",
+			"split": "holdout",
+			"image_digest": "sha256:b950522623d288135757712710f69c450d72ef92c018d10ad0fae8236c8437a4"
+		},
+		{
+			"id": "instance_future-architect__vuls-b8db2e0b74f60cb7d45f710f255e061f054b6afc",
+			"repository": "future-architect/vuls",
+			"language": "go",
+			"split": "holdout",
+			"image_digest": "sha256:92a5cf1a60f544ca72736eb97d3ebc9ede4eb24d48d112a52f9a8d8e29fafcb1"
+		},
+		{
+			"id": "instance_future-architect__vuls-dc496468b9e9fb73371f9606cdcdb0f8e12e70ca",
+			"repository": "future-architect/vuls",
+			"language": "go",
+			"split": "holdout",
+			"image_digest": "sha256:dca0d9db1b85f1f35c14c6ce5cc9b30ccd867239ead223e5c69d2c63e3047beb"
+		}
+	]
+}

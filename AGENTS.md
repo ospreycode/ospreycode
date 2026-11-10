@@ -17,9 +17,9 @@
 | [docs/packages/skills.md](docs/packages/skills.md) | SKILL.md 的解析和校验、查找、按需加载；不支持 MCP 提供的 skills 的原因 | 改 `skills` 包 |
 | [docs/packages/mcp.md](docs/packages/mcp.md) | MCP 客户端的模块、为什么只在 Host 一侧使用、传输和请求、授权、协议版本、支持的功能、实现方式、本地 server 进程的生命周期 | 改 `mcp` 包，或改动涉及 MCP server 的连接 |
 | [docs/packages/agent-plugins.md](docs/packages/agent-plugins.md) | 插件格式、`mcp.json` 的解析、路径检查、本项目的命名空间 | 改 `agent-plugins` 包 |
-| [docs/packages/agent-runtime.md](docs/packages/agent-runtime.md) | 通道的操作和消息格式、进程入口、从 Host 得到的配置、工具执行（工具表、shell、编辑、重试）、运行中的用户输入、后台命令、上下文、系统指令和规则文件、子 agent 和多 worker | 改 `agent-runtime` 包，或改动涉及通道 |
-| [docs/packages/agent-host.md](docs/packages/agent-host.md) | Host 的模块和职责、进程形态和通信（通道的连接、agent 进程的启动、异常退出和重启）、标识、项目身份、目录位置、配置的分层和配置项、凭据和登录、session 的打开和关闭（工作区锁、进程登记表）、task 的开始结束和取消、工具调用的处理、预算、恢复、快照和撤销、扩展的管理和信任、hooks（`hooks.json` 的格式和输入输出）、CLI（子命令、会话内命令、退出码、对外的事件格式；`cli` 包的设计也在这里） | 改 `agent-host` 或 `cli` 包，或改动涉及标识、项目身份、目录、配置、凭据、锁、恢复、撤销、扩展的信任和 hooks |
-| [docs/packages/evaluation.md](docs/packages/evaluation.md) | 两类评测、各部分的评测要求、memory 评测（对比组、统计方法、Mem0 对照组）、防止刷分、报告内容、首批 benchmark、评测时的权限配置、sandbox 专项评测的运行环境 | 写测试或评测，或判断改动是否有效 |
+| [docs/packages/agent-runtime.md](docs/packages/agent-runtime.md) | 通道的操作和消息格式、进程入口、从 Host 得到的配置、工具执行（工具表、shell、编辑、重试）、运行中的用户输入、后台命令、上下文、系统指令、规则文件和模型切换、子 agent 和多 worker | 改 `agent-runtime` 包，或改动涉及通道 |
+| [docs/packages/agent-host.md](docs/packages/agent-host.md) | Host 的模块和职责、进程形态和通信（通道的连接、agent 进程的启动、异常退出和重启）、标识、项目身份、目录位置、配置的分层和配置项、凭据和登录、session 的打开和关闭（工作区锁、进程登记表）、task 的开始结束和取消、工具调用的处理、预算、恢复、快照和撤销、扩展的管理和信任、hooks（`hooks.json` 的格式和输入输出）、CLI（子命令、会话内命令、退出码、对外的事件格式、交互界面、提及文件和附件；`cli` 包的设计也在这里） | 改 `agent-host` 或 `cli` 包，或改动涉及标识、项目身份、目录、配置、凭据、锁、恢复、撤销、扩展的信任和 hooks |
+| [docs/packages/evaluation.md](docs/packages/evaluation.md) | 两类评测、各部分的评测要求、memory 评测（对比组、统计方法、Mem0 对照组）、防止刷分、报告内容、首批 benchmark、评测时的权限配置、sandbox 专项评测的组成和运行环境 | 写测试或评测，或判断改动是否有效 |
 
 ## 编码规则
 

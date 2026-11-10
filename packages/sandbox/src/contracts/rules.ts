@@ -41,3 +41,17 @@ export interface RuleSet {
 	network_rules: NetworkRule[];
 	mcp_rules: McpRule[];
 }
+
+/**
+ * 权限规则文件的来源：用户级的 `rules/*.toml`、启动参数 `--rules`、仓库里的 `.ospreycode/rules/*.toml`。
+ * 仓库来源的只能收紧，不能写 `allow`。
+ */
+export type RuleSource = "user" | "startup" | "repo";
+
+/** 一份校验过的权限规则文件。 */
+export interface RuleFile {
+	/** 文件的路径，告诉用户和模型规则写在哪里。 */
+	path: string;
+	source: RuleSource;
+	rules: RuleSet;
+}

@@ -1,4 +1,5 @@
 import type {
+	InputContent,
 	ToolCallCompleted,
 	ToolCallStarted,
 } from "@ospreycode/agent-runtime";
@@ -6,15 +7,30 @@ import type {
 	AssistantMessage,
 	StreamEvent,
 	Usage,
-	UserContent,
 } from "@ospreycode/api/protocol";
 import type { BudgetLimit } from "../sessions/budget.js";
 import type {
 	ApprovalDecided,
+	ApprovalPolicyChanged,
 	ApprovalRequested,
+	BackgroundEnded,
+	BackgroundNotified,
+	BackgroundStarted,
+	ModelChanged,
+	ProcessExited,
+	ProcessStarted,
+	ReasoningEffortChanged,
+	SandboxModeChanged,
 	TaskOutcome,
 	TaskSource,
 } from "../sessions/events.js";
+import type {
+	BackgroundDelivered,
+	FollowUpPaused,
+	InputDequeued,
+	InputInsertedRecord,
+	InputQueued,
+} from "../sessions/inputs.js";
 
 /** 对外事件格式的版本：删除、改名或改变含义时加一，新增事件类型或字段不改。 */
 export const eventFormatVersion = 1;
@@ -71,7 +87,7 @@ export interface SessionEndedEvent extends EventBase {
 export interface TaskStartedEvent extends EventBase, TaskScope, Stored {
 	type: "task.started";
 	source: TaskSource;
-	input: UserContent[];
+	input: InputContent[];
 }
 
 /** `run.started`：子 agent 的 run 另带父字段。 */
@@ -130,6 +146,135 @@ export interface ApprovalDecidedEvent
 	type: "approval.decided";
 }
 
+/** `input.queued`：一条 steering 或 follow-up 排进了队列，带变化后的完整队列。 */
+export interface InputQueuedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		InputQueued {
+	type: "input.queued";
+}
+
+/** `input.inserted`：steering 插进了这个 task，跟在 `after_tool_call_id` 的结果后面。 */
+export interface InputInsertedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		InputInsertedRecord {
+	type: "input.inserted";
+}
+
+/**
+ * `input.dequeued`：输入没有交给模型就离开了队列。`reason` 为 `task_ended` 时是 task 结束时还没
+ * 插入的 steering，前端把它放回输入框。
+ */
+export interface InputDequeuedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		InputDequeued {
+	type: "input.dequeued";
+}
+
+/** `input.follow_up_paused`：follow-up 列表暂停或继续。 */
+export interface FollowUpPausedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		FollowUpPaused {
+	type: "input.follow_up_paused";
+}
+
+/** `model.changed`：从这个 task 的下一次模型请求起换了模型。 */
+export interface ModelChangedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		ModelChanged {
+	type: "model.changed";
+}
+
+/** `reasoning_effort.changed`：从这个 task 的下一次模型请求起换了推理强度。 */
+export interface ReasoningEffortChangedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		ReasoningEffortChanged {
+	type: "reasoning_effort.changed";
+}
+
+/** `background.started`：一条命令转入后台或监视开始。`task_id` 是启动它的 task。 */
+export interface BackgroundStartedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		BackgroundStarted {
+	type: "background.started";
+}
+
+/** `background.ended`：后台命令结束。`task_id` 是当时进行中的 task，session 空闲时是最近的一个。 */
+export interface BackgroundEndedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		BackgroundEnded {
+	type: "background.ended";
+}
+
+/** `background.notification`：后台命令产生了一条通知。`task_id` 的含义同 `background.ended`。 */
+export interface BackgroundNotificationEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		BackgroundNotified {
+	type: "background.notification";
+}
+
+/** `background.delivered`：这些通知交给了这个 task 的模型（插进进行中的 task，或者开始了唤醒的 task）。 */
+export interface BackgroundDeliveredEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		BackgroundDelivered {
+	type: "background.delivered";
+}
+
+/**
+ * `process.started`：Host 启动了一个随 session 存在的进程，按 `kind` 区分：agent 进程（`agent`，
+ * 重启时进程更替只记它）和沙盒的两个辅助进程（`helper`）。不属于任何 task，只带 `run_id`。
+ */
+export interface ProcessStartedEvent extends EventBase, Stored, ProcessStarted {
+	type: "process.started";
+	run_id: string;
+}
+
+/** `process.exited`：Host 启动的进程退出了，带退出码或信号。 */
+export interface ProcessExitedEvent extends EventBase, Stored, ProcessExited {
+	type: "process.exited";
+	run_id: string;
+}
+
+/** `sandbox_mode.changed`：沙盒模式换了，agent 进程已经按新模式重启。不属于任何 task。 */
+export interface SandboxModeChangedEvent
+	extends EventBase,
+		Stored,
+		SandboxModeChanged {
+	type: "sandbox_mode.changed";
+	run_id: string;
+}
+
+/**
+ * `approval_policy.changed`：用户在会话中切换了审批策略，之后的判断按新的策略；挂起的询问在新策略下
+ * 不该再问的已经答为 `denied_by_policy`。不属于任何 task。
+ */
+export interface ApprovalPolicyChangedEvent
+	extends EventBase,
+		Stored,
+		ApprovalPolicyChanged {
+	type: "approval_policy.changed";
+	run_id: string;
+}
+
 /** `warning`：不影响继续运行的问题。 */
 export interface WarningEvent extends EventBase {
 	type: "warning";
@@ -179,6 +324,20 @@ export type HostEvent =
 	| ToolCallCompletedEvent
 	| ApprovalRequestedEvent
 	| ApprovalDecidedEvent
+	| InputQueuedEvent
+	| InputInsertedEvent
+	| InputDequeuedEvent
+	| FollowUpPausedEvent
+	| ModelChangedEvent
+	| ReasoningEffortChangedEvent
+	| BackgroundStartedEvent
+	| BackgroundEndedEvent
+	| BackgroundNotificationEvent
+	| BackgroundDeliveredEvent
+	| ProcessStartedEvent
+	| ProcessExitedEvent
+	| SandboxModeChangedEvent
+	| ApprovalPolicyChangedEvent
 	| WarningEvent
 	| ErrorEvent
 	| ModelDeltaEvent

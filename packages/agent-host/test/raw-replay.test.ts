@@ -104,8 +104,10 @@ test("消息在目标协议里的原文第一次发出时记进 session 记录�
 			.events(session.id)
 			.filter((event) => event.type === "protocol.raw")
 			.map((event) => event.data as ProtocolRaw);
+		// 第一次请求：系统指令、会话开始的上下文消息、输入、工具声明
 		expect(raws.map((raw) => raw.part)).toEqual([
 			"system",
+			"message",
 			"message",
 			"tools",
 			"message",
