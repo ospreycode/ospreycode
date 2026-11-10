@@ -321,12 +321,18 @@ describe("streamModel（anthropic.messages）", () => {
 			error: { category: "network" },
 		});
 
+		// fetch 把真正的原因放在 cause 里，错误信息要带上它
 		const unreachable = await collect(async () => {
-			throw new TypeError("fetch failed");
+			throw new TypeError("fetch failed", {
+				cause: new Error("read ECONNRESET"),
+			});
 		});
 		expect(unreachable.at(-1)).toMatchObject({
 			type: "end",
-			error: { category: "network" },
+			error: {
+				category: "network",
+				message: "fetch failed: read ECONNRESET",
+			},
 		});
 	});
 

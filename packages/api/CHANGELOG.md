@@ -5,7 +5,7 @@
 ### Added
 
 - `@ospreycode/api/protocol`：内部协议的类型（消息和内容块、工具声明、请求参数、流式事件、停止原因、用量、错误类别）和格式版本 `protocolVersion`。
-- `streamModel(entry, request, options)`：按模型清单条目的协议发出流式请求，产出内部协议的事件，以唯一的 `end` 结束，服务报错、网络中断和取消都体现在 `end` 里。选项里的 `cacheKey` 是提示缓存的键（OpenAI 的 `prompt_cache_key`），`raws` 是调用方保存原文的 `RawStore`。
+- `streamModel(entry, request, options)`：按模型清单条目的协议发出流式请求，产出内部协议的事件，以唯一的 `end` 结束，服务报错、网络中断和取消都体现在 `end` 里；请求没有发出去时，错误信息带上 `fetch` 放在 `cause` 里的原因（连接超时、连接被重置等），不只是"fetch failed"。选项里的 `cacheKey` 是提示缓存的键（OpenAI 的 `prompt_cache_key`），`raws` 是调用方保存原文的 `RawStore`。
 - 三种协议的转换，请求体都是拼好的 JSON 原文（`anthropicRequestBody`、`openaiResponsesRequestBody`、`openaiChatRequestBody`），同样的内部请求每次得到相同的请求体：
   - `anthropic.messages`：在 system、tools 和最后一条消息的末尾加缓存断点；推理强度按模型的 `thinking_level_map` 发 `thinking` 和 `output_config.effort`，做前缀校验的模型（Claude 5.1 起）开着推理时带上 `thinking-binding-controls-2026-08-01` 和 `prefix_mismatch_behavior: "error"`；前缀校验失败时错误带上出错的推理块在这次请求里的位置（`ModelErrorInfo.block`）。按状态码和错误码归类错误（`classifyAnthropicError`）。
   - `openai.responses`：指令放进 `instructions`，回复按 item 带回，推理 item 只带回同一服务；`store: false`，按 session 带 `prompt_cache_key`。

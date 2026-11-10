@@ -40,8 +40,15 @@ export type ErrorClassifier = (
 	retryAfter: string | null,
 ) => ModelErrorInfo;
 
+/** 错误的说明。`fetch` 只报"fetch failed"，真正的原因（连接超时、连接被重置等）在 `cause` 里，一并写出。 */
 function describe(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	if (!(error instanceof Error)) return String(error);
+	const { cause } = error;
+	if (!(cause instanceof Error)) return error.message;
+	// 几个地址都连不上时原因是一个没有信息的 AggregateError，只有错误码
+	const reason =
+		cause.message || (cause as NodeJS.ErrnoException).code || cause.name;
+	return `${error.message}: ${reason}`;
 }
 
 /**
