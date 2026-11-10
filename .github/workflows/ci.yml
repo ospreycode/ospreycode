@@ -12,24 +12,23 @@ concurrency:
 
 jobs:
   monitor:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15]
-        node: [24.15.0, 26.13.0]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ matrix.node }}
-      - run: npm ci --ignore-scripts
-      - run: npm run build
+          node-version: 24.15.0
       - run: |
-          which -a bash; bash --version | head -1
-          for i in $(seq 1 15); do
-            echo "=== round $i"
-            npx vitest run packages/agent-host/test/background-commands.test.ts --reporter=dot 2>&1 | grep -E "DEBUG-NOTICES|Tests|FAIL|AssertionError" || true
-          done
+          echo "PATH=$PATH"
+          ls -la /etc/bashrc /etc/profile /etc/zshenv 2>&1 || true
+          echo "--- env -i bash -xc"
+          env -i PATH="$PATH" bash -xc 'echo up' </dev/null 2>&1 | cat
+          echo "--- env -i /bin/bash -c with SHLVL"
+          env -i PATH="$PATH" SHLVL=1 /bin/bash -c 'echo up' </dev/null 2>&1 | cat
+          echo "--- node spawn"
+          node -e 'const {spawnSync}=require("child_process"); for (const argv of [["bash","-xc","echo up"],["bash","-c","echo $BASH_ENV; echo $-; type brew"]]) { const r=spawnSync(argv[0],argv.slice(1),{env:{PATH:process.env.PATH},stdio:["ignore","pipe","pipe"]}); console.log(JSON.stringify({argv,o:r.stdout.toString(),e:r.stderr.toString()})) }'
+          echo "--- node spawn, stdin pipe"
+          node -e 'const {spawnSync}=require("child_process"); const r=spawnSync("bash",["-xc","echo up"],{env:{PATH:process.env.PATH},stdio:["pipe","pipe","pipe"]}); console.log(JSON.stringify({o:r.stdout.toString(),e:r.stderr.toString()}))'
+          echo "--- dtruss-free: which files bash opens"
+          cat /etc/bashrc 2>/dev/null | head -40 || true
+          ls -la ~/.bashrc ~/.bash_profile ~/.profile 2>&1 || true
+          grep -rn "brew" /etc/bashrc /etc/profile /etc/paths.d 2>/dev/null | head || true
