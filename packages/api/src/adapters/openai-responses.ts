@@ -1,5 +1,7 @@
+import type { CountOptions, TokenCount } from "../client/count.js";
 import {
 	buildReply,
+	runCount,
 	runStream,
 	type StreamParser,
 	zeroUsage,
@@ -161,13 +163,14 @@ function messageItems(
 export type RequestContext = Pick<StreamOptions, "cacheKey" | "raws">;
 
 /**
- * 把内部协议的请求转换成 Responses API 的请求体原文。保存过原文的部分原样拼接，其余按内部消息转换；
- * 同样的内部请求每次得到相同的请求体。不使用服务端保存的对话（`store: false`、不带 `previous_response_id`）。
+ * `count` 为真时拼的是计数接口的请求体：内容和 `responses.create` 的相同，只留计数接口接受的
+ * `model`、`instructions`、`input`、`tools`、`tool_choice` 和 `reasoning`。
  */
-export function openaiResponsesRequestBody(
+function render(
 	entry: ModelEntry,
 	request: ModelRequest,
-	context: RequestContext = {},
+	context: RequestContext,
+	count = false,
 ): string {
 	const [first, ...rest] = request.messages;
 	if (first?.role !== "system") {
@@ -246,7 +249,7 @@ export function openaiResponsesRequestBody(
 				? { effort: "none" }
 				: { effort: effort.value, summary: "auto" };
 	const { sampling } = request;
-	return jsonObject([
+	const content: [string, string | undefined][] = [
 		["model", JSON.stringify(entry.model)],
 		["instructions", instructionsRaw],
 		["input", jsonArray(input)],
@@ -259,6 +262,10 @@ export function openaiResponsesRequestBody(
 			"reasoning",
 			reasoning === undefined ? undefined : JSON.stringify(reasoning),
 		],
+	];
+	if (count) return jsonObject(content);
+	return jsonObject([
+		...content,
 		// store: false 时默认就返回加密的推理内容，这里显式写明
 		[
 			"include",
@@ -282,6 +289,18 @@ export function openaiResponsesRequestBody(
 		["store", "false"],
 		["stream", "true"],
 	]);
+}
+
+/**
+ * 把内部协议的请求转换成 Responses API 的请求体原文。保存过原文的部分原样拼接，其余按内部消息转换；
+ * 同样的内部请求每次得到相同的请求体。不使用服务端保存的对话（`store: false`、不带 `previous_response_id`）。
+ */
+export function openaiResponsesRequestBody(
+	entry: ModelEntry,
+	request: ModelRequest,
+	context: RequestContext = {},
+): string {
+	return render(entry, request, context);
 }
 
 function count(value: unknown): number {
@@ -616,9 +635,29 @@ export function streamOpenAIResponses(
 				accept: "text/event-stream",
 				authorization: `Bearer ${options.apiKey}`,
 			},
-			body: openaiResponsesRequestBody(entry, request, options),
+			body: render(entry, request, options),
 		},
 		classifyOpenAIError,
 		new ResponsesParser(entry, request, options),
+	);
+}
+
+/** 用 `POST /v1/responses/input_tokens` 数这次请求的输入 token。 */
+export function countOpenAIResponses(
+	entry: ModelEntry,
+	request: ModelRequest,
+	options: CountOptions,
+): Promise<TokenCount> {
+	return runCount(
+		options,
+		{
+			url: `${entry.base_url}/responses/input_tokens`,
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${options.apiKey}`,
+			},
+			body: render(entry, request, options, true),
+		},
+		classifyOpenAIError,
 	);
 }

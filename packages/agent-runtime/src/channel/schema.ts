@@ -389,6 +389,54 @@ const RecordedRuleFile = Type.Object(
 	closed,
 );
 
+const RecordedInstructions = Type.Object(
+	{
+		sections: Type.Array(InstructionSection),
+		rule_files: Type.Array(RecordedRuleFile),
+		memory: Type.Optional(
+			Type.Array(Type.Object({ id: Id, version: Count }, closed)),
+		),
+		skills: Type.Optional(
+			Type.Array(
+				Type.Object(
+					{
+						name: Type.String(),
+						description: Type.String(),
+						directory: Type.String(),
+					},
+					closed,
+				),
+			),
+		),
+	},
+	closed,
+);
+
+const ContextCompacted = Type.Object(
+	{
+		trigger: Type.Union([Type.Literal("auto"), Type.Literal("manual")]),
+		tokens_before: Count,
+		summary: Type.String(),
+		messages: Type.Array(
+			Type.Object(
+				{
+					role: Type.Union([Type.Literal("system"), Type.Literal("user")]),
+					message_id: Id,
+					content: Type.Array(TextBlock),
+				},
+				closed,
+			),
+		),
+		loaded_skills: Type.Optional(
+			Type.Array(
+				Type.Object({ name: Type.String(), content: Type.String() }, closed),
+			),
+		),
+		instructions: RecordedInstructions,
+	},
+	closed,
+);
+
 const RuntimeEvent = Type.Union([
 	Type.Object(
 		{ type: Type.Literal("blocks.invalidated"), data: Invalidation },
@@ -397,13 +445,7 @@ const RuntimeEvent = Type.Union([
 	Type.Object(
 		{
 			type: Type.Literal("instructions.recorded"),
-			data: Type.Object(
-				{
-					sections: Type.Array(InstructionSection),
-					rule_files: Type.Array(RecordedRuleFile),
-				},
-				closed,
-			),
+			data: RecordedInstructions,
 		},
 		closed,
 	),
@@ -419,6 +461,10 @@ const RuntimeEvent = Type.Union([
 				closed,
 			),
 		},
+		closed,
+	),
+	Type.Object(
+		{ type: Type.Literal("context.compacted"), data: ContextCompacted },
 		closed,
 	),
 ]);
@@ -503,6 +549,18 @@ const ToolCallStarted = Type.Object(
 		name: Type.String(),
 		arguments: Type.String(),
 		executor: Type.Union([Type.Literal("runtime"), Type.Literal("host")]),
+		edits: Type.Optional(
+			Type.Array(
+				Type.Object(
+					{
+						path: Type.String(),
+						old_sha256: Type.Union([Type.String(), Type.Null()]),
+						new_sha256: Type.String(),
+					},
+					closed,
+				),
+			),
+		),
 	},
 	closed,
 );
@@ -536,6 +594,15 @@ export const protocolSchemas = {
 
 const Empty = Type.Record(Type.String(), Type.Never());
 
+const MemoryScope = Type.Union([Type.Literal("project"), Type.Literal("user")]);
+
+const MemoryKind = Type.Union([
+	Type.Literal("fact"),
+	Type.Literal("preference"),
+	Type.Literal("decision"),
+	Type.Literal("lesson"),
+]);
+
 const ToolCallFields = {
 	call_id: Type.String(),
 	message_id: Id,
@@ -563,6 +630,7 @@ const requestParams = {
 		{ message_id: Id, request: ModelRequest },
 		closed,
 	),
+	"model/count_tokens": Type.Object({ request: ModelRequest }, closed),
 	"tool_call/run": Type.Object(
 		{
 			...ToolCallFields,
@@ -615,6 +683,51 @@ const requestParams = {
 	"blob/read": Type.Object({ sha256: Type.String(), offset: Count }, closed),
 	"image/put": Type.Object({ image: ImageBlock }, closed),
 	"image/read": Type.Object({ sha256: Type.String() }, closed),
+	"memory/search": Type.Object(
+		{ query: Type.String(), tool_call_id: Type.Optional(Id) },
+		closed,
+	),
+	"memory/read": Type.Object({ id: Id, tool_call_id: Id }, closed),
+	"memory/propose": Type.Object(
+		{
+			scope: MemoryScope,
+			kind: MemoryKind,
+			title: Type.String(),
+			body: Type.String(),
+			replaces: Type.Optional(Id),
+			files: Type.Array(
+				Type.Object(
+					{
+						path: Type.String(),
+						line: Type.Optional(Type.Integer({ minimum: 1 })),
+						sha256: Type.String(),
+					},
+					closed,
+				),
+			),
+		},
+		closed,
+	),
+	"skill/load": Type.Object({ name: Type.String() }, closed),
+	"hooks/run": Type.Union([
+		Type.Object(
+			{
+				event: Type.Literal("Stop"),
+				message_id: Id,
+				last_assistant_message: Type.String(),
+				continuation_count: Count,
+			},
+			closed,
+		),
+		Type.Object(
+			{
+				event: Type.Literal("PreCompact"),
+				message_id: Id,
+				trigger: Type.Union([Type.Literal("manual"), Type.Literal("auto")]),
+			},
+			closed,
+		),
+	]),
 } satisfies Record<keyof Protocol.RuntimeRequests, TSchema>;
 
 /** runtime 发给 Host 的通知的参数。 */

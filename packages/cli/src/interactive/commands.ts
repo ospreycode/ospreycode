@@ -20,6 +20,24 @@ export interface CommandActions {
 	pickModel(): void;
 	/** 列出后台命令，选中一条可以停止。 */
 	pickBackground(): void;
+	/** `/memory` 后面的内容：查看、纠正和删除记忆，确认候选。 */
+	memory(argument: string): Promise<void>;
+	/** `/extensions` 后面的内容：查看扩展，确认、启用和停用。 */
+	extensions(argument: string): Promise<void>;
+	/** 压缩上下文：只在 session 空闲时可用。 */
+	compact(): Promise<void>;
+	/** `/diff` 后面的内容：查看本 session 的改动，或者某个检查点以来的改动。 */
+	diff(argument: string): Promise<void>;
+	/** `/undo` 后面的内容：列出检查点，或者把代码还原到其中一个。 */
+	undo(argument: string): Promise<void>;
+	/** `/rewind` 后面的内容：列出检查点，或者把对话回退到其中一个的输入之前。 */
+	rewind(argument: string): Promise<void>;
+	/** `/branch` 后面的内容：列出回退时放弃的分支，或者切回其中一个。 */
+	branch(argument: string): Promise<void>;
+	/** `/fork` 后面的内容：从当前位置或某个检查点分叉出新的 session，界面换到分叉上。 */
+	fork(argument: string): Promise<void>;
+	/** `/export` 后面的内容：把本 session 导出成 JSONL 文件。 */
+	exportSession(argument: string): Promise<void>;
 	reload(): Promise<void>;
 	clearCache(): Promise<void>;
 	quit(): void;
@@ -54,6 +72,21 @@ const approvalPolicies: readonly ApprovalPolicy[] = [
 	"on-request",
 	"granular",
 	"never",
+];
+
+/** `/memory` 的子命令，补全时列出；各自做什么见 `MemoryCommands`。 */
+const memorySubcommands = [
+	"show",
+	"add",
+	"confirm",
+	"reject",
+	"correct",
+	"rollback",
+	"retire",
+	"restore",
+	"expire",
+	"delete",
+	"help",
 ];
 
 /** 会话内命令的表：补全和执行都从这里来。 */
@@ -130,6 +163,24 @@ export const commands: readonly Command[] = [
 		},
 	},
 	{
+		name: "memory",
+		description: "查看、纠正和删除记忆，确认候选",
+		argumentHint: "[show|add|confirm|reject|correct|…] [ID]",
+		choices: () => memorySubcommands,
+		async run(argument, actions) {
+			await actions.memory(argument);
+		},
+	},
+	{
+		name: "extensions",
+		description: "查看扩展，确认、启用和停用",
+		argumentHint: "[show|confirm|enable|disable] [N]",
+		choices: () => ["show", "confirm", "enable", "disable", "help"],
+		async run(argument, actions) {
+			await actions.extensions(argument);
+		},
+	},
+	{
 		name: "reload",
 		description: "重新读取配置、权限规则、hooks 和 skills",
 		async run(_argument, actions) {
@@ -141,6 +192,61 @@ export const commands: readonly Command[] = [
 		description: "清除这个工作区的构建工具缓存",
 		async run(_argument, actions) {
 			await actions.clearCache();
+		},
+	},
+	{
+		name: "compact",
+		description: "压缩上下文，只在空闲时可用",
+		async run(_argument, actions) {
+			await actions.compact();
+		},
+	},
+	{
+		name: "diff",
+		description: "查看本 session 的改动，或者某个检查点以来的改动",
+		argumentHint: "[N]",
+		async run(argument, actions) {
+			await actions.diff(argument);
+		},
+	},
+	{
+		name: "undo",
+		description: "列出检查点，或者把代码还原到某个检查点，只在空闲时可用",
+		argumentHint: "[N] [overwrite]",
+		async run(argument, actions) {
+			await actions.undo(argument);
+		},
+	},
+	{
+		name: "rewind",
+		description: "列出检查点，或者把对话回退到某个检查点，只在空闲时可用",
+		argumentHint: "[N] [code] [overwrite]",
+		async run(argument, actions) {
+			await actions.rewind(argument);
+		},
+	},
+	{
+		name: "branch",
+		description: "列出回退时放弃的分支，或者切回其中一个，只在空闲时可用",
+		argumentHint: "[N]",
+		async run(argument, actions) {
+			await actions.branch(argument);
+		},
+	},
+	{
+		name: "fork",
+		description: "从当前位置或某个检查点分叉出新的 session，只在空闲时可用",
+		argumentHint: "[N]",
+		async run(argument, actions) {
+			await actions.fork(argument);
+		},
+	},
+	{
+		name: "export",
+		description: "把本 session 导出成 JSONL 文件",
+		argumentHint: "[FILE]",
+		async run(argument, actions) {
+			await actions.exportSession(argument);
 		},
 	},
 	{

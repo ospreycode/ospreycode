@@ -4,21 +4,34 @@ import type {
 	BlobReadResult,
 	Empty,
 	HandlerContext,
+	HooksRunParams,
+	HooksRunResult,
 	HostChannel,
 	ImagePutParams,
 	ImageReadParams,
 	ImageReadResult,
 	InitializeParams,
 	InputTakeResult,
+	MemoryProposeParams,
+	MemoryProposeResult,
+	MemoryReadParams,
+	MemoryReadResult,
+	MemorySearchParams,
+	MemorySearchResult,
+	ModelCountTokensParams,
+	ModelCountTokensResult,
 	ModelRequestParams,
 	ModelRequestResult,
 	RecordAppendParams,
 	RecordReadParams,
 	RecordReadResult,
 	RuntimeRequests,
+	SkillLoadParams,
+	SkillLoadResult,
 	TaskEndParams,
 	TaskEndResult,
 	ToolCallCompleteParams,
+	ToolCallCompleteResult,
 	ToolCallRegisterParams,
 	ToolCallRegisterResult,
 	ToolCallRunParams,
@@ -33,6 +46,10 @@ export interface ChannelHandlers {
 		params: ModelRequestParams,
 		context: HandlerContext<RuntimeRequests["model/request"]["stream"]>,
 	): Promise<ModelRequestResult>;
+	modelCountTokens(
+		params: ModelCountTokensParams,
+		context: HandlerContext<never>,
+	): Promise<ModelCountTokensResult>;
 	toolCallRun(
 		params: ToolCallRunParams,
 		context: HandlerContext<RuntimeRequests["tool_call/run"]["stream"]>,
@@ -40,13 +57,20 @@ export interface ChannelHandlers {
 	toolCallRegister(
 		params: ToolCallRegisterParams,
 	): Promise<ToolCallRegisterResult>;
-	toolCallComplete(params: ToolCallCompleteParams): Promise<Empty>;
+	toolCallComplete(
+		params: ToolCallCompleteParams,
+	): Promise<ToolCallCompleteResult>;
 	recordAppend(params: RecordAppendParams): void;
 	inputTake(): Promise<InputTakeResult>;
 	recordRead(params: RecordReadParams): Promise<RecordReadResult>;
 	blobRead(params: BlobReadParams): Promise<BlobReadResult>;
 	imagePut(params: ImagePutParams): Promise<Empty>;
 	imageRead(params: ImageReadParams): Promise<ImageReadResult>;
+	memorySearch(params: MemorySearchParams): Promise<MemorySearchResult>;
+	memoryRead(params: MemoryReadParams): Promise<MemoryReadResult>;
+	memoryPropose(params: MemoryProposeParams): Promise<MemoryProposeResult>;
+	skillLoad(params: SkillLoadParams): Promise<SkillLoadResult>;
+	hooksRun(params: HooksRunParams): Promise<HooksRunResult>;
 }
 
 /** 在 Host 一侧的通道上注册 runtime 的全部操作。 */
@@ -58,6 +82,9 @@ export function serveChannel(
 	channel.handle("task/end", (params) => handlers.taskEnd(params));
 	channel.handle("model/request", (params, context) =>
 		handlers.modelRequest(params, context),
+	);
+	channel.handle("model/count_tokens", (params, context) =>
+		handlers.modelCountTokens(params, context),
 	);
 	channel.handle("tool_call/run", (params, context) =>
 		handlers.toolCallRun(params, context),
@@ -74,4 +101,9 @@ export function serveChannel(
 	channel.handle("blob/read", (params) => handlers.blobRead(params));
 	channel.handle("image/put", (params) => handlers.imagePut(params));
 	channel.handle("image/read", (params) => handlers.imageRead(params));
+	channel.handle("memory/search", (params) => handlers.memorySearch(params));
+	channel.handle("memory/read", (params) => handlers.memoryRead(params));
+	channel.handle("memory/propose", (params) => handlers.memoryPropose(params));
+	channel.handle("skill/load", (params) => handlers.skillLoad(params));
+	channel.handle("hooks/run", (params) => handlers.hooksRun(params));
 }

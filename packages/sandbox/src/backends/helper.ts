@@ -59,6 +59,8 @@ export async function main(): Promise<void> {
 				const problem = bubblewrapProblem(process.env.PATH ?? "");
 				if (problem !== undefined) throw new Error(problem);
 			}
+			// sandbox-runtime 每次包装时从本进程的环境变量取要 mask 的真实值
+			Object.assign(process.env, request.params.secrets);
 			config = request.params.config as Config;
 			await SandboxManager.initialize(
 				config,

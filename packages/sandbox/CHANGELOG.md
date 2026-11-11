@@ -40,8 +40,11 @@
 - `@ospreycode/sandbox/backends`：macOS（Seatbelt）和 Linux（bubblewrap，x64 和 arm64）的沙盒后端，基于 `@anthropic-ai/sandbox-runtime` 0.0.81。Linux 后端还没有在真机上验证。
   - `startSandboxHelper` 启动加载 sandbox-runtime 的辅助进程（`pid` 是它的进程组，`children` 是 Linux 上它启动的 socat），为一组沙盒生成启动命令。网络名单、批准的 Unix socket 和本地端口只能按进程设置（`HelperScope`）；`scope.network` 不给时沙盒完全不能联网，给了以后名单之外的域名经 `ask` 回调询问，连接挂起到回答为止（`NetworkAnswer`）。辅助进程自己退出时调用 `onExit`。
   - `sandboxFilesystem(policy, scope, platform)` 生成一个沙盒的文件规则：Host 根目录、凭据和常见密钥位置不可读；命令沙盒另可写构建缓存和批准的路径；越界执行（`escalated`）放开文件写入，Host 根目录、安装目录、主目录里会被自动执行的文件和受保护的路径仍然不可写；apply-edits 只能写批准的文件（Linux 上要新建的文件放开它所在的目录）。受保护的路径在每个可写的根目录里都禁止写入；Linux 上不存在的受保护名字的占位一律是空目录。
+  - `sandboxFilesystem` 的 `scope` 多了快照沙盒 `{kind: "snapshot", repository, restore}`：运行 Host 给定参数的 git，只有影子仓库 `repository` 可读写，Host 根目录里也只放开它；`restore` 为真（还原）时工作区也可写，受保护的名字不另外禁止。
   - macOS 上 `wrap` 的 `reaper`（`ReaperOptions`）在沙盒实例里加上收尾进程：调用方关闭管道时它结束实例里的全部进程，包括以后台、`nohup` 和两次 fork 启动的。
   - Linux 上辅助进程初始化时检查依赖（bubblewrap、socat、ripgrep、seccomp 组件）齐全，bubblewrap 是 0.8.0 以上并且不是 setuid 安装，不满足时 `startSandboxHelper` 抛出 `SandboxUnavailableError`。
   - `verifySandboxBackend` 在沙盒里实际运行一条空命令，后端启动不了命令时抛出 `SandboxUnavailableError`；`checkSandboxSupport` 在没有后端的平台上抛出它；临时目录太深、放不下 sandbox-runtime 的 Unix socket 的路径时，`startSandboxHelper` 同样抛出它。
   - `SandboxHelper.exited`（`HelperExit`）：辅助进程退出时兑现为它的退出码或结束它的信号，不论是不是因为 `stop()`。
+  - 环境变量的 mask：`HelperScope.maskedEnv`（`MaskedEnv[]`：变量名和真实值可以发往的域名）加 `startSandboxHelper` 的 `secrets`（变量名到真实值）。这个辅助进程的沙盒里这些变量只有占位值，代理终止 TLS、把发往列出的域名的请求里的占位值换成真实值，发往别处的请求里还是占位值；真实值只交给辅助进程，不在它启动时的环境变量里。
+  - macOS 上所有沙盒放行 mach 服务 `com.apple.SystemConfiguration.configd`：读系统代理设置的程序（如 uv）在读不到时会崩溃。
 - `@ospreycode/sandbox/helper`：辅助进程的入口，Host 用 `process.execPath` 运行。

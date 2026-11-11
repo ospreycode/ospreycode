@@ -2,7 +2,6 @@ import { realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	ChannelRequestError,
-	type Empty,
 	type FileEditOp,
 	type HandlerContext,
 	ProtocolError,
@@ -13,6 +12,7 @@ import {
 	type ShellArguments,
 	shellArgumentsSchema,
 	type ToolCallCompleteParams,
+	type ToolCallCompleteResult,
 	type ToolCallParams,
 	type ToolCallRegisterParams,
 	type ToolCallRegisterResult,
@@ -20,16 +20,19 @@ import {
 	type ToolCallRunResult,
 	type ToolResult,
 } from "@ospreycode/agent-runtime";
-import type { UserContent } from "@ospreycode/api/protocol";
+import type { TextBlock, UserContent } from "@ospreycode/api/protocol";
+import type { JsonValue } from "@ospreycode/mcp";
 import {
 	type CommandContext,
 	type CommandRequest,
 	type CommandRule,
 	decideCommand,
 	decideFileEdits,
+	decideMcpTool,
 	decidePermissions,
 	type GrantedPermissions,
 	InvalidHostError,
+	type McpToolRequest,
 	normalizeHostPattern,
 	type PermissionDecision,
 	type PermissionRequest,
@@ -41,6 +44,9 @@ import {
 	suggestedRule,
 } from "@ospreycode/sandbox";
 import { Compile, type Validator } from "typebox/compile";
+import type { SessionExtensions } from "../extensions/session-extensions.js";
+import { hookContext, hookFeedback } from "../hooks/context.js";
+import type { HubTool } from "../mcp-hub/hub.js";
 import { ApplyEditsError, runApplyEdits } from "../processes/apply-edits.js";
 import type {
 	BackgroundCommands,
@@ -52,6 +58,7 @@ import { isInside, overlaps, realTarget } from "../project/paths.js";
 import type { EventSink } from "../sessions/emitter.js";
 import { newId } from "../sessions/ids.js";
 import type { Run } from "../sessions/run.js";
+import type { ToolSnapshots } from "../workspace/session-snapshots.js";
 import type { Approvals } from "./approvals.js";
 import {
 	editDiff,
@@ -78,6 +85,10 @@ const runtimeTools: ReadonlySet<string> = new Set([
 	"write",
 	"grep",
 	"ls",
+	"memory_propose",
+	"memory_search",
+	"memory_read",
+	"skill_load",
 ]);
 
 /** 其中改文件的工具，登记时带改动前后的哈希。 */
@@ -87,7 +98,11 @@ const editingTools: ReadonlySet<string> = new Set(["edit", "write"]);
 interface PendingCall {
 	run: Run;
 	startedAt: number;
+	/** 工具名和模型写出的参数：保存结果时交给 `PostToolUse` hooks。 */
+	call: Pick<ToolCallParams, "name" | "arguments">;
 	edit?: RegisteredEdit;
+	/** `PreToolUse` hooks 补充的信息：随结果交给模型。 */
+	hookContext?: string;
 }
 
 const shellValidator = Compile(shellArgumentsSchema);
@@ -175,6 +190,10 @@ export interface ToolCallsOptions {
 	tools: readonly string[];
 	/** 命令的进程记进进程登记表。 */
 	tracker: ProcessTracker;
+	/** 这个 session 的扩展：MCP 工具、skill 内容的核对、工具调用前后的 hooks。 */
+	extensions: SessionExtensions;
+	/** 工作区的快照：会改文件的调用在 Permission 之后、执行之前做一次，结果保存之前再做一次。 */
+	snapshots: ToolSnapshots;
 }
 
 function text(value: string): UserContent[] {
@@ -206,6 +225,16 @@ function parseArguments<Arguments>(
 	return value as Arguments;
 }
 
+/** 交给 hooks 的工具参数：模型写出的 JSON；不是 JSON 时是原文。 */
+function hookToolInput(raw: string): unknown {
+	try {
+		return JSON.parse(raw);
+	} catch (error) {
+		if (!(error instanceof SyntaxError)) throw error;
+		return raw;
+	}
+}
+
 /** "同一资源上的同类动作"：命令字符串、`workdir` 和申请的权限都相同。 */
 function approvalKey(request: CommandRequest): string {
 	return JSON.stringify([
@@ -224,15 +253,35 @@ function grantsDocker(request: CommandRequest): boolean {
 }
 
 /**
- * 工具调用的处理：登记（分配 `tool_call_id`）→ Permission（含询问）→ 执行，按固定顺序。
- * `tool_call.started` 和 `tool_call.completed` 一律由 Host 写入。
+ * 工具调用的处理：登记（分配 `tool_call_id`）→ `PreToolUse` hooks → Permission（含询问）→ 执行 →
+ * `PostToolUse` hooks → 保存结果，按固定顺序。`tool_call.started` 和 `tool_call.completed` 一律由
+ * Host 写入。
  */
 export class ToolCalls {
 	#options: ToolCallsOptions;
 	#pending = new Map<string, PendingCall>();
+	/** 做过执行前的快照、还没做执行后的快照的调用，和各自的目标文件（没有时是整个工作区）。 */
+	#snapshotted = new Map<string, readonly string[] | undefined>();
 
 	constructor(options: ToolCallsOptions) {
 		this.#options = options;
+	}
+
+	/** Permission 放行之后、执行之前的快照。`paths` 是编辑工具要改的文件，不给时对整个工作区做。 */
+	async #snapshotBefore(
+		toolCallId: string,
+		paths?: readonly string[],
+	): Promise<void> {
+		this.#snapshotted.set(toolCallId, paths);
+		await this.#options.snapshots.before(paths);
+	}
+
+	/** 执行之后的快照：`PostToolUse` hooks（如格式化）的改动也算在这次调用名下。没做过执行前快照的不做。 */
+	async #snapshotAfter(toolCallId: string): Promise<void> {
+		if (!this.#snapshotted.has(toolCallId)) return;
+		const paths = this.#snapshotted.get(toolCallId);
+		this.#snapshotted.delete(toolCallId);
+		await this.#options.snapshots.after(toolCallId, paths);
 	}
 
 	/** 会话中切换了审批策略：之后的判断按新的策略。 */
@@ -251,19 +300,38 @@ export class ToolCalls {
 		}
 		const toolCallId = newId();
 		const started = Date.now();
-		this.#started(run, toolCallId, params, "host");
+		this.#started(
+			run,
+			toolCallId,
+			params,
+			"host",
+			params.file_edits?.map((edit) => ({
+				path: edit.path,
+				old_sha256: edit.old_sha256,
+				new_sha256: sha256(Buffer.from(edit.content)),
+			})),
+		);
 		await context.stream({
 			method: "tool_call/started",
 			params: { tool_call_id: toolCallId },
 		});
 		const signal = AbortSignal.any([context.signal, run.signal]);
-		const result = await this.#execute(
-			params,
-			toolCallId,
-			run,
-			signal,
-			context,
-		);
+		const pre = await this.#preToolUse(run, toolCallId, params, signal);
+		let result: ToolResult;
+		try {
+			result =
+				"refused" in pre
+					? pre.refused
+					: await this.#postToolUse(
+							run,
+							toolCallId,
+							params,
+							await this.#execute(params, toolCallId, run, signal, context),
+							pre.context,
+						);
+		} finally {
+			await this.#snapshotAfter(toolCallId);
+		}
 		this.#completed(run, toolCallId, result, Date.now() - started);
 		if (result.status === "cancelled") {
 			throw new ChannelRequestError("cancelled", "工具调用已取消");
@@ -273,9 +341,13 @@ export class ToolCalls {
 
 	/**
 	 * runtime 一侧执行的工具（`tool_call/register`）：没有启用的工具和落在可写根之外的文件改动
-	 * 不允许执行，结果直接交回；允许的调用等 runtime 用 `tool_call/complete` 提交结果。
+	 * 不允许执行，被 `PreToolUse` hooks 阻止的、内容没有获准的 skill 也不允许，结果直接交回；
+	 * 允许的调用等 runtime 用 `tool_call/complete` 提交结果。
 	 */
-	register(params: ToolCallRegisterParams, run: Run): ToolCallRegisterResult {
+	async register(
+		params: ToolCallRegisterParams,
+		run: Run,
+	): Promise<ToolCallRegisterResult> {
 		const { name, edit } = params;
 		if (edit !== undefined) {
 			// runtime 只为编辑工具登记改动，路径是它解析好的真实路径；不是这样说明它有缺陷或被攻破
@@ -287,7 +359,13 @@ export class ToolCalls {
 			}
 		}
 		const toolCallId = newId();
-		this.#started(run, toolCallId, params, "runtime");
+		this.#started(
+			run,
+			toolCallId,
+			params,
+			"runtime",
+			edit === undefined ? undefined : [edit],
+		);
 		const refused = !(
 			runtimeTools.has(name) && this.#options.tools.includes(name)
 		)
@@ -297,32 +375,171 @@ export class ToolCalls {
 				: !this.#options.writableRoots.some((root) => isInside(edit.path, root))
 					? failure(`${edit.path} is outside the writable roots.`)
 					: this.#protectedEdit(edit.path);
-		if (refused !== undefined) {
-			this.#completed(run, toolCallId, refused, 0);
-			return { tool_call_id: toolCallId, allowed: false, result: refused };
+		const startedAt = Date.now();
+		const refuse = (result: ToolResult): ToolCallRegisterResult => {
+			this.#completed(run, toolCallId, result, Date.now() - startedAt);
+			return { tool_call_id: toolCallId, allowed: false, result };
+		};
+		if (refused !== undefined) return refuse(refused);
+		const pre = await this.#preToolUse(run, toolCallId, params, run.signal);
+		if ("refused" in pre) return refuse(pre.refused);
+		if (name === "skill_load") {
+			const skill = await this.#options.extensions.checkSkillLoad(
+				run,
+				toolCallId,
+				params.arguments,
+			);
+			if (skill !== undefined) return refuse(skill);
 		}
+		if (edit !== undefined) await this.#snapshotBefore(toolCallId, [edit.path]);
 		this.#pending.set(toolCallId, {
 			run,
-			startedAt: Date.now(),
+			startedAt,
+			call: { name, arguments: params.arguments },
 			...(edit === undefined ? {} : { edit }),
+			...(pre.context === undefined ? {} : { hookContext: pre.context }),
 		});
 		return { tool_call_id: toolCallId, allowed: true };
 	}
 
-	/** 提交登记过的调用的结果（`tool_call/complete`）。 */
-	complete(params: ToolCallCompleteParams): Empty {
+	/** 这个 run 里登记过、还在等结果的一次调用的工具名；没有这样的调用时为空。 */
+	pendingTool(toolCallId: string, run: Run): string | undefined {
+		const pending = this.#pending.get(toolCallId);
+		return pending?.run === run ? pending.call.name : undefined;
+	}
+
+	/**
+	 * 提交登记过的调用的结果（`tool_call/complete`）。hooks 补充了信息时返回补充之后的结果，
+	 * runtime 把它交给模型。
+	 */
+	async complete(
+		params: ToolCallCompleteParams,
+	): Promise<ToolCallCompleteResult> {
 		const pending = this.#pending.get(params.tool_call_id);
 		if (pending === undefined) {
 			throw new ProtocolError(`没有等待结果的工具调用：${params.tool_call_id}`);
 		}
 		this.#pending.delete(params.tool_call_id);
+		const result = await this.#postToolUse(
+			pending.run,
+			params.tool_call_id,
+			pending.call,
+			params.result,
+			pending.hookContext,
+		);
+		await this.#snapshotAfter(params.tool_call_id);
 		this.#completed(
 			pending.run,
 			params.tool_call_id,
-			params.result,
+			result,
 			Date.now() - pending.startedAt,
 		);
-		return {};
+		return result === params.result ? {} : { result };
+	}
+
+	/**
+	 * 登记之后、Permission 之前运行 `PreToolUse` hooks。被阻止时返回交给模型的结果；否则返回 hooks
+	 * 补充的信息，它随这次调用的结果交给模型。
+	 */
+	async #preToolUse(
+		run: Run,
+		toolCallId: string,
+		call: Pick<ToolCallParams, "name" | "arguments">,
+		signal: AbortSignal,
+	): Promise<{ refused: ToolResult } | { context?: string }> {
+		const { extensions } = this.#options;
+		if (!extensions.hasHooks("PreToolUse")) return {};
+		const outcome = await extensions.runHooks(
+			{
+				event: "PreToolUse",
+				task_id: run.taskId,
+				run_id: run.runId,
+				match: call.name,
+				fields: {
+					tool_call_id: toolCallId,
+					tool_name: call.name,
+					tool_input: hookToolInput(call.arguments),
+				},
+				signal,
+			},
+			{ tool_call_id: toolCallId },
+		);
+		if (signal.aborted) {
+			return {
+				refused: {
+					status: "cancelled",
+					content: text("The tool call was cancelled."),
+				},
+			};
+		}
+		if (outcome.blocked) {
+			const reason = outcome.reason ?? "";
+			return {
+				refused: {
+					status: "denied",
+					reason: "hook",
+					content: text(
+						`A PreToolUse hook configured by the user blocked this tool call before it ran. Its reason:\n${reason}`,
+					),
+					message: reason,
+				},
+			};
+		}
+		return outcome.additionalContext === undefined
+			? {}
+			: { context: outcome.additionalContext };
+	}
+
+	/**
+	 * 保存结果之前运行 `PostToolUse` hooks，返回交给模型的结果：hooks 补充的信息（连同 `PreToolUse`
+	 * 补充的）接在结果后面单独的文本块里；被阻止时调用已经做完，只把原因告诉模型。没有执行的调用
+	 * （被拒绝、被取消）不运行 `PostToolUse`。
+	 */
+	async #postToolUse(
+		run: Run,
+		toolCallId: string,
+		call: Pick<ToolCallParams, "name" | "arguments">,
+		result: ToolResult,
+		preContext: string | undefined,
+	): Promise<ToolResult> {
+		const { extensions } = this.#options;
+		const blocks: TextBlock[] =
+			preContext === undefined ? [] : [hookContext("PreToolUse", preContext)];
+		if (
+			result.status !== "denied" &&
+			result.status !== "cancelled" &&
+			extensions.hasHooks("PostToolUse")
+		) {
+			const outcome = await extensions.runHooks(
+				{
+					event: "PostToolUse",
+					task_id: run.taskId,
+					run_id: run.runId,
+					match: call.name,
+					fields: {
+						tool_call_id: toolCallId,
+						tool_name: call.name,
+						tool_input: hookToolInput(call.arguments),
+						tool_result: {
+							status: result.status,
+							text: result.content
+								.flatMap((block) => (block.type === "text" ? [block.text] : []))
+								.join("\n"),
+						},
+					},
+					signal: run.signal,
+				},
+				{ tool_call_id: toolCallId },
+			);
+			if (outcome.blocked) {
+				blocks.push(hookFeedback("PostToolUse", outcome.reason ?? ""));
+			} else if (outcome.additionalContext !== undefined) {
+				blocks.push(hookContext("PostToolUse", outcome.additionalContext));
+			}
+		}
+		return blocks.length === 0
+			? result
+			: { ...result, content: [...result.content, ...blocks] };
 	}
 
 	/**
@@ -368,6 +585,8 @@ export class ToolCalls {
 		for (const [toolCallId, pending] of this.#pending) {
 			if (pending.run !== run) continue;
 			this.#pending.delete(toolCallId);
+			// 改动可能已经写了一部分：照常做执行后的快照，不等它做完
+			void this.#snapshotAfter(toolCallId);
 			this.#completed(
 				run,
 				toolCallId,
@@ -401,6 +620,7 @@ export class ToolCalls {
 		toolCallId: string,
 		params: ToolCallParams,
 		executor: "host" | "runtime",
+		edits: RegisteredEdit[] | undefined,
 	): void {
 		this.#options.events.stored(run, {
 			type: "tool_call.started",
@@ -410,6 +630,8 @@ export class ToolCalls {
 			name: params.name,
 			arguments: params.arguments,
 			executor,
+			// 恢复中断的 session 时按这些哈希核对磁盘
+			...(edits === undefined ? {} : { edits }),
 		});
 	}
 
@@ -420,6 +642,16 @@ export class ToolCalls {
 		signal: AbortSignal,
 		context: HandlerContext<RuntimeRequests["tool_call/run"]["stream"]>,
 	): Promise<ToolResult> {
+		const mcpTool = this.#options.extensions.mcpTool(params.name);
+		if (mcpTool !== undefined) {
+			return this.#callMcpTool(
+				mcpTool,
+				params.arguments,
+				toolCallId,
+				run,
+				signal,
+			);
+		}
 		if (!this.#options.tools.includes(params.name)) {
 			return failure(`Unknown tool: ${params.name}`);
 		}
@@ -520,6 +752,15 @@ export class ToolCalls {
 		const commandContext = this.#commandContext(run);
 		const decision = decideCommand(request, commandContext);
 		if (decision.action === "deny") return permissionDenial(decision);
+		// 命令要运行 skill 目录里的脚本：先核对这个 skill 的内容，再按命令规则询问
+		const skill = await this.#options.extensions.checkSkillScript(
+			run,
+			toolCallId,
+			request.command,
+			workdir,
+			this.#options.rules.parser,
+		);
+		if (skill !== undefined) return skill;
 		if (
 			decision.action === "ask" &&
 			!run.taskApprovals.has(approvalKey(request))
@@ -540,7 +781,65 @@ export class ToolCalls {
 			);
 			if ("status" in outcome) return outcome;
 		}
+		await this.#snapshotBefore(toolCallId);
 		return this.#runShell(request, plan, toolCallId, run, signal, context);
+	}
+
+	/**
+	 * MCP 工具调用：工具在 server 自己的进程或远程服务里执行，沙盒管不到，所以每次都按越界处理，
+	 * 默认询问。"本任务内允许"按 server 和工具记；server 明确标注了破坏性的工具每次都问。
+	 */
+	async #callMcpTool(
+		tool: HubTool,
+		raw: string,
+		toolCallId: string,
+		run: Run,
+		signal: AbortSignal,
+	): Promise<ToolResult> {
+		let args: unknown;
+		try {
+			args = JSON.parse(raw);
+		} catch (error) {
+			if (!(error instanceof SyntaxError)) throw error;
+			return failure("The arguments are not valid JSON.");
+		}
+		if (typeof args !== "object" || args === null || Array.isArray(args)) {
+			return failure("The arguments must be a JSON object.");
+		}
+		const { policy, rules, extensions, outputDir } = this.#options;
+		const request: McpToolRequest = {
+			kind: "mcp_tool",
+			server: tool.server.label,
+			tool: tool.tool.name,
+			arguments: raw,
+		};
+		const destructive = tool.tool.annotations?.destructiveHint === true;
+		const decision = decideMcpTool(request, {
+			...policy,
+			rules: [...rules.files],
+			destructive,
+		});
+		if (decision.action === "deny") return permissionDenial(decision);
+		const key = JSON.stringify(["mcp_tool", request.server, request.tool]);
+		if (decision.action === "ask" && !run.taskApprovals.has(key)) {
+			const outcome = await this.#confirm(
+				run,
+				toolCallId,
+				request,
+				decision,
+				"MCP tool call",
+				destructive ? [] : [key],
+			);
+			if ("status" in outcome) return outcome;
+		}
+		// MCP 工具在沙盒管不到的进程里执行，不能确认只读
+		await this.#snapshotBefore(toolCallId);
+		return extensions.callMcpTool(
+			tool,
+			args as Record<string, JsonValue>,
+			join(outputDir, toolCallId),
+			signal,
+		);
 	}
 
 	/** 判断命令规则用到的环境：本任务内批下来的可写路径也算 agent 可写的目录。 */
@@ -965,6 +1264,10 @@ export class ToolCalls {
 				if ("status" in outcome) return outcome;
 			}
 		}
+		await this.#snapshotBefore(
+			toolCallId,
+			edits.map(({ path }) => path),
+		);
 		let launch: SandboxLaunch;
 		try {
 			launch = await editLauncher(edits.map(({ path }) => path));

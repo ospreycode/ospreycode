@@ -8,6 +8,7 @@ import type {
 	StreamEvent,
 	SystemMessage,
 	TextBlock,
+	ToolDeclaration,
 	UserContent,
 } from "@ospreycode/api/protocol";
 import type { FileEditOp } from "../apply-edits/apply.js";
@@ -27,6 +28,61 @@ export interface ModelInfo {
 	/** 输入的上限；比 `context_window` 小时另外限制输入。 */
 	max_input_tokens?: number;
 	max_output_tokens: number;
+}
+
+/** 记忆引用的一个文件和写入时的内容哈希；路径是绝对路径，runtime 在 agent 沙盒里核对。 */
+export interface MemoryReference {
+	path: string;
+	sha256: string;
+}
+
+/** 记忆索引里的一条。 */
+export interface MemoryIndexEntry {
+	id: string;
+	/** 记忆的版本号：内容或状态变了就变。 */
+	version: number;
+	/** 给模型看的一行：编号、范围、类型、标题和来源。 */
+	line: string;
+	references: MemoryReference[];
+}
+
+/** 生效记忆的索引：自动放进上下文的只有它，正文由模型按需读取。 */
+export interface MemoryIndex {
+	entries: MemoryIndexEntry[];
+	/** 超出长度上限、没有列出的条数。 */
+	omitted: number;
+}
+
+/**
+ * 长期记忆的配置。`write` 和 `retrieval` 是评测用的选项，只能由 Host SDK 的调用方在创建 session
+ * 时给出：写入策略是只记用户明确要求的（`explicit`）、加上模型提议（`propose`）还是再加上后台提取
+ * （`extract`）；记忆注入方式是只给索引、只给检索工具、两者都给，还是每个 task 开始时自动注入
+ * 检索到的前几条正文（`auto`）。
+ */
+export interface MemoryConfig {
+	write: "explicit" | "propose" | "extract";
+	retrieval: "index" | "tools" | "both" | "auto";
+	/** 生效记忆的索引；注入方式不给索引时没有。 */
+	index?: MemoryIndex;
+}
+
+/** 启用的一个 skill：模型按名字用 `skill_load` 加载它的完整内容。 */
+export interface SkillInfo {
+	name: string;
+	description: string;
+	/** skill 目录的绝对路径，agent 沙盒里可读：附带的脚本和文件相对它。 */
+	directory: string;
+}
+
+/**
+ * Host 交来的一个 MCP 工具：名字带 Host 分配的标签前缀（`<标签>__<工具名>`），经 `tool_call/run`
+ * 由 Host 执行。只读、可重复、可并发三项由 Host 决定，不采信 server 的标注。
+ */
+export interface McpToolInfo {
+	declaration: ToolDeclaration;
+	read_only: boolean;
+	idempotent: boolean;
+	concurrent: boolean;
 }
 
 /** `initialize` 的参数：agent 进程报告 `agent-runtime` 的包版本，和 Host 依赖的版本不同就停止。 */
@@ -49,6 +105,16 @@ export interface AgentConfig {
 	tools: string[];
 	/** 用户级规则文件：Host 读到的路径和内容；没有时为空。 */
 	user_instructions: { path: string; content: string } | null;
+	/** 长期记忆；这个 session 不用记忆时没有。 */
+	memory?: MemoryConfig;
+	/** 启用的 skills；有它们时 `tools` 里有 `skill_load`。 */
+	skills?: SkillInfo[];
+	/** 启用的 MCP 工具，接在 `tools` 之后。 */
+	mcp_tools?: McpToolInfo[];
+	/** 这个 session 配了"任务结束时"的 hooks：模型给出最终回复后先经 `hooks/run` 运行它们。 */
+	stop_hooks?: boolean;
+	/** 这个 session 配了"上下文压缩前"的 hooks：压缩之前先经 `hooks/run` 运行它们。 */
+	pre_compact_hooks?: boolean;
 	/** 当前日期，`YYYY-MM-DD`。 */
 	date: string;
 	/** 操作系统的说明，如 `macOS 26.1 (arm64)`。 */
@@ -60,6 +126,12 @@ export interface ConfigUpdate {
 	model?: ModelInfo;
 	approval_policy?: ApprovalPolicyName;
 	tools?: string[];
+	/** 记忆变了之后的配置，带新的索引：和已经告诉模型的比较，差别在下一个 task 开始时追加。 */
+	memory?: MemoryConfig;
+	/** 启用的 skills 变了之后的完整列表：和已经告诉模型的比较，有差别时追加一条替换说明。 */
+	skills?: SkillInfo[];
+	/** MCP 工具变了之后的完整列表：从下一次模型请求起生效。 */
+	mcp_tools?: McpToolInfo[];
 }
 
 /** 用户输入里 `@` 提及的路径，照用户写的原样；相对路径按工作区根解析。 */
@@ -87,6 +159,13 @@ export type InputContent = UserContent | MentionBlock | ImageReference;
 /** `task/start` 的参数：开始新的 task。 */
 export interface TaskStartParams {
 	input: InputContent[];
+	/**
+	 * Host 给放这次输入的那条 user 消息分配的编号，runtime 照用：Host 把它记在 `task.started` 里，
+	 * 按事件脱敏靠它找到输入在消息里的那一份。压缩的 task 没有输入，不带。
+	 */
+	message_id?: string;
+	/** `compact` 是用户发起的压缩：输入为空，runtime 只压缩上下文，压缩完报告 task 结束。 */
+	kind?: "compact";
 }
 
 /** runtime 报告的 task 结果。 */
@@ -185,6 +264,19 @@ export interface ModelRequestResult {
 	error?: ModelErrorInfo;
 }
 
+/**
+ * `model/count_tokens` 的参数：要数的请求，和 `model/request` 的 `request` 相同，Host 用和真实请求
+ * 相同的原文调用模型服务的计数接口。
+ */
+export interface ModelCountTokensParams {
+	request: ModelRequestParams["request"];
+}
+
+/** `model/count_tokens` 的响应：这次请求的输入 token 数；计数接口出错时是错误，类别和模型请求的相同。 */
+export type ModelCountTokensResult =
+	| { input_tokens: number }
+	| { error: ModelErrorInfo };
+
 /** `model/event`：`model/request` 的流式事件（`end` 以外的事件，`end` 就是最终响应）。 */
 export interface ModelEventParams {
 	request_id: number;
@@ -244,6 +336,14 @@ export interface ToolCallCompleteParams {
 	result: ToolResult;
 }
 
+/**
+ * `tool_call/complete` 的响应。Host 保存结果时运行工具调用前后的 hooks；它们补充了信息时带上
+ * 补充之后的结果，交给模型的是这一份，不是 runtime 提交的那一份。
+ */
+export interface ToolCallCompleteResult {
+	result?: ToolResult;
+}
+
 /** `record/append` 的参数：上报 runtime 自己的事件。 */
 export interface RecordAppendParams {
 	/** runtime 生成的事件编号。 */
@@ -263,6 +363,9 @@ export interface RecordReadParams {
 /**
  * session 记录里的一个事件：类型、在会话树上的位置和内容。`message.sent` 的内容是
  * `{message: RequestMessage}`，图片是引用，runtime 用 `image/read` 逐张取回。
+ *
+ * 内容里可以带 `redacted: true`：Host 定义的可选标记，表示这个事件被按事件脱敏覆盖过，结构不变，
+ * 内容换成了占位。重建历史时据此作废之后的推理块和被覆盖的压缩（见 `rebuildState`）。
  */
 export interface RecordedEvent {
 	type: string;
@@ -305,6 +408,104 @@ export interface ImageReadResult {
 	image: ImageBlock;
 }
 
+/** `memory/search` 的参数。 */
+export interface MemorySearchParams {
+	query: string;
+	/**
+	 * 发起检索的那次 `memory_search` 调用。Host 记进 `memory.retrieved`：按事件脱敏时查询随调用的
+	 * 参数一起覆盖。task 开始时自动注入的检索没有工具调用，不带。
+	 */
+	tool_call_id?: string;
+}
+
+/** 检索或读取返回的一条生效的记忆。 */
+export interface MemoryEntry {
+	id: string;
+	scope: "project" | "user";
+	kind: "fact" | "preference" | "decision" | "lesson";
+	title: string;
+	body: string;
+	/** 来源的说明：内容来自谁，引用了哪些文件。 */
+	source: string;
+	references: MemoryReference[];
+}
+
+/** `memory/search` 的响应：命中的记忆，最相关的在前。 */
+export interface MemorySearchResult {
+	memories: MemoryEntry[];
+}
+
+/** `memory/read` 的参数。 */
+export interface MemoryReadParams {
+	id: string;
+	/** 发起读取的那次 `memory_read` 调用，Host 记进 `memory.retrieved`。 */
+	tool_call_id: string;
+}
+
+/** `memory/read` 的响应：没有这条记忆，或者它不是生效的，为空。 */
+export interface MemoryReadResult {
+	memory: MemoryEntry | null;
+}
+
+/** `memory/propose` 的参数：一条候选，用户确认后才生效。 */
+export interface MemoryProposeParams {
+	scope: "project" | "user";
+	kind: "fact" | "preference" | "decision" | "lesson";
+	title: string;
+	body: string;
+	/** 这条候选要取代的现有记忆：确认后成为它的新版本。 */
+	replaces?: string;
+	/** 引用的文件：绝对路径，和 runtime 在 agent 沙盒里算出的内容哈希。 */
+	files: { path: string; line?: number; sha256: string }[];
+}
+
+/** `memory/propose` 的响应：记下的候选的编号，或者没有记下的原因（交给模型）。 */
+export type MemoryProposeResult =
+	| { recorded: true; id: string }
+	| { recorded: false; reason: string };
+
+/** `skill/load` 的参数：`skill_load` 登记获准之后取这个 skill 的完整内容。 */
+export interface SkillLoadParams {
+	/** skill 的名字，和启用的 skills 列表里的一致。 */
+	name: string;
+}
+
+/**
+ * `skill/load` 的响应：Host 核对过内容哈希的 skill 正文，已经包上名字和目录；没有这个 skill，
+ * 或者内容和确认过的不一致时是交给模型的原因。
+ */
+export type SkillLoadResult =
+	| { loaded: true; content: string }
+	| { loaded: false; reason: string };
+
+/**
+ * `hooks/run` 的参数：runtime 一侧才知道时机的两种 hooks。`Stop` 在模型给出最终回复、task 结束
+ * 之前；`PreCompact` 在压缩上下文之前。`message_id` 是 hooks 的输出交给模型时 runtime 放它的那条
+ * user 消息的编号（`Stop` 是让模型接着做的那条，`PreCompact` 是要模型写摘要的那条），运行之前就
+ * 定下：Host 把它记进 `hooks.ran`，按事件脱敏靠它对上两份内容。hooks 没有要交给模型的内容时
+ * 不会有这条消息。
+ */
+export type HooksRunParams =
+	| {
+			event: "Stop";
+			message_id: string;
+			/** 模型最后一条回复的文字。 */
+			last_assistant_message: string;
+			/** 这个 task 里 `Stop` hooks 已经让模型接着做了几轮。 */
+			continuation_count: number;
+	  }
+	| { event: "PreCompact"; message_id: string; trigger: "manual" | "auto" };
+
+/**
+ * `hooks/run` 的响应。`blocked` 为真时：`Stop` 表示再跑一轮，`reason` 作为提示交给模型；
+ * `PreCompact` 表示这次不压缩。`additional_context` 是 hooks 补充给模型的信息。
+ */
+export interface HooksRunResult {
+	blocked: boolean;
+	reason?: string;
+	additional_context?: string;
+}
+
 /** `cancel` 的参数：取消自己发出、对方还在处理的请求。 */
 export interface CancelParams {
 	request_id: number;
@@ -335,6 +536,11 @@ export interface RuntimeRequests {
 		result: ModelRequestResult;
 		stream: { method: "model/event"; params: ModelEventParams };
 	};
+	"model/count_tokens": {
+		params: ModelCountTokensParams;
+		result: ModelCountTokensResult;
+		stream: never;
+	};
 	"tool_call/run": {
 		params: ToolCallRunParams;
 		result: ToolCallRunResult;
@@ -349,7 +555,7 @@ export interface RuntimeRequests {
 	};
 	"tool_call/complete": {
 		params: ToolCallCompleteParams;
-		result: Empty;
+		result: ToolCallCompleteResult;
 		stream: never;
 	};
 	"input/take": { params: Empty; result: InputTakeResult; stream: never };
@@ -367,6 +573,31 @@ export interface RuntimeRequests {
 	"image/read": {
 		params: ImageReadParams;
 		result: ImageReadResult;
+		stream: never;
+	};
+	"memory/search": {
+		params: MemorySearchParams;
+		result: MemorySearchResult;
+		stream: never;
+	};
+	"memory/read": {
+		params: MemoryReadParams;
+		result: MemoryReadResult;
+		stream: never;
+	};
+	"memory/propose": {
+		params: MemoryProposeParams;
+		result: MemoryProposeResult;
+		stream: never;
+	};
+	"skill/load": {
+		params: SkillLoadParams;
+		result: SkillLoadResult;
+		stream: never;
+	};
+	"hooks/run": {
+		params: HooksRunParams;
+		result: HooksRunResult;
 		stream: never;
 	};
 }

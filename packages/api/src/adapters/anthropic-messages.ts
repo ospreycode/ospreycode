@@ -1,6 +1,8 @@
+import type { CountOptions, TokenCount } from "../client/count.js";
 import {
 	buildReply,
 	type ErrorClassifier,
+	runCount,
 	runStream,
 	type StreamParser,
 	zeroUsage,
@@ -242,10 +244,15 @@ interface Rendered {
 	refs: (BlockRef | undefined)[][];
 }
 
+/**
+ * `count` 为真时拼的是计数接口的请求体：内容和创建消息的相同，去掉计数接口不接受的 `max_tokens`、
+ * `prefix_mismatch_behavior`、`fallbacks` 和 `stream`。
+ */
 function render(
 	entry: ModelEntry,
 	request: ModelRequest,
 	context: RequestContext,
+	count = false,
 ): Rendered {
 	const [first, ...rest] = request.messages;
 	if (first?.role !== "system") {
@@ -370,7 +377,12 @@ function render(
 	return {
 		body: jsonObject([
 			["model", JSON.stringify(entry.model)],
-			["max_tokens", String(request.max_tokens ?? entry.max_output_tokens)],
+			[
+				"max_tokens",
+				count
+					? undefined
+					: String(request.max_tokens ?? entry.max_output_tokens),
+			],
 			["system", jsonArray(withBreakpoint(systemPieces, control))],
 			["messages", jsonArray(messages)],
 			[
@@ -390,7 +402,7 @@ function render(
 			// 不设时结果取决于账号的创建日期：较早的账号上失效的推理块会被悄悄送给模型并计费
 			[
 				"prefix_mismatch_behavior",
-				checksPrefix(entry, effort) ? '"error"' : undefined,
+				!count && checksPrefix(entry, effort) ? '"error"' : undefined,
 			],
 			[
 				"tools",
@@ -407,13 +419,13 @@ function render(
 			// 只给出明确的回退列表，不用由服务端选模型的 "default"：Host 要知道哪些模型可能作答
 			[
 				"fallbacks",
-				fallbacksOf(entry).length === 0
+				count || fallbacksOf(entry).length === 0
 					? undefined
 					: JSON.stringify(
 							fallbacksOf(entry).map((fallback) => ({ model: fallback.model })),
 						),
 			],
-			["stream", "true"],
+			["stream", count ? undefined : "true"],
 		]),
 		refs,
 	};
@@ -914,5 +926,29 @@ export function streamAnthropicMessages(
 		},
 		locating(refs),
 		new MessagesParser(entry, request, options),
+	);
+}
+
+/**
+ * 用 `POST /v1/messages/count_tokens` 数这次请求的输入 token。请求体和创建消息的相同，前缀校验和
+ * 回退的 beta 字段连同它们的 header 都不带：计数接口不接受。
+ */
+export function countAnthropicMessages(
+	entry: ModelEntry,
+	request: ModelRequest,
+	options: CountOptions,
+): Promise<TokenCount> {
+	return runCount(
+		options,
+		{
+			url: `${entry.base_url}/messages/count_tokens`,
+			headers: {
+				"content-type": "application/json",
+				"anthropic-version": anthropicVersion,
+				"x-api-key": options.apiKey,
+			},
+			body: render(entry, request, options, true).body,
+		},
+		classifyAnthropicError,
 	);
 }

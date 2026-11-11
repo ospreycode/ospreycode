@@ -1,8 +1,14 @@
 /**
- * 在会话树上开始一个 run 的事件类型：它的 `data` 是 `RunRecord`，格式版本是 `storageVersion`。
- * 这是本包唯一读取内容的事件，按它维护 run 的接续关系。
+ * 在会话树上开始一个 run 的事件类型：它的 `data` 是 `RunRecord`，格式版本是写入时的 `storageVersion`
+ * （格式没有变的旧版本照常接受）。本包按它维护 run 的接续关系。
  */
 export const runStartedType = "run.started";
+
+/**
+ * 移动 session 当前位置的事件类型（回退，或切回被放弃的位置）：`data` 是 `PositionMove`，
+ * 写在不属于任何 task 的 run 里。
+ */
+export const positionMovedType = "position.moved";
 
 /** 会话树上的一个位置：某个 run 里序号为 `seq` 的事件之后。 */
 export interface Position {
@@ -25,6 +31,14 @@ export interface RunRecord {
 	base: Position | null;
 }
 
+/**
+ * `position.moved` 的内容。原来的当前位置不在通往 `to` 的路径上时记为被放弃的位置，可以再移回去。
+ */
+export interface PositionMove {
+	/** 新的当前位置，要在这个 session 的会话树里；回退到第一次输入之前时为空。 */
+	to: Position | null;
+}
+
 /** session 的当前位置，显式保存；回退时被放弃的位置保留下来，可以再切回去。 */
 export interface SessionPosition {
 	current: Position;
@@ -39,7 +53,7 @@ export interface InputRange {
 	run_id: string;
 	/** 输入事件的序号。 */
 	from_seq: number;
-	/** 下一次用户输入之前的最后一个序号；输入所在的 task 还在运行时为空。 */
+	/** 同一个 run 里下一次用户输入之前的最后一个序号；之后没有别的输入时为空，范围到这个 run 的末尾。 */
 	to_seq: number | null;
 }
 

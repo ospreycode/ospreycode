@@ -1,6 +1,7 @@
 import type {
 	ApprovalDecided,
 	ApprovalRequested,
+	ServerApprovalRequested,
 } from "@ospreycode/agent-host";
 import {
 	brief,
@@ -184,6 +185,33 @@ export function describeApproval(
 					dim("批准就追加一份同样的额度接着做，拒绝就结束这个任务"),
 				],
 			};
+		case "resume_uncertain":
+			return {
+				title: "上次中断时这次调用不确定有没有执行",
+				lines: [
+					plain(`工具：${sanitize(request.name)}`),
+					plain(`参数：${brief(request.arguments, 2000)}`),
+					dim(
+						"重新执行在下一个任务开始时进行；跳过就告诉模型这次调用的结果不确定",
+					),
+				],
+			};
+		case "extension_changed":
+			return {
+				title:
+					request.action === "load"
+						? "加载内容变了的 skill"
+						: "运行内容变了的 skill 里的脚本",
+				lines: [
+					plain(`skill：${sanitize(request.skill)}`),
+					plain(`目录：${sanitize(request.directory)}`),
+					...(request.command === undefined
+						? []
+						: commandLines(request.command)),
+					...reasonLines(request.reasons),
+					dim("批准只对现在这份内容和本任务有效"),
+				],
+			};
 	}
 }
 
@@ -226,6 +254,15 @@ export function approvalOptions(request: ApprovalRequested): ApprovalOption[] {
 			...deny,
 		];
 	}
+	if (request.kind === "resume_uncertain") {
+		return [
+			{ choice: "once", label: "重新执行" },
+			{ choice: "deny", label: "跳过" },
+		];
+	}
+	if (request.kind === "extension_changed") {
+		return [{ choice: "once", label: "批准这份内容" }, ...deny];
+	}
 	switch (request.request.kind) {
 		case "command":
 			return [
@@ -248,8 +285,13 @@ export function approvalOptions(request: ApprovalRequested): ApprovalOption[] {
 				{ choice: "partial", label: "只批准一部分" },
 				...deny,
 			];
-		case "network":
 		case "mcp_tool":
+			return [
+				{ choice: "once", label: "批准这一次" },
+				{ choice: "task", label: "本任务内批准这个工具" },
+				...deny,
+			];
+		case "network":
 		case "stdin":
 			return [{ choice: "once", label: "批准这一次" }, ...deny];
 	}
@@ -323,12 +365,21 @@ export function answerFor(
 }
 
 /** 询问的结果在对话区里的一句话。 */
-export function decisionText(decided: ApprovalDecided): string {
+export function decisionText(
+	decided: ApprovalDecided,
+	request: ApprovalRequested,
+): string {
 	const { answer } = decided;
 	if (decided.decision === "denied_by_policy") {
 		return "审批策略不再询问这一类，已拒绝";
 	}
 	if (answer === undefined) return "没有等到回答，按拒绝处理";
+	// 恢复时问的是重新执行还是跳过，不是批准一个动作
+	if (request.kind === "resume_uncertain") {
+		return answer.decision === "approve"
+			? "下一个任务开始时重新执行"
+			: "已跳过";
+	}
 	if (answer.decision === "deny") {
 		return answer.message === undefined
 			? "已拒绝"
@@ -341,3 +392,24 @@ export function decisionText(decided: ApprovalDecided): string {
 		rule: "已批准，并保存为规则",
 	}[answer.scope];
 }
+
+/** MCP server 的沙盒要访问还没放行的域名时，给用户看的内容。 */
+export function describeServerApproval(
+	request: ServerApprovalRequested,
+): ApprovalDescription {
+	return {
+		title: `MCP server ${sanitize(request.server)} 访问网络`,
+		lines: [
+			plain(`主机：${request.request.host}:${request.request.port}`),
+			...reasonLines(request.reasons),
+		],
+	};
+}
+
+/** MCP server 的网络询问的选项：批准留给这个 server 在这个 session 里用，不跟着任务结束。 */
+export const serverApprovalOptions: ApprovalOption[] = [
+	{ choice: "once", label: "允许这一次" },
+	{ choice: "task", label: "这个 session 内允许这个 server 访问这个域名" },
+	{ choice: "rule", label: "允许，并保存为规则" },
+	{ choice: "deny", label: "拒绝" },
+];

@@ -95,6 +95,61 @@ describe("完成的任务", () => {
 		expect(result.stderr).toContain("echo from-shell");
 	});
 
+	test("上下文接近模型的上限时自动压缩：过程里有一行说明，任务从摘要接着做完", async () => {
+		// 配置里上下文是 100,000 token：第一次回复报告的用量已经超过它的 85%
+		const usage = { prompt_tokens: 90_000, completion_tokens: 5 };
+		const chunks = [
+			{
+				choices: [
+					{
+						index: 0,
+						delta: {
+							role: "assistant",
+							tool_calls: [
+								{
+									index: 0,
+									id: "call_1",
+									type: "function",
+									function: {
+										name: "shell",
+										arguments: JSON.stringify({ command: "echo from-shell" }),
+									},
+								},
+							],
+						},
+					},
+				],
+			},
+			{ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+			{ choices: [], usage: { ...usage, total_tokens: 90_005 } },
+		];
+		const server = await useModel((call) =>
+			call === 0
+				? {
+						status: 200,
+						contentType: "text/event-stream",
+						body: [...chunks.map((chunk) => JSON.stringify(chunk)), "[DONE]"]
+							.map((data) => `data: ${data}\n\n`)
+							.join(""),
+					}
+				: textReply(call === 1 ? "这是摘要" : "做完了"),
+		);
+		const result = await exec("跑一下 echo");
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe("做完了\n");
+		expect(result.stderr).toMatch(
+			/上下文接近模型的上限，已自动压缩（压缩前约 \d+ token）\n/,
+		);
+		expect(server.requests).toHaveLength(3);
+		expect(JSON.stringify(server.requests[1])).toContain(
+			"<compaction_request>",
+		);
+		const after = JSON.stringify(server.requests[2]);
+		expect(after).toContain("这是摘要");
+		expect(after).not.toContain("跑一下 echo");
+	});
+
 	test("[tools] 打开的 grep 和 ls：文本模式下调用写到 stderr，结果交回模型", async () => {
 		writeFileSync(
 			join(dirs.workspace, "main.ts"),

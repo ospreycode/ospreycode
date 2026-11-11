@@ -3,6 +3,7 @@ export {
 	commands,
 	type OptionSpec,
 } from "./args/commands.js";
+export type { ResumeTarget } from "./args/resume.js";
 export type { ApprovalPolicy, SessionArgs } from "./args/session.js";
 export { runCli } from "./cli.js";
 export type {

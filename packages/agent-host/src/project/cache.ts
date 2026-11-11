@@ -38,14 +38,22 @@ export function clearCache(
 	} else {
 		projects = isDirectory(cache) ? readdirSync(cache) : [];
 	}
-	return projects.filter((projectId): projectId is string => {
-		if (projectId === undefined) return false;
-		const dir = join(cache, projectId);
-		if (!isDirectory(dir)) return false;
-		makeWritable(dir);
-		for (const name of readdirSync(dir)) {
-			rmSync(join(dir, name), { recursive: true, force: true });
-		}
-		return true;
-	});
+	return projects.filter(
+		(projectId): projectId is string =>
+			projectId !== undefined && clearProjectCache(root, projectId),
+	);
+}
+
+/**
+ * 清空一个项目的构建缓存，没有缓存目录时返回 false。和 `clearCache` 一样只删目录里的内容：
+ * 项目的 session 记录全部删除后也用它，这时可能正有一个新的 session 在打开，它的沙盒要用这个目录。
+ */
+export function clearProjectCache(root: string, projectId: string): boolean {
+	const dir = join(root, "cache", projectId);
+	if (!isDirectory(dir)) return false;
+	makeWritable(dir);
+	for (const name of readdirSync(dir)) {
+		rmSync(join(dir, name), { recursive: true, force: true });
+	}
+	return true;
 }

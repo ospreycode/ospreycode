@@ -105,6 +105,16 @@ shell 工具放到后台的命令属于 session，task 结束后继续运行；`
 
 会话中可以改设置：`setSandboxMode(mode)` 和 `reload()` 只能在 session 空闲时调用，会重启 agent 进程；`setApprovalPolicy`、`setModel` 和 `setReasoningEffort` 在 task 运行时也能调用。条件不满足时抛出 `SessionCommandError`、`ConfigError` 或 `CredentialError`，session 照常用原来的设置。`config()` 给出当前生效的配置，会话中换过的设置已经并在里面，前端用它显示当前的模型、沙盒模式和审批策略。agent 进程异常退出不关闭 session：下一次输入时启动新的进程，从 session 记录重建发给模型的历史；连续 3 次异常退出才关闭。
 
+上下文到模型上限的 90%（`openai.chat` 85%）时 agent 进程自动压缩：当前模型把历史写成摘要，之后的请求从摘要接着做，session 记录里的原始内容保留，压缩完成时有 `context.compacted` 事件（`trigger`、`tokens_before`、`summary`）。`compact()` 在 session 空闲时手动压缩：开始一个 `task.started` 带 `kind: "compact"` 的 task 并返回它的 ID，结果看这个 task 的 `task.ended`；session 不空闲时抛出 `SessionCommandError`。
+
+`host.resumeSession({ ...options, sessionId })` 恢复一个已有的 session：接着写原来的记录，agent 进程按记录重建发给模型的历史，没有指定模型时用上次的模型和推理强度；`session.history()` 给出当前对话里已经记下的事件，前端按它重画。上次没有正常关闭时，中断的 task 以 `failed` 结束；不知道有没有执行完的命令逐个发 `kind` 为 `resume_uncertain` 的 `approval.requested`，批准是重新执行，拒绝是跳过，审批策略为 `never` 时抛出 `SessionResumeError`、session 记录不变。中断前给出的批准都失效。
+
+每次用户输入有一个检查点（`session.checkpoints()`）。Host 在工具调用前后给工作区做快照，放在根目录下 agent 的沙盒写不到的影子 git 仓库里；要求 git 2.32 以上，没有时这个 session 不做快照，发一条 `warning`。`session.diff(checkpointId)` 给出某个检查点以来 agent 的改动，`session.undo(checkpointId)` 把这些文件还原到那时：之后又被别处改过的列在 `conflicts` 里、不还原，传 `{ overwrite: true }` 才覆盖；没有快照的（超过大小上限或沙盒读不到的文件、快照已经清理的检查点）列在 `unsnapshotted` 里，编辑工具写到工作区之外的文件列在 `outside` 里，都撤销不了。被 `.gitignore` 忽略的文件不做快照，命令对它们的改动撤销不了，也不会列出；编辑工具改的文件即使被忽略也能撤销。每个 session 只留最近 100 个检查点的快照。
+
+`session.rewind(checkpointId, { code })` 把对话回退到那次输入之前，`code` 为真时同时还原代码；被放弃的那一段留在记录里，`session.branches()` 列出它们，`session.switchBranch(id)` 切回去。`host.forkSession({ ...options, sessionId, checkpointId })` 从一个已关闭的 session 分叉出新的 session，沿用到分叉位置为止的对话和检查点，来源 session 不变。`undo`、`rewind` 和 `switchBranch` 只能在 session 空闲时调用，否则抛出 `SessionCommandError`。
+
+长期记忆默认启用，模型另有 `memory_propose`、`memory_search`、`memory_read` 三个工具（不受 `[tools]` 控制）。记忆分 project 和 user 两种范围，各自一个 SQLite 文件，放在 Host 根目录的 `data` 下。模型提议的和后台从旧 session 里提取的都只是候选（`memory.candidates` 事件），用户确认后才生效；生效记忆的标题列在会话开始的上下文里，正文由模型按需读取（`memory.retrieved` 事件）。`session.memory` 是查看、确认、纠正和删除的接口（`list`、`get`、`add`、`confirm`、`reject`、`correct`、`rollback`、`retire`、`restore`、`expire`、`purge`），会改动的操作要带上看到的版本号，记忆在那之后被改过时抛出 `MemoryConflictError`。`purge` 彻底删除一条记忆，并把它留在 session 记录里的内容按事件脱敏：它依据的对话，和列过它的标题和正文的地方（给模型的索引、检索结果、候选列表；user 记忆在每个登记过的项目里找）。返回 `PurgedMemory`：`redacted` 是脱敏了的 session，`remaining` 是这一次脱敏不了的 session 和原因（比如它正打开着），之后用 `host.redactEvents` 处理，带上 `memoryIds`。评测用 `openSession` 的 `memory` 选项关掉长期记忆（`{ enabled: false }`）或换写入策略和注入方式，用 `session.extractMemory(sessionId)` 对一个已关闭的 session 立即提取。
+
 凭据按启动参数（`credentials`）、用户级配置的 `[credentials]`、系统凭据库的顺序取第一个找到的来源。macOS 上的系统凭据库是登录钥匙串，`host.saveCredential(id, value)` 写入；`createHost` 的 `credentialStore` 可以换成别的实现，传 `null` 不用。错误和警告写进根目录下的 `data/logs/`，日志、错误信息和事件里都去掉 Host 持有的凭据。
 
 打开的 session 持有工作区锁：同一个工作区或互相包含的工作区同时只能有一个打开的 session，`close()` 时释放。Host 启动的进程记在根目录的 `data/processes.json` 里，Host 崩溃后残留的进程在下次打开同一工作区时结束。`host.listProjects()` 和 `host.linkProject(directory, projectId)` 查看和关联项目。
@@ -112,6 +122,10 @@ shell 工具放到后台的命令属于 session，task 结束后继续运行；`
 不打开 session 的方法，CLI 的子命令用它们：
 
 - `host.listSessions({ directory })` 列出 session（标识、项目、工作区、创建和最近写入的时间、标题），最近写过的在前；不给 `directory` 时列出全部项目的。只读 session 记录，打开着的 session 也列得出来。
+- `host.deleteSession({ directory, sessionId, withForks })` 彻底删除 `directory` 所在项目里的一个 session：记录、临时目录和输出文件、内容只来自它的长期记忆，返回删掉的 session 和记忆；`withForks` 把从它分出去的分叉（`host.sessionForks({ directory, sessionId })` 列出它们）一起删除。要删的 session 正被 Host 打开着时抛出 `WorkspaceError`。
+- `host.exportSession({ directory, sessionId })` 返回可以遍历的 JSONL 行：第一行是元数据，之后每行一个事件，密钥这类内容换成 `[REDACTED]`；打开着的 session 也能导出。`host.rebuildSessions({ directory })` 从事件重建项目的会话树和检查点索引，项目里的 session 要都关着。
+- `host.redactEvents({ directory, sessionId, eventIds, memoryIds, withSessions })` 按事件脱敏：把指名的事件（`event_id` 取自导出的每一行）和按编号找出的副本换成占位 `[REDACTED]`，包括目标协议的原文、工具调用的参数或结果、hooks 的输出、记忆检索的查询、`output/` 下的输出文件和之后的压缩摘要，返回覆盖了哪些事件、输出文件和波及的别的 session。`memoryIds` 是可选的，给记忆的编号（和 `eventIds` 至少给一样）：这条记忆的标题和正文在这个 session 的记录里的副本一起覆盖，记忆已经删除也能给。只能对没有打开的 session 做；会波及别的 session（分叉，或引用了同一份大内容的）时要带 `withSessions: true`，否则抛出 `WorkspaceError`。`host.redactionScope({ directory, sessionId, eventIds, memoryIds })` 只读地算出会覆盖什么，确认之前先给用户看。用户提交的输入在 `task.started` 和发给模型的 `message.sent` 里各有一份，两者带同一个 `message_id`，指名一个就一起覆盖；按编号找不到的副本（模型在回复里复述的内容、后台通知交给模型的那一份、之后读了同一个输出文件的调用）要另外指名。被覆盖的事件读回来结构不变，带 `redacted: true`。
+- `host.cleanExpiredSessions()` 清理各个项目里到期的 session（最后一次写入在用户级配置的 `session_retention_days` 天之前，默认 30），返回删掉的；长期记忆保留。`createHost` 不会自己调用它，调用方在打开 session 之后调用。
 - `host.clearCache({ directory })` 清空构建缓存，返回清空了的项目；不给 `directory` 时清空全部项目的。只删缓存目录里的内容，不管有没有打开的 session。
 - `host.defaultService()` 给出用户级配置选用的默认模型所属的服务；`host.credentialStatus({ credentials })` 列出各个模型服务的凭据取自启动参数、用户级配置还是系统凭据库，不返回凭据的值。
 - `host.runInSandbox({ workspace, permissions, command, stdio, onWarning })` 用和 session 的命令沙盒同一套策略运行一条命令：不询问，权限规则没有放行的域名直接拒绝，`stdio` 给出命令的标准输入、标准输出和标准错误接到哪里，返回命令的退出码或结束它的信号。

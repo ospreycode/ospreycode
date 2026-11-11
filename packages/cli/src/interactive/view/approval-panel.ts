@@ -5,9 +5,11 @@ import {
 	matchesKey,
 	SelectList,
 } from "@earendil-works/pi-tui";
+import type { ApprovalRequested } from "@ospreycode/agent-host";
 import {
 	type ApprovalChoice,
 	type ApprovalDescription,
+	type ApprovalOption,
 	answerFor,
 	approvalOptions,
 	grantedPermissions,
@@ -15,11 +17,7 @@ import {
 	permissionItems,
 	ruleText,
 } from "../approval.js";
-import type {
-	ApprovalAnswer,
-	ApprovalEvent,
-	PermissionsRequest,
-} from "../types.js";
+import type { ApprovalAnswer, PermissionsRequest } from "../types.js";
 import {
 	clipped,
 	selectListTheme,
@@ -43,8 +41,9 @@ type Mode = "choose" | "rule" | "message" | "partial";
  */
 export class ApprovalPanel implements Component, Focusable {
 	focused = false;
-	readonly #request: ApprovalEvent;
+	readonly #request: ApprovalRequested;
 	readonly #description: ApprovalDescription;
+	readonly #hint: string | undefined;
 	readonly #waiting: () => number;
 	readonly #adjacent: () => boolean;
 	readonly #answer: (answer: ApprovalAnswer) => void;
@@ -61,8 +60,11 @@ export class ApprovalPanel implements Component, Focusable {
 	#mode: Mode = "choose";
 
 	constructor(options: {
-		request: ApprovalEvent;
+		request: ApprovalRequested;
 		description: ApprovalDescription;
+		/** 给用户的选项和按键提示；不给时按询问的种类。MCP server 的网络询问不属于任务，自己给。 */
+		choices?: ApprovalOption[];
+		hint?: string;
 		/** 排在这次询问后面、还没显示的询问的个数。 */
 		waiting(): number;
 		/** 这次询问在对话区里的那一条是不是紧挨在面板上面：是的话面板不再重复它的内容。 */
@@ -75,7 +77,8 @@ export class ApprovalPanel implements Component, Focusable {
 		this.#adjacent = options.adjacent;
 		this.#answer = options.answer;
 
-		this.#choices = approvalOptions(options.request);
+		this.#choices = options.choices ?? approvalOptions(options.request);
+		this.#hint = options.hint;
 
 		this.#confirmRule = new SelectList(
 			[
@@ -215,7 +218,11 @@ export class ApprovalPanel implements Component, Focusable {
 						),
 					),
 					clipped(
-						"先按 ↑↓ 选择，再按 Enter 确认 · Esc 拒绝 · Ctrl+C 拒绝并取消任务",
+						this.#hint ??
+							// 恢复时的询问没有任务可以取消：Esc 和 Ctrl+C 都是跳过这次调用
+							(this.#request.kind === "resume_uncertain"
+								? "先按 ↑↓ 选择，再按 Enter 确认 · Esc 或 Ctrl+C 跳过"
+								: "先按 ↑↓ 选择，再按 Enter 确认 · Esc 拒绝 · Ctrl+C 拒绝并取消任务"),
 						width,
 						style.dim,
 					),

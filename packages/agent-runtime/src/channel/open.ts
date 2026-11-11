@@ -10,7 +10,7 @@ import {
 	type HostRequests,
 	hostStreamMethods,
 	type ImageReadResult,
-	type ModelRequestParams,
+	type ModelCountTokensParams,
 	type RecordedEvent,
 	type RecordReadResult,
 	type RequestMessage,
@@ -24,9 +24,18 @@ import { SentImages } from "./sent-images.js";
  * runtime 里发出的请求：和通道上的一样，只是模型请求带的是完整的图片块，`record/read` 读回的
  * `message.sent` 里也是；和引用的互换在通道里做。
  */
-type LocalRequests = Omit<RuntimeRequests, "model/request"> & {
+type LocalRequests = Omit<
+	RuntimeRequests,
+	"model/request" | "model/count_tokens"
+> & {
 	"model/request": Omit<RuntimeRequests["model/request"], "params"> & {
 		params: LocalModelRequestParams;
+	};
+	"model/count_tokens": Omit<
+		RuntimeRequests["model/count_tokens"],
+		"params"
+	> & {
+		params: { request: ModelRequest };
 	};
 };
 
@@ -70,15 +79,18 @@ class RuntimePeer extends ChannelPeer<
 		options: RequestOptions<LocalRequests[Method]["stream"]> = {},
 	): Promise<LocalRequests[Method]["result"]> {
 		// 按方法名分出来之后，参数和响应的类型编译器推不出来，下面各处按协议里这个方法的类型写明
-		if (method === "model/request") {
-			const { message_id, request } = params as LocalModelRequestParams;
+		// 计数的请求和模型请求一样，图片都换成引用
+		if (method === "model/request" || method === "model/count_tokens") {
+			const { request, ...rest } = params as
+				| LocalModelRequestParams
+				| { request: ModelRequest };
 			// 一张一条消息：图片放在请求里的话，一条用户消息带几张大图就超过单条消息的上限
 			for (const image of this.#images.undelivered(request.messages)) {
 				await super.request("image/put", { image });
 				this.#images.delivered([image]);
 			}
-			const referred: ModelRequestParams = {
-				message_id,
+			const referred: ModelCountTokensParams = {
+				...rest,
 				request: { ...request, messages: this.#images.refer(request.messages) },
 			};
 			// 基类按通道上的格式发出，类型上它的参数仍是带图片块的那一种
@@ -96,10 +108,11 @@ class RuntimePeer extends ChannelPeer<
 					restored.push(event);
 					continue;
 				}
-				const { message } = event.data as { message: RequestMessage };
+				// 内容里别的字段（Host 的 `redacted` 标记）原样留着
+				const data = event.data as { message: RequestMessage };
 				restored.push({
 					...event,
-					data: { message: await this.#restore(message) },
+					data: { ...data, message: await this.#restore(data.message) },
 				});
 			}
 			return { ...rest, events: restored };

@@ -1,6 +1,6 @@
 # @ospreycode/cli
 
-Osprey Code 的命令行界面：命令 `ospreycode`，在终端里对话式地做任务，非交互地执行任务（`exec`），以及查看 session 和项目、管理凭据和构建缓存、调试沙盒、检查环境的子命令。设计见仓库里 `docs/packages/agent-host.md` 的 CLI 一节。
+Osprey Code 的命令行界面：命令 `ospreycode`，在终端里对话式地做任务，非交互地执行任务（`exec`），恢复之前的 session（`resume`、`exec resume`），以及查看、删除、导出和按事件脱敏 session、查看项目、管理凭据和构建缓存、调试沙盒、检查环境的子命令。设计见仓库里 `docs/packages/agent-host.md` 的 CLI 一节。
 
 ## 安装
 
@@ -56,11 +56,30 @@ ospreycode -C ~/code/app -m claude-haiku-5-5 --sandbox workspace-write --approva
 | `/model [MODEL]` | 切换模型，不带参数时从清单里选 |
 | `/effort [LEVEL]` | 查看、切换推理强度 |
 | `/bg` | 查看运行中的后台命令，选中一条停止 |
+| `/extensions [show\|confirm\|enable\|disable] [N]` | 列出扩展（skills、MCP server、hooks、插件）和状态；按列表里的序号查看、确认仓库自带的扩展、启用和停用，`/reload` 之后生效 |
 | `/reload` | 重新读取配置、权限规则、规则文件和扩展（只在空闲时） |
 | `/cache-clear` | 清空这个项目的构建缓存 |
+| `/compact` | 压缩上下文：当前模型把到此为止的对话写成摘要，之后的请求从摘要接着做（只在空闲时） |
+| `/diff [N]` | 查看本 session 的改动，或者第 N 个检查点以来的改动 |
+| `/undo [N] [overwrite]` | 不带参数列出检查点；`/undo N` 把代码还原到第 N 个检查点，对话不动（只在空闲时） |
+| `/rewind [N] [code] [overwrite]` | 不带参数列出检查点；`/rewind N` 把对话回退到第 N 个检查点的输入之前，`code` 同时还原代码（只在空闲时） |
+| `/branch [N]` | 不带参数列出回退时放弃的分支；`/branch N` 切回第 N 个，代码不动（只在空闲时） |
+| `/fork [N]` | 从当前位置或第 N 个检查点的输入之前分叉出新的 session，界面换到分叉上（只在空闲时） |
+| `/export [FILE]` | 把本 session 导出成 JSONL 文件，默认是当前目录下的 `ospreycode-<SESSION_ID>.jsonl` |
+| `/memory [show\|add\|confirm\|reject\|correct\|…] [ID]` | 查看长期记忆，确认或拒绝候选，纠正、停用和彻底删除；`/memory help` 列出全部写法 |
 | `/quit` | 退出 |
 
 Enter 和 Alt+Enter 的区分靠终端支持 Kitty 键盘协议，或者把 Option（Alt）键当作 Meta 键发送。
+
+长期记忆默认启用：模型提议的和后台从旧会话里提取的记忆先作为候选列出来，用 `/memory confirm ID` 确认之后才在以后的会话里生效。`exec` 不处理候选，只在标准错误上提示有几条待确认。
+
+每次输入（任务运行中插入的也算）建立一个检查点，记着那次输入之前工作区的样子。`/undo` 或 `/rewind` 不带参数时列出检查点和序号，`/diff N`、`/undo N`、`/rewind N`、`/fork N` 的 `N` 就是这份列表里的序号；回退或分叉之后要重新列出。
+
+- `/undo N` 只还原 agent 改过的文件。之后又被别处改过的文件不动，结果里列出来，`/undo N overwrite` 连它们一起还原；太大而没有快照的文件、编辑工具写在工作区之外的文件还原不了，也列出来。被 `.gitignore` 忽略的文件不做快照，内置编辑工具改的除外。还在运行的后台命令会先结束。
+- `/rewind N` 之后界面只留那次输入之前的对话，那次输入的文字回到输入框，可以改了再发；被放弃的那一段还在 session 记录里。加 `code` 同时还原代码，`overwrite` 的意思同 `/undo`。模型拒绝回答之后用它回到那次输入之前，改写后重发。
+- `/branch` 列出回退时放弃的那些段对话，`/branch N` 切回其中一段：界面换成那一段，之后的输入接在它后面，刚才这一段成为被放弃的分支，随时可以再切回来；代码不动。
+- `/fork` 关闭当前的 session、打开分叉：原来的 session 不变，之后可以用 `ospreycode resume SESSION_ID` 回去。现在的沙盒模式和审批策略带到分叉上；`/fork` 接着用现在的模型和推理强度，`/fork N` 用分叉位置记录的。
+- `/export` 写出的文件只对当前用户可读写，内容和 `ospreycode session export` 相同。
 
 ### 非交互地执行一个任务
 
@@ -91,11 +110,84 @@ ospreycode exec --json "列出 TODO" | jq -r 'select(.type == "task.ended") | .o
 
 退出码：0 完成，1 失败，2 命令行、配置、凭据或工作区的错误，3 超出预算，130 和 143 被 SIGINT、SIGTERM 取消。第一个信号取消任务并照常写出 `task.ended` 和 `session.ended`，第二个信号立即退出。等后台命令时到了 `--timeout` 的时限或收到信号，也按超出预算或被取消退出。
 
+### 扩展：skills、MCP server、插件和 hooks
+
+| 扩展 | 用户级 | 仓库自带（项目级） |
+|---|---|---|
+| skills | `~/.agents/skills/` | 项目根目录到工作区各级目录的 `.agents/skills/` |
+| MCP server | `~/.ospreycode/mcp.json` | `.ospreycode/mcp.json` |
+| hooks | `~/.ospreycode/hooks.json` | `.ospreycode/hooks.json` |
+| 插件 | `ospreycode plugin add` 安装 | 不支持 |
+
+仓库自带的扩展要先确认才启用：没确认的、内容和确认时不一样的都不启用，交互模式和 `exec` 在打开 session 时各提示一行。在交互模式里用 `/extensions` 确认，或者用 `ospreycode trust review`；确认记的是当时显示出来的那份内容。扩展改不了沙盒模式和审批策略。
+
+```sh
+ospreycode mcp add docs --url https://mcp.example.com/mcp     # 远程 server（Streamable HTTP）
+ospreycode mcp add files -- npx -y @modelcontextprotocol/server-filesystem .   # 本地 server（stdio）
+ospreycode mcp list
+ospreycode plugin add ./my-plugin
+ospreycode trust review
+```
+
+| 命令 | 作用 |
+|---|---|
+| `ospreycode mcp list [--json]` | 列出当前目录下能用的 MCP server：标签、状态、来源和定义 |
+| `ospreycode mcp get <NAME>` | 一个 server 的标识、位置和定义；远程 server 另写它的凭据是静态令牌、OAuth 登录还是没有 |
+| `ospreycode mcp add <NAME> --url URL` | 把远程 server 写进用户级的 `mcp.json` |
+| `ospreycode mcp add <NAME> [--env NAME=VALUE]... -- COMMAND [ARGS...]` | 把本地 server 写进用户级的 `mcp.json` |
+| `ospreycode mcp remove <NAME>` | 从用户级的 `mcp.json` 删掉一个 server |
+| `ospreycode mcp token <NAME> [--with-token]` | 把远程 server 的静态令牌保存进登录钥匙串（只在 macOS 上）；在终端里输入，或用 `--with-token` 从标准输入读 |
+| `ospreycode mcp secret <NAME> <ENV> [--with-secret] [--delete]` | 把本地 server 的密钥保存进登录钥匙串（只在 macOS 上）；`ENV` 是 server 读它的环境变量名，`--delete` 删除保存的值 |
+| `ospreycode mcp login <NAME>` | 用 OAuth 登录远程 server（只在 macOS 上）：打开浏览器授权，令牌保存进登录钥匙串 |
+| `ospreycode mcp logout <NAME>` | 删除一个 server 保存在钥匙串里的 OAuth 登录和静态令牌（只在 macOS 上） |
+| `ospreycode plugin list [--json]` | 列出安装的插件：名字、版本、状态和来源 |
+| `ospreycode plugin add <DIR\|URL> [--ref REF] [--yes]` | 从本地目录或 git 仓库安装插件：先列出它带的 skills、MCP server、hooks 和可执行文件，确认后才安装 |
+| `ospreycode plugin update <NAME> [--yes]` | 从安装时的来源更新：列出相对已安装版本的变化，回答 `d` 看完整差异，确认后才换成新版本 |
+| `ospreycode plugin remove <NAME> [--yes] [--delete-data]` | 卸载插件；数据目录留着，`--delete-data` 一起删除 |
+| `ospreycode trust list [--json]` | 列出当前目录下的全部扩展和状态：已启用、已停用、未确认、内容变了、被同名的盖住、加载失败 |
+| `ospreycode trust review` | 逐个显示还没确认的仓库自带扩展的内容摘要，回答 `y` 的确认（要在终端里运行） |
+| `ospreycode hooks list [--json]` | 列出各份 `hooks.json` 的来源、状态和里面的 handler |
+
+`plugin add`、`plugin update` 和 `plugin remove` 不带 `--yes` 时要在终端里确认，不同意时退出码 1；标准输入不是终端时是用法错误。没有系统凭据库的环境里，远程 server 的静态令牌放在只对当前用户可读写的文件里，用 `--credential-file mcp:<标签>=<路径>` 指定。
+
+本地 server 要用的密钥不写进 `mcp.json`。在用户级配置里写明哪个环境变量是密钥、它可以发往哪些域名，再用 `ospreycode mcp secret` 保存它的值（没有系统凭据库的环境用 `--credential-file mcp:<标签>:<环境变量名>=<路径>`）：
+
+```toml
+# ~/.ospreycode/config.toml
+[mcp_secrets.github]
+GITHUB_TOKEN = ["api.github.com"]
+```
+
+server 在沙盒里只看到占位值，Host 的代理把发往这些域名的 HTTPS 请求里的占位值换成真实值；这些域名对这个 server 同时放行。server 要信任沙盒经 `NODE_EXTRA_CA_CERTS`、`SSL_CERT_FILE` 给出的证书（Node、Python 写的 server 可以）。用 `--sandbox danger-full-access` 时没有代理，真实值直接放进 server 的环境变量，打开会话时提示。
+
+用 `npx -y`、`uvx` 启动的 server 第一次要下载包。打开会话时每个 server 最多等 30 秒，网络慢时不够，提示里会写"启动超过了 30 秒"；在用户级配置里写 `mcp_startup_timeout_sec = 300`（秒）调大。下载过的包留在这个 server 自己的缓存里，之后启动只要几秒。
+
+交互模式里，调用 MCP 工具之前按审批策略和权限规则（`[[mcp_rules]]`）询问。MCP server 向用户提问（elicitation）时在输入框的位置显示成表单：写明是哪个 server 在问，逐项填写，提交之前把填的内容再显示一遍；可以拒绝，Esc 是不回答。本地 server 在自己的沙盒里访问没有放行的域名时按 server 询问，可以允许这一次、这个 session 内允许或保存为规则。hooks 给用户的话和拦下输入、要求模型接着做的原因显示在对话区。被 hook 拦下的输入回到输入框里，改过以后可以再发。
+
+`exec` 里没有人回答询问：只有权限规则放行的 MCP 工具能调用，MCP server 的提问和联网申请直接拒绝。`UserPromptSubmit` 的 hook 拦下输入，或者 `SessionStart` 的 hook 阻止打开 session 时，原因写到标准错误，退出码 1。
+
+### 恢复 session
+
+```sh
+ospreycode resume                                  # 从列表里选当前工作区的一个 session
+ospreycode resume --last                           # 最近写过的那个
+ospreycode resume SESSION_ID                       # 标识见 ospreycode session list
+ospreycode exec resume --last "把剩下的测试修好"   # 恢复后非交互地再执行一个任务
+```
+
+`resume` 在交互模式里恢复，接受交互模式的全部选项；`exec resume` 接受 `exec` 的全部选项，`PROMPT` 的写法、输出和退出码都和 `exec` 相同。两条命令都只恢复在当前工作区（`-C` 指定的目录，不写时是当前目录）创建的 session，找不到时退出码 2。
+
+恢复后界面先显示之前的对话。中断前给出的批准都已失效，需要时会重新询问。上次没有正常关闭的 session，中断的任务以失败结束，不自动接着做；其中不能确定有没有执行的调用（命令、MCP 工具）逐个询问是重新执行还是跳过，重新执行在下一个任务开始时进行。`exec resume` 不询问：遇到这样的调用时退出码 1，session 记录不变，改用 `ospreycode resume` 恢复。
+
 ### 其他命令
 
 | 命令 | 作用 |
 |---|---|
 | `ospreycode session list [--json] [--all]` | 列出当前项目的 session，最近用过的在前；`--all` 列出全部项目的 |
+| `ospreycode session delete <SESSION_ID> [--yes] [--with-forks]` | 彻底删除当前项目的一个 session：记录、输出文件和只来自它的长期记忆；不带 `--yes` 时先确认，`--with-forks` 把分叉一起删除 |
+| `ospreycode session export <SESSION_ID> [-o FILE]` | 把当前项目的一个 session 导出成 JSONL，密钥换成占位；写到标准输出，`-o` 写进文件 |
+| `ospreycode session rebuild` | 从事件重建当前项目的 session 索引；项目里的 session 要先都关闭 |
+| `ospreycode session redact <SESSION_ID> [EVENT_ID]... [--memory MEMORY_ID]... [--yes]` | 按事件脱敏：把当前项目的一个 session 里指名的事件和它们的副本换成占位，不能恢复。`EVENT_ID` 取自 `session export` 的输出；用户的一段输入指名 `task.started`（排队的是 `input.queued`），发给模型的那一份、它触发的 hooks 的输出和按它做的记忆检索的查询一起覆盖。`--memory` 给记忆的编号，覆盖这条记忆的标题和正文在这个 session 的记录里的副本（给模型的索引、检索结果、候选列表），记忆已经删除也能用；事件和 `--memory` 至少给一样。按编号找不到的副本（模型复述的内容、后台通知交给模型的那一份、读了同一个输出文件的别的调用）要另外指名，结果里每次都写明。不带 `--yes` 时先写明要覆盖多少、波及哪些别的 session，再确认；session 要先关闭 |
 | `ospreycode project list` | 列出登记过的项目 |
 | `ospreycode project link <PROJECT_ID>` | 把当前目录关联到已有的项目：仓库移动后接上原来的记录 |
 | `ospreycode login [--service ID] [--with-api-key]` | 把模型服务的 API key 保存进登录钥匙串（只在 macOS 上） |
@@ -113,6 +205,8 @@ ospreycode doctor
 eval "$(ospreycode completion zsh)"
 ospreycode exec --help
 ```
+
+session 记录从最后一次写入算起保存 30 天，用户级配置的 `session_retention_days`（整数，最小 1）可以改。交互模式和 `exec` 打开 session 之后清理到期的：记录和输出文件删掉，长期记忆保留，正被打开着的 session 不清理。
 
 ## 嵌入
 

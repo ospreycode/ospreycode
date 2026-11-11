@@ -8,6 +8,20 @@ import type {
 	StreamEvent,
 	Usage,
 } from "@ospreycode/api/protocol";
+import type {
+	ElicitationAnswered,
+	ElicitationRequested,
+	HooksRan,
+	ServerApprovalDecided,
+	ServerApprovalRequested,
+} from "../extensions/events.js";
+import type {
+	MemoryCandidates,
+	MemoryExtractionEnded,
+	MemoryExtractionStarted,
+	MemoryRetrieved,
+	MemoryUpdated,
+} from "../memory/events.js";
 import type { BudgetLimit } from "../sessions/budget.js";
 import type {
 	ApprovalDecided,
@@ -54,6 +68,11 @@ export interface Stored {
 	event_id: string;
 	/** run 内的序号。 */
 	seq: number;
+	/**
+	 * 这个事件被按事件脱敏（`Host.redactEvents`）覆盖过：结构不变，被覆盖的内容换成了占位
+	 * `[REDACTED]`。只在读回 session 记录时出现，前端据此显示"已脱敏"。
+	 */
+	redacted?: true;
 }
 
 /** session 关闭的原因。 */
@@ -88,6 +107,10 @@ export interface TaskStartedEvent extends EventBase, TaskScope, Stored {
 	type: "task.started";
 	source: TaskSource;
 	input: InputContent[];
+	/** 放这次输入的那条 user 消息的编号（`message.sent` 里同一个）。压缩的 task 没有输入，不带。 */
+	message_id?: string;
+	/** `compact`：用户发起的上下文压缩（`Session.compact()`），输入为空。平常的 task 不带。 */
+	kind?: "compact";
 }
 
 /** `run.started`：子 agent 的 run 另带父字段。 */
@@ -111,6 +134,20 @@ export interface TaskEndedEvent extends EventBase, TaskScope, Stored {
 export interface MessageCompletedEvent extends EventBase, TaskScope, Stored {
 	type: "message.completed";
 	message: AssistantMessage;
+}
+
+/**
+ * `context.compacted`：上下文压缩成了摘要，之后发给模型的历史从摘要开始。`trigger` 为 `auto` 是
+ * 上下文接近上限时自动压缩的，`manual` 是用户发起的（`Session.compact()`）。session 记录里的同一条
+ * 事件另带压缩后的整份上下文，重建历史时用。
+ */
+export interface ContextCompactedEvent extends EventBase, TaskScope, Stored {
+	type: "context.compacted";
+	trigger: "auto" | "manual";
+	/** 压缩前估算的上下文 token 数。 */
+	tokens_before: number;
+	/** 模型写的摘要。 */
+	summary: string;
 }
 
 /** `tool_call.started`。 */
@@ -275,6 +312,51 @@ export interface ApprovalPolicyChangedEvent
 	run_id: string;
 }
 
+/**
+ * `memory.candidates`：task 结束时列出这个 session 还没列出过的待确认候选，排在 `task.ended` 之前。
+ * 候选确认之前不生效；非交互模式不处理它们，留给用户之后用 `/memory` 处理。
+ */
+export interface MemoryCandidatesEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		MemoryCandidates {
+	type: "memory.candidates";
+}
+
+/** `memory.retrieved`：runtime 检索或读取记忆时返回了哪些。 */
+export interface MemoryRetrievedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		MemoryRetrieved {
+	type: "memory.retrieved";
+}
+
+/** `memory.updated`：用户改了一条记忆（确认、拒绝、添加、纠正、停用、删除等）。不属于任何 task。 */
+export interface MemoryUpdatedEvent extends EventBase, Stored, MemoryUpdated {
+	type: "memory.updated";
+	run_id: string;
+}
+
+/** `memory.extraction.started`：开始从一个旧 session 的记录里提取记忆。每次提取一个不属于任何 task 的 run。 */
+export interface MemoryExtractionStartedEvent
+	extends EventBase,
+		Stored,
+		MemoryExtractionStarted {
+	type: "memory.extraction.started";
+	run_id: string;
+}
+
+/** `memory.extraction.ended`：一次提取结束，带用量和记下的候选。 */
+export interface MemoryExtractionEndedEvent
+	extends EventBase,
+		Stored,
+		MemoryExtractionEnded {
+	type: "memory.extraction.ended";
+	run_id: string;
+}
+
 /** `warning`：不影响继续运行的问题。 */
 export interface WarningEvent extends EventBase {
 	type: "warning";
@@ -305,6 +387,51 @@ export interface ModelDeltaEvent extends EventBase, TaskScope {
 	event: Exclude<StreamEvent, { type: "end" }>;
 }
 
+/**
+ * `hooks.ran`：一个时机的 hooks 运行完了。不属于任何 task（`SessionStart`、`SessionEnd` 在 task 之外），
+ * 所属的 task、工具调用和排队的输入写在内容里。
+ */
+export interface HooksRanEvent extends EventBase, Stored, HooksRan {
+	type: "hooks.ran";
+	run_id: string;
+}
+
+/** `elicitation.requested`：MCP server 向用户要输入，用 `respond` 回答。不属于任何 task。 */
+export interface ElicitationRequestedEvent
+	extends EventBase,
+		Stored,
+		ElicitationRequested {
+	type: "elicitation.requested";
+	run_id: string;
+}
+
+/** `elicitation.answered`：MCP server 的提问有了回答。 */
+export interface ElicitationAnsweredEvent
+	extends EventBase,
+		Stored,
+		ElicitationAnswered {
+	type: "elicitation.answered";
+	run_id: string;
+}
+
+/** `server_approval.requested`：本地 MCP server 连接还没放行的域名，用 `respond` 回答。不属于任何 task。 */
+export interface ServerApprovalRequestedEvent
+	extends EventBase,
+		Stored,
+		ServerApprovalRequested {
+	type: "server_approval.requested";
+	run_id: string;
+}
+
+/** `server_approval.decided`：MCP server 的网络询问有了结果。 */
+export interface ServerApprovalDecidedEvent
+	extends EventBase,
+		Stored,
+		ServerApprovalDecided {
+	type: "server_approval.decided";
+	run_id: string;
+}
+
 /** `tool_call.output`：Host 代为执行的工具的输出增量，和 `model.delta` 一样只发给 SDK 的订阅方。 */
 export interface ToolCallOutputEvent extends EventBase, TaskScope {
 	type: "tool_call.output";
@@ -320,6 +447,7 @@ export type HostEvent =
 	| RunStartedEvent
 	| TaskEndedEvent
 	| MessageCompletedEvent
+	| ContextCompactedEvent
 	| ToolCallStartedEvent
 	| ToolCallCompletedEvent
 	| ApprovalRequestedEvent
@@ -338,6 +466,16 @@ export type HostEvent =
 	| ProcessExitedEvent
 	| SandboxModeChangedEvent
 	| ApprovalPolicyChangedEvent
+	| MemoryCandidatesEvent
+	| MemoryRetrievedEvent
+	| MemoryUpdatedEvent
+	| MemoryExtractionStartedEvent
+	| MemoryExtractionEndedEvent
+	| HooksRanEvent
+	| ElicitationRequestedEvent
+	| ElicitationAnsweredEvent
+	| ServerApprovalRequestedEvent
+	| ServerApprovalDecidedEvent
 	| WarningEvent
 	| ErrorEvent
 	| ModelDeltaEvent

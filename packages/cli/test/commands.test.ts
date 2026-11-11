@@ -99,6 +99,8 @@ describe("帮助、版本和参数错误", () => {
 		expect(result.stderr).toBe("");
 		for (const name of [
 			"exec",
+			"resume [SESSION_ID|--last]",
+			"exec resume <SESSION_ID|--last> [PROMPT|-]",
 			"session list",
 			"project list",
 			"project link",
@@ -136,6 +138,50 @@ describe("帮助、版本和参数错误", () => {
 		const group = await cli("session", "--help");
 		expect(group.code).toBe(0);
 		expect(group.stdout).toContain("list");
+	});
+
+	test("resume 和 exec resume 的 --help：各自接受交互模式和 exec 的选项，另有 --last", async () => {
+		const interactive = await cli("resume", "--help");
+		expect(interactive.code).toBe(0);
+		expect(interactive.stdout).toContain(
+			"ospreycode resume [选项] [SESSION_ID|--last]",
+		);
+		for (const option of [
+			"--cd",
+			"--model",
+			"--sandbox",
+			"--approval",
+			"--rules",
+			"--credential-file",
+			"--credential-env",
+			"--last",
+		]) {
+			expect(interactive.stdout).toContain(option);
+		}
+		expect(interactive.stdout).not.toContain("--json");
+
+		const nonInteractive = await cli("exec", "resume", "--help");
+		expect(nonInteractive.code).toBe(0);
+		expect(nonInteractive.stdout).toContain(
+			"ospreycode exec resume [选项] <SESSION_ID|--last> [PROMPT|-]",
+		);
+		for (const option of [
+			"--cd",
+			"--model",
+			"--sandbox",
+			"--rules",
+			"--credential-file",
+			"--credential-env",
+			"--json",
+			"--output-last-message",
+			"--max-cost",
+			"--max-requests",
+			"--timeout",
+			"--last",
+		]) {
+			expect(nonInteractive.stdout).toContain(option);
+		}
+		expect(nonInteractive.stdout).not.toContain("--approval");
 	});
 
 	test("--version 输出版本号", async () => {
@@ -358,6 +404,9 @@ describe("completion", () => {
 			expect(result.code).toBe(0);
 			for (const word of [
 				"exec",
+				"resume",
+				"exec resume",
+				"last",
 				"session list",
 				"project link",
 				"login status",

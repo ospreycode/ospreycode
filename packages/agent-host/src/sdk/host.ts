@@ -1,9 +1,17 @@
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toolRegistry } from "@ospreycode/agent-runtime";
-import { builtinModels, type StreamModel, streamModel } from "@ospreycode/api";
+import {
+	builtinModels,
+	type CountTokens,
+	countTokens,
+	type StreamModel,
+	streamModel,
+} from "@ospreycode/api";
 import type { ReasoningEffort } from "@ospreycode/api/protocol";
+import type { ElicitationAnswer } from "@ospreycode/mcp";
+import type { MemoryStore } from "@ospreycode/memory";
 import {
 	type ApprovalAnswer,
 	type ApprovalPolicy,
@@ -13,7 +21,11 @@ import {
 	type ShellParser,
 } from "@ospreycode/sandbox";
 import { checkSandboxSupport } from "@ospreycode/sandbox/backends";
-import { SessionStore, type SessionWriter } from "@ospreycode/session-store";
+import {
+	type Position,
+	SessionStore,
+	type SessionWriter,
+} from "@ospreycode/session-store";
 import { SessionRules } from "../actions/session-rules.js";
 import { ConfigError } from "../config/errors.js";
 import {
@@ -36,10 +48,22 @@ import {
 	type CredentialStatusOptions,
 	credentialStatus,
 	defaultService,
+	userLayer,
 } from "../credentials/status.js";
 import { type CredentialStore, macosKeychain } from "../credentials/store.js";
 import { DiagnosticLog } from "../diagnostics/log.js";
+import { ExtensionAdmin } from "../extensions/admin.js";
+import type { ExtensionInfo } from "../extensions/catalog.js";
+import { PluginStore } from "../extensions/plugins.js";
+import { TrustStore } from "../extensions/trust.js";
+import { McpCredentials } from "../mcp-hub/credentials.js";
+import type { McpServerState } from "../mcp-hub/hub.js";
+import { VerdictCache } from "../mcp-hub/verdicts.js";
+import type { MemoryExtractionEnded } from "../memory/events.js";
+import type { MemoryManager } from "../memory/session-memory.js";
+import { memoryPaths, openMemoryStore } from "../memory/session-sources.js";
 import type { BackgroundCommandInfo } from "../processes/background.js";
+import { ExtensionSandboxes } from "../processes/extension-sandbox.js";
 import {
 	bootId,
 	type ProcessIdentity,
@@ -57,11 +81,13 @@ import {
 	sandboxedSession,
 	unsandboxedSession,
 } from "../processes/sandboxed.js";
+import { runGitInSandbox } from "../processes/sandboxed-git.js";
 import { type ClearCacheOptions, clearCache } from "../project/cache.js";
 import { projectKey, Registry } from "../project/identity.js";
 import {
 	acquireExclusiveLock,
 	acquireWorkspaceLock,
+	isLockHeld,
 } from "../project/locks.js";
 import {
 	checkInstallLocation,
@@ -70,10 +96,19 @@ import {
 	findProjectRoot,
 	prepareRoot,
 	resolveWorkspace,
+	sessionPaths,
+	WorkspaceError,
 } from "../project/workspace.js";
 import { redact } from "../redaction/redact.js";
+import type {
+	BranchInfo,
+	CheckpointInfo,
+	UndoResult,
+} from "../sessions/checkpoints.js";
+import { pathModel, type RecordedModel } from "../sessions/history.js";
 import {
 	HostSession,
+	type HostSessionOptions,
 	type ReloadedSettings,
 } from "../sessions/host-session.js";
 import { newId } from "../sessions/ids.js";
@@ -83,7 +118,26 @@ import {
 	listSessions,
 	type SessionInfo,
 } from "../sessions/list.js";
+import {
+	cleanExpiredSessions,
+	type DeletedSessions,
+	type DeleteSessionOptions,
+	deleteSession,
+	exportSession,
+	rebuildSessions,
+	type SessionRef,
+	sessionForks,
+} from "../sessions/maintenance.js";
+import {
+	type RedactEventsOptions,
+	type RedactionSummary,
+	redactEvents,
+	redactionScope,
+	redactMemory,
+} from "../sessions/redaction.js";
+import { type ResumeState, readResumeState } from "../sessions/resume.js";
 import type { UserInput } from "../sessions/user-input.js";
+import type { ChangesDiff } from "../workspace/session-snapshots.js";
 import type { HostEvent } from "./events.js";
 
 /** 创建 Host 的选项。SDK 不改进程级的状态，依赖都由调用方传入。 */
@@ -92,10 +146,15 @@ export interface HostOptions {
 	root: string;
 	/** Host 启动时的环境变量：传给沙盒的白名单变量和环境变量来源的凭据从这里取。 */
 	env: Readonly<Record<string, string | undefined>>;
-	/** 发模型请求用的 `fetch`，需要代理时传入带代理的版本；不传时用 Node 内置的。 */
+	/**
+	 * 发模型请求、连接远程 MCP server 和它们的授权服务器用的 `fetch`，需要代理时传入带代理的版本；
+	 * 不传时用 Node 内置的。
+	 */
 	fetch?: typeof globalThis.fetch;
 	/** 发起模型请求的函数；不传时按模型清单的协议发出真实请求。 */
 	streamModel?: StreamModel;
+	/** 调模型服务 token 计数接口的函数，上下文长度临界时用；不传时按模型清单的协议发出真实请求。 */
+	countTokens?: CountTokens;
 	/** agent 进程的入口文件；不传时从 `@ospreycode/agent-runtime` 的 exports 找到，`cli` 打包后传入打包的文件。 */
 	agentEntry?: string;
 	/** apply-edits 的入口文件，执行批准的、可写范围之外的文件改动；不传时同样从 exports 找到。 */
@@ -117,6 +176,26 @@ export interface OpenSessionOptions extends SessionOptions {
 	 */
 	onEvent: (event: HostEvent) => void;
 }
+
+/** 恢复 session 的选项。 */
+export interface ResumeSessionOptions extends OpenSessionOptions {
+	/** 要恢复的 session：要是在当前工作区创建的。 */
+	sessionId: string;
+}
+
+/** 分叉 session 的选项。 */
+export interface ForkSessionOptions extends OpenSessionOptions {
+	/** 从哪个 session 分叉：要是在当前工作区创建的。 */
+	sessionId: string;
+	/** 从哪个检查点的输入之前分叉；不给时从这个 session 的当前位置分叉。 */
+	checkpointId?: string;
+}
+
+/** 打开 session 的方式：新建，接着已有的记录，或者从已有的记录分叉。 */
+type SessionStart =
+	| { kind: "new" }
+	| { kind: "resume"; sessionId: string }
+	| { kind: "fork"; sessionId: string; checkpointId?: string };
 
 /** 一个打开的 session。 */
 export interface Session {
@@ -151,6 +230,60 @@ export interface Session {
 	/** 当前排队的 steering 和 follow-up，以及列表是不是暂停着。 */
 	inputQueue(): InputQueueSnapshot;
 	/**
+	 * 会话树的当前路径上已经记下的事件，按先后，和当时发给 `onEvent` 的相同（只用于实时显示的流式
+	 * 增量没有存，不在里面；分叉沿用的父 session 那一段也在里面）。前端在恢复、回退和分叉之后按它
+	 * 重画对话。
+	 */
+	history(): HostEvent[];
+	/**
+	 * 这个 session 的检查点，按建立的先后：每次用户输入（task 的输入和 steering）一个，分叉沿用的
+	 * 父 session 的也在里面。回退只能选在当前路径上的（`on_path`），还原代码只能选快照还在的
+	 * （`restorable`）。
+	 */
+	checkpoints(): CheckpointInfo[];
+	/**
+	 * 从某个检查点到现在 agent 的改动（`/diff`），unified diff；不给检查点时是这个 session 的全部
+	 * 改动。task 运行中也可以看。这个 session 没有做快照（找不到可用的 git），没有这个检查点或者它的
+	 * 快照已经清理时抛出 `SessionCommandError`；快照做不成时抛出 `SnapshotError`。
+	 */
+	diff(checkpointId?: string): Promise<ChangesDiff>;
+	/**
+	 * 撤销改动（`/undo`）：把工作区的文件还原到某个检查点，对话不动。只还原 agent 改过的文件；之后又
+	 * 被别处改过的列为冲突、不还原，`overwrite` 为真时照样还原。还在运行的后台命令先结束；还原了
+	 * 文件时给模型留一条不唤醒 session 的通知。只能在 session 空闲时做，否则抛出
+	 * `SessionCommandError`；别的出错情况同 `diff`。
+	 */
+	undo(
+		checkpointId: string,
+		options?: { overwrite?: boolean },
+	): Promise<UndoResult>;
+	/**
+	 * 回退会话（`/rewind`）：把当前位置移到某个检查点的输入之前，之后的输入接在那里；被放弃的那一段
+	 * 留在记录里。这个检查点之后启动的后台命令先结束，之前启动的保留；agent 进程重启，按新的路径
+	 * 重建历史；模型和推理强度换成路径上最后一次请求用的。`code` 为真时同时把代码还原到这个检查点
+	 * （同 `undo`，不另给模型留通知），返回还原的结果。完成后用 `history()` 重画对话，检查点的
+	 * `text` 是可以放回输入框的那次输入。只能在 session 空闲时做，检查点要在当前路径上，否则抛出
+	 * `SessionCommandError`；路径上的模型已经不在清单里或没有凭据时抛出 `ConfigError` 或
+	 * `CredentialError`，这两种情况 session 不受影响。agent 进程没能重新启动时 session 关闭，抛出
+	 * `AgentStartError`。
+	 */
+	rewind(
+		checkpointId: string,
+		options?: { code?: boolean; overwrite?: boolean },
+	): Promise<UndoResult | undefined>;
+	/**
+	 * 被放弃的分支，按放弃的先后：回退之后留在记录里、不在当前路径上的各段对话。最后一次用户输入
+	 * 也在当前路径上的不列（它只多出空闲时的事件）。
+	 */
+	branches(): BranchInfo[];
+	/**
+	 * 切回一个被放弃的分支：把当前位置移到它的末端，之后的输入接在那里，现在这一段成为被放弃的
+	 * 分支。文件不动。不在那个分支上启动的后台命令先结束；agent 进程重启、模型和推理强度的处理同
+	 * `rewind`。完成后用 `history()` 重画对话。只能在 session 空闲时做，没有这个分支时抛出
+	 * `SessionCommandError`；别的出错情况同 `rewind`。
+	 */
+	switchBranch(branchId: string): Promise<void>;
+	/**
 	 * 让暂停的 follow-up 列表继续：session 空闲时马上开始列表的第一条。用户的下一次 `submit`
 	 * 也会让列表继续。
 	 */
@@ -169,6 +302,14 @@ export interface Session {
 	 */
 	setReasoningEffort(reasoningEffort: ReasoningEffort): Promise<void>;
 	/**
+	 * 压缩上下文（`/compact`）：开始一个只做压缩的 task，返回 `task_id`；它有自己的 run 和预算，
+	 * `task.started` 带 `kind: "compact"`、输入为空。当前的模型把到此为止的历史写成摘要，成功时发出
+	 * `context.compacted`，task 以 `completed` 结束；压缩不了时（上下文里还没有模型的回复、
+	 * `PreCompact` hook 阻止、摘要请求出错）以 `failed` 结束并说明原因，历史不变。只能在 session
+	 * 空闲时做，否则抛出 `SessionCommandError`。
+	 */
+	compact(): Promise<string>;
+	/**
 	 * 运行中的后台命令和监视（`/bg`），按开始的顺序。它们属于 session，task 结束后继续运行；开始和结束
 	 * 另有 `background.started`、`background.ended` 事件，非交互模式据此等它们结束。
 	 */
@@ -184,8 +325,22 @@ export interface Session {
 	 * 非交互模式用它判断主任务之后还有没有通知要处理。
 	 */
 	whenIdle(): Promise<void>;
-	/** 回答 `approval.requested`；询问已经有了结果时返回 false。 */
-	respond(requestId: string, answer: ApprovalAnswer): boolean;
+	/**
+	 * 回答 `approval.requested`、`server_approval.requested`（都用 `ApprovalAnswer`）和
+	 * `elicitation.requested`（用 `ElicitationAnswer`：接受并给出表单内容、拒绝或取消）；询问已经
+	 * 有了结果时返回 false。
+	 */
+	respond(
+		requestId: string,
+		answer: ApprovalAnswer | ElicitationAnswer,
+	): boolean;
+	/**
+	 * 这个 session 找到的全部扩展（skills、MCP server、hooks、插件）和它们的状态（`/extensions`）。
+	 * 确认、启用和停用用 `Host.extensions`，改动在 `reload()` 之后生效。
+	 */
+	extensions(): ExtensionInfo[];
+	/** 这个 session 的 MCP server 的状态和各自提供的工具，按标签排序。 */
+	mcpServers(): McpServerState[];
 	/**
 	 * 切换审批策略（`/approval`）：马上生效，task 进行中也可以，完成后发出 `approval_policy.changed`。
 	 * 挂起的询问在新策略下不该再问的，立即答为拒绝（`approval.decided` 的 `denied_by_policy`）。
@@ -213,6 +368,17 @@ export interface Session {
 	 * 配置有错时抛出 `ConfigError` 或 `CredentialError`，session 照旧用原来的配置。
 	 */
 	reload(): Promise<void>;
+	/**
+	 * 查看、纠正和删除长期记忆，确认或拒绝候选（`/memory`）；打开 session 时关掉了长期记忆
+	 * （`memory.enabled: false`）的没有。
+	 */
+	readonly memory: MemoryManager | undefined;
+	/**
+	 * 立即从同一项目里一个已关闭的 session 的记录提取记忆候选，返回这次提取的结果（同
+	 * `memory.extraction.ended`）。只给评测用：后台提取平时只处理空闲 6 小时以上的 session。
+	 * 没有启用长期记忆、那个 session 不存在、还开着或已经提取过时抛出。
+	 */
+	extractMemory(sourceSessionId: string): Promise<MemoryExtractionEnded>;
 	/** 关闭 session，结束其中的全部进程，释放工作区锁。 */
 	close(): Promise<void>;
 }
@@ -239,6 +405,28 @@ export interface Host {
 	 * agent 进程没能启动时抛出 `AgentStartError`。
 	 */
 	openSession(options: OpenSessionOptions): Promise<Session>;
+	/**
+	 * 恢复一个已有的 session（`ospreycode resume`）：和 `openSession` 走同一条路径，接着写原来的记录，
+	 * agent 进程按记录重建发给模型的历史；follow-up 列表按记录里最后一份队列恢复，上次的临时目录清空。
+	 * 这个 session 不存在、不是在当前工作区创建的，或者正被别的 Host 打开时抛出 `WorkspaceError`。
+	 *
+	 * 上次没有正常关闭时，中断的 task 以 `failed` 结束（紧跟在 `session.started` 之后），没有结果的
+	 * 工具调用里：文件改动按哈希核对磁盘补上结果；还没批准过的和重复执行没有副作用的，在下一个 task
+	 * 开始时重新执行；其余的逐个发 `approval.requested`（`kind: "resume_uncertain"`）问用户，批准是
+	 * 重新执行，拒绝是跳过，都回答之后 task 才结束、agent 进程才启动，这期间 `submit` 等着。审批策略
+	 * 是 `never` 而有调用要问时抛出 `SessionResumeError`，session 记录不变。上次还在运行的后台命令
+	 * 记 `background.ended`（`reason: "lost"`）。
+	 */
+	resumeSession(options: ResumeSessionOptions): Promise<Session>;
+	/**
+	 * 从一个已有的 session 分叉出新的 session（`/fork`）：新的 session 沿用来源 session 到分叉位置为止
+	 * 的对话和检查点，之后各写各的，来源 session 不变。和 `openSession` 走同一条路径；来源 session 要先
+	 * 关闭（一个工作区同时只有一个打开的 session）。没有另外指定模型时用路径上最后一次请求用的模型和
+	 * 推理强度（`resumeSession` 相同）。来源 session 不存在、不是在当前工作区创建的、没有这个检查点、
+	 * 分叉位置之前还没有对话，或者不给检查点而它上次没有正常关闭（停在没有结束的 task 里，要先恢复）
+	 * 时抛出 `WorkspaceError`。
+	 */
+	forkSession(options: ForkSessionOptions): Promise<Session>;
 	/** 登记过的项目（`ospreycode project list`）。 */
 	listProjects(): ProjectInfo[];
 	/**
@@ -259,6 +447,11 @@ export interface Host {
 	 */
 	defaultService(): string | undefined;
 	/**
+	 * 用户级配置里的 `proxy`：不打开 session 就要联网的命令（`ospreycode mcp login`）在发请求之前
+	 * 用它开启代理；没有配置时为空。用户级配置加载出错时抛出 `ConfigError`。
+	 */
+	proxy(): string | undefined;
+	/**
 	 * 各个模型服务的凭据取自哪一层（`ospreycode login status`）：启动参数、用户级配置还是系统凭据库。
 	 * 只说明来源，不返回凭据的值。用户级配置加载出错时抛出 `ConfigError`，系统凭据库锁定或不可用时
 	 * 抛出 `CredentialError`。
@@ -272,6 +465,67 @@ export interface Host {
 	 */
 	listSessions(options?: ListSessionsOptions): SessionInfo[];
 	/**
+	 * 从这个 session 分出去的全部分叉（包括分叉的分叉），按创建的先后：删除之前用它告诉用户还有几个
+	 * 分叉包含这段内容。项目里没有这个 session，或者目录不存在时抛出 `WorkspaceError`。
+	 */
+	sessionForks(ref: SessionRef): string[];
+	/**
+	 * 彻底删除一个 session（`ospreycode session delete`）：记录、临时目录和输出文件，以及内容只来自它的
+	 * 长期记忆；它的工作区没有别的 session 时删掉影子仓库，项目的 session 都删除了时清空构建缓存。
+	 * 在整个项目里找，给的目录不必是它的工作区。`withForks` 把分叉一起删除；不给时分叉留着，它们仍
+	 * 引用的事件改记到它们名下。项目里没有这个 session，或者要删的 session 里有一个正被 Host 打开着
+	 * 时抛出 `WorkspaceError`，什么也不删。
+	 */
+	deleteSession(options: DeleteSessionOptions): Promise<DeletedSessions>;
+	/**
+	 * 导出一个 session（`ospreycode session export`）：每项是 JSONL 的一行，第一行是元数据和存储格式
+	 * 版本，之后每行一个事件，分叉先导出它沿用的父 session 的那一段；密钥这类内容换成 `[REDACTED]`。
+	 * 只读，打开着的 session 也能导出。项目里没有这个 session 时调用就抛出 `WorkspaceError`；记录在
+	 * 开始遍历时打开，遍历结束或中途停下（`for...of` 里 `break`）时关闭。
+	 */
+	exportSession(ref: SessionRef): Iterable<string>;
+	/**
+	 * 从事件表重建目录所在项目的会话树和检查点索引（`ospreycode session rebuild`）。项目里有 session
+	 * 正被 Host 打开着，或者项目还没有 session 记录时抛出 `WorkspaceError`。
+	 */
+	rebuildSessions(options: { directory: string }): void;
+	/**
+	 * 按事件脱敏会覆盖什么：指名的事件、记录里存着同一份内容的副本（同一条消息和它在目标协议里的
+	 * 原文、开始 task 的输入和放它的那条消息、工具调用登记的参数和结果、排队的输入、引用同一张图片的
+	 * 事件、输出放在这条消息或这次调用里的 hooks 的运行、按这份输入或这次调用做的记忆检索的查询）、
+	 * `memoryIds` 指名的记忆的标题和正文（索引、"记忆更新"、自动注入的正文、检索结果、候选列表）、
+	 * 之后的上下文压缩，`output/` 下的文件，和也会受影响的别的 session（分叉，或引用了同一份大内容的
+	 * session）。只读，不取锁，执行之前用它告诉用户范围。可以指名的事件是 `task.started`、
+	 * `input.queued`、`message.sent`、`message.completed`、`tool_call.started`、
+	 * `tool_call.completed`、`context.compacted` 和 `hooks.ran`；`eventIds` 和 `memoryIds` 至少给
+	 * 一样。项目里没有这个 session，指名的事件不在它读得到的记录里（它自己的事件和分叉沿用的那段
+	 * 路径上的）、类型不能指名，或者没有可覆盖的内容（都已经脱敏过，记录里没有指名的记忆的内容）时
+	 * 抛出 `WorkspaceError`。
+	 */
+	redactionScope(
+		ref: SessionRef & { eventIds: string[]; memoryIds?: string[] },
+	): RedactionSummary;
+	/**
+	 * 按事件脱敏（`ospreycode session redact`）：把指名的事件和 `redactionScope` 列出的副本的内容换成
+	 * 占位 `[REDACTED]`，事件的结构不变、带上 `redacted: true`；`output/` 下的文件也覆盖成占位，
+	 * 标题取自被覆盖的输入时一起换掉。返回覆盖了什么。按编号找不到的副本不在其中，要另外指名：
+	 * 模型在回复里复述的内容、后台通知交给模型的那一份、之后读了同一个输出文件的调用。
+	 *
+	 * 只能对没有打开的 session 做：打开着的 session 的 agent 进程内存里还有原文，脱敏之后要重新打开、
+	 * 从记录重建历史。先取得它和受影响的 session 的写锁，有一个正被 Host 打开着时抛出 `WorkspaceError`，
+	 * 什么也不改；会波及别的 session 而 `withSessions` 不为真时也一样。几个 session 的事件各在自己的
+	 * 事务里覆盖，中途退出时一部分已经覆盖，用同样的参数再执行一次补完。
+	 */
+	redactEvents(options: RedactEventsOptions): Promise<RedactionSummary>;
+	/**
+	 * 清理到期的 session，返回删掉的：最后一次写入在用户级配置的 `session_retention_days` 天（默认 30）
+	 * 之前的，在每个登记过的项目里彻底删除。和 `deleteSession` 的差别是长期记忆保留（来源标为
+	 * "来源已删除"），分叉也留着。正被 Host 打开着的跳过；另一个 Host 正在清理时什么也不做，返回空数组。
+	 * `createHost` 不会自己调用它，什么时候清理由调用方决定：CLI 在打开 session 之后调用。
+	 * 用户级配置加载出错时抛出 `ConfigError`。
+	 */
+	cleanExpiredSessions(): Promise<string[]>;
+	/**
 	 * 清空构建缓存（`ospreycode cache clear`），返回清空了的项目的 `project_id`；给了目录只清它所在
 	 * 项目的。只删缓存目录里的内容，不管有没有打开的 session；没有缓存时什么也不做。
 	 */
@@ -282,10 +536,54 @@ export interface Host {
 	 * 当前平台没有沙盒后端时抛出 `SandboxUnavailableError`。
 	 */
 	runInSandbox(options: SandboxRunOptions): Promise<SandboxRunResult>;
+	/**
+	 * 不打开 session 的扩展管理（`ospreycode mcp`、`plugin`、`trust`、`hooks`）：查看扩展，确认、
+	 * 启用和停用，安装、更新和卸载插件，改用户级的 `mcp.json`，保存 MCP 的凭据。
+	 */
+	readonly extensions: ExtensionAdmin;
 }
 
 function resolveEntry(specifier: string): string {
 	return fileURLToPath(import.meta.resolve(specifier));
+}
+
+/**
+ * 从来源 session 的哪个位置分叉：给了检查点是它的输入之前，不给是当前位置。分支点是用户输入的边界，
+ * 停在没有结束的 task 里的当前位置不行。
+ */
+function forkPosition(
+	store: SessionStore,
+	sessionId: string,
+	checkpointId: string | undefined,
+): Position {
+	if (checkpointId !== undefined) {
+		const checkpoint = store
+			.checkpoints(sessionId)
+			.find(({ input_event_id }) => input_event_id === checkpointId);
+		if (checkpoint === undefined) {
+			throw new WorkspaceError(
+				`session ${sessionId} 里没有检查点 ${checkpointId}`,
+			);
+		}
+		if (checkpoint.before === null) {
+			throw new WorkspaceError(
+				"这个检查点之前还没有对话：从这里分叉就是新建一个 session",
+			);
+		}
+		return checkpoint.before;
+	}
+	if (readResumeState(store, sessionId).interrupted !== undefined) {
+		throw new WorkspaceError(
+			`session ${sessionId} 上次没有正常关闭，停在一个没有结束的 task 里：先用 ospreycode resume 恢复它，或者指定从哪个检查点分叉`,
+		);
+	}
+	const position = store.position(sessionId);
+	if (position === null) {
+		throw new WorkspaceError(
+			`session ${sessionId} 里还没有对话，没有可以分叉的内容`,
+		);
+	}
+	return position;
 }
 
 /** Host 进程自己的身份，写进锁文件和进程登记表。 */
@@ -327,6 +625,7 @@ export function createHost(options: HostOptions): Host {
 		"plugins",
 		"plugin-data",
 		"server-data",
+		"server-cache",
 		"snapshots",
 		"cache",
 		"tmp",
@@ -341,6 +640,27 @@ export function createHost(options: HostOptions): Host {
 	};
 	const registry = new Registry(data, owner);
 	const processes = new ProcessRegistry(data, owner);
+	/** 一个 session 的写锁：打开着的 session 一直持有。 */
+	const sessionLock = (id: string) => join(data, "locks", `session-${id}.lock`);
+	const maintenance = { root, data, registry, owner, sessionLock };
+	const trust = new TrustStore(data, owner);
+	const plugins = new PluginStore({
+		root,
+		data,
+		owner,
+		trust,
+		runGit: (args, gitOptions) =>
+			runGitInSandbox(args, gitOptions, {
+				root,
+				env: options.env,
+				helperEntry,
+				hostEntries,
+				install,
+			}),
+	});
+	// 上次没有打开的 session 在用的旧版本目录，和中断的安装留下的准备目录
+	plugins.cleanVersions();
+	const verdicts = new VerdictCache(data, owner);
 	const store =
 		options.credentialStore === undefined
 			? process.platform === "darwin"
@@ -351,6 +671,14 @@ export function createHost(options: HostOptions): Host {
 	const secrets = new Set<string>();
 	const scrub = (text: string) => redact(text, [...secrets]);
 	const log = new DiagnosticLog(join(data, "logs"), scrub);
+	const redaction = { ...maintenance, scrub, log };
+	const mcpCredentials = new McpCredentials({
+		store,
+		env: options.env,
+		platform: process.platform,
+		fetch: options.fetch ?? globalThis.fetch,
+		onSecret: (value) => secrets.add(value),
+	});
 	const requireStore = (): CredentialStore => {
 		if (store === undefined) {
 			throw new CredentialError(
@@ -424,11 +752,18 @@ export function createHost(options: HostOptions): Host {
 		};
 	};
 
-	const resolveConfig = (sessionOptions: SessionOptions): SessionConfig => {
-		const workspace = resolveWorkspace(sessionOptions.workspace);
+	/** 工作区和它所在的项目。 */
+	const locate = (directory: string) => {
+		const workspace = resolveWorkspace(directory);
 		checkSeparate(root, workspace);
-		const project = findProjectRoot(workspace);
-		return resolveSessionConfig(sessionOptions, {
+		return { workspace, project: findProjectRoot(workspace) };
+	};
+
+	const configAt = (
+		sessionOptions: SessionOptions,
+		{ workspace, project }: ReturnType<typeof locate>,
+	): SessionConfig =>
+		resolveSessionConfig(sessionOptions, {
 			root,
 			workspace,
 			projectRoot: project.root,
@@ -438,52 +773,186 @@ export function createHost(options: HostOptions): Host {
 			toolNames: [...toolRegistry.keys()],
 			install,
 		});
-	};
 
-	const openSession = async (
-		sessionOptions: OpenSessionOptions,
-	): Promise<Session> => {
-		const config = resolveConfig(sessionOptions);
-		const { workspace } = config;
-		checkInstallLocation(workspace, programFiles);
+	const resolveConfig = (sessionOptions: SessionOptions): SessionConfig =>
+		configAt(sessionOptions, locate(sessionOptions.workspace));
+
+	/** 一份配置的凭据和权限规则；要开沙盒时确认这个平台支持。 */
+	const checkedSettings = async (
+		config: SessionConfig,
+	): Promise<ReloadedSettings> => {
 		const settings = await settingsFor(config);
 		if (config.sandboxMode !== "danger-full-access") {
 			checkSandboxSupport(process.platform);
 		}
+		return settings;
+	};
+
+	const openSession = async (
+		sessionOptions: OpenSessionOptions,
+		start: SessionStart,
+	): Promise<Session> => {
+		const location = locate(sessionOptions.workspace);
+		const { workspace } = location;
+		checkInstallLocation(workspace, programFiles);
+		// 恢复和分叉没有另外指定模型时接着用路径上记录的模型：配置要有模型才能解析，等读过记录再做
+		const opening =
+			start.kind === "new"
+				? {
+						kind: "new" as const,
+						settings: await checkedSettings(configAt(sessionOptions, location)),
+					}
+				: start;
 		const userId = await registry.userId();
-		const projectId = await registry.projectId(projectKey(config.projectRoot));
+		const projectId = await registry.projectId(
+			projectKey(location.project.root),
+		);
 		const lock = await acquireWorkspaceLock(
 			join(data, "locks"),
 			workspace,
 			owner,
 		);
+		// 会话中换过的设置和启动参数排在同一层：重新加载配置时不被配置文件盖掉
+		let current: SessionOptions = sessionOptions;
+		/** 父 session 链上各个 session 的命令输出目录。 */
+		const inheritedOutputs: string[] = [];
 		let session: HostSession;
 		let store: SessionStore | undefined;
 		let writer: SessionWriter | undefined;
+		let projectMemory: MemoryStore | undefined;
+		let userMemory: MemoryStore | undefined;
 		try {
 			await processes.cleanWorkspace(workspace);
-			const sessionId = newId();
 			const projectDir = join(data, "projects", projectId);
 			ensureDirectory(join(data, "projects"));
 			ensureDirectory(projectDir);
 			store = SessionStore.open(join(projectDir, "sessions.sqlite"));
-			writer = await store.create(
-				{
-					session_id: sessionId,
-					workspace,
-					created_at: new Date().toISOString(),
-				},
-				(id) =>
-					acquireExclusiveLock(
-						join(data, "locks", `session-${id}.lock`),
-						owner,
-						`session ${id} `,
-					),
-			);
+			const locker = (id: string) =>
+				acquireExclusiveLock(sessionLock(id), owner, `session ${id} `);
+			let sessionId: string;
+			let resume: ResumeState | undefined;
+			let fork: HostSessionOptions["fork"];
+			let recorded: RecordedModel | undefined;
+			let settings: ReloadedSettings;
+			if (opening.kind !== "new") {
+				const sourceId = opening.sessionId;
+				const found = store
+					.sessions()
+					.find((session) => session.session_id === sourceId);
+				if (found === undefined) {
+					throw new WorkspaceError(
+						`这个项目里没有 session ${sourceId}：用 ospreycode session list 查看`,
+					);
+				}
+				if (found.workspace !== workspace) {
+					throw new WorkspaceError(
+						`session ${sourceId} 是在 ${found.workspace} 创建的，只能在那里${opening.kind === "resume" ? "恢复" : "分叉"}`,
+					);
+				}
+				const forkAt =
+					opening.kind === "fork"
+						? forkPosition(store, sourceId, opening.checkpointId)
+						: undefined;
+				const position = forkAt ?? store.position(sourceId);
+				// 模型和推理强度按路径上的记录；启动参数指定了模型的用指定的
+				recorded = pathModel(store, sourceId, position);
+				if (recorded !== undefined && sessionOptions.model === undefined) {
+					current = {
+						...sessionOptions,
+						model: recorded.model,
+						...(sessionOptions.reasoningEffort === undefined
+							? { reasoningEffort: recorded.reasoningEffort }
+							: {}),
+					};
+				}
+				settings = await checkedSettings(configAt(current, location));
+				if (forkAt === undefined) {
+					sessionId = sourceId;
+					writer = await store.resume(sessionId, locker);
+					resume = readResumeState(store, sessionId);
+					// 上次的临时文件不留：创建它们的进程都不在了
+					rmSync(sessionPaths(root, sessionId).tmp, {
+						recursive: true,
+						force: true,
+					});
+				} else {
+					sessionId = newId();
+					// 父 session 当时的整个检查点索引：不在路径上的检查点改过的文件还在工作区里
+					fork = {
+						parentSessionId: sourceId,
+						checkpoints: store
+							.checkpoints(sourceId)
+							.map(
+								({
+									input_event_id,
+									kind,
+									position,
+									before,
+									cleaned,
+									snapshots,
+								}) => ({
+									input_event_id,
+									kind,
+									position,
+									before,
+									cleaned,
+									snapshots,
+								}),
+							),
+					};
+					writer = await store.fork(
+						{
+							session_id: sessionId,
+							workspace,
+							created_at: new Date().toISOString(),
+						},
+						{ parent_session_id: sourceId, position: forkAt },
+						locker,
+					);
+					resume = {
+						agentId: undefined,
+						position: forkAt,
+						interrupted: undefined,
+						queue: undefined,
+						lostBackground: [],
+					};
+				}
+				// 对话里提到的命令输出文件可能在父 session 链上：分叉的沙盒也能读它们
+				for (
+					let origin = store.session(sessionId).fork;
+					origin !== undefined;
+					origin = store.session(origin.parent_session_id).fork
+				) {
+					const { output } = sessionPaths(root, origin.parent_session_id);
+					if (existsSync(output)) inheritedOutputs.push(output);
+				}
+			} else {
+				settings = opening.settings;
+				sessionId = newId();
+				writer = await store.create(
+					{
+						session_id: sessionId,
+						workspace,
+						created_at: new Date().toISOString(),
+					},
+					locker,
+				);
+			}
+			const { config } = settings;
+			// 范围落实在文件上：这个项目的记忆库在它自己的目录里，user 记忆库所有项目共用
+			if (config.memory !== undefined) {
+				ensureDirectory(join(data, "user"));
+				const paths = memoryPaths(data, projectId);
+				projectMemory = openMemoryStore(paths.project, "project");
+				userMemory = openMemoryStore(paths.user, "user");
+			}
 			session = await HostSession.open({
 				store,
 				writer,
 				sessionId,
+				...(resume === undefined ? {} : { resume }),
+				...(fork === undefined ? {} : { fork }),
+				...(recorded === undefined ? {} : { recorded }),
 				root,
 				...settings,
 				scrub,
@@ -492,10 +961,58 @@ export function createHost(options: HostOptions): Host {
 				hostEnv: options.env,
 				fetch: options.fetch ?? globalThis.fetch,
 				streamModel: options.streamModel ?? streamModel,
+				countTokens: options.countTokens ?? countTokens,
 				tracker: processes.tracker(sessionId, workspace),
 				lock,
 				userId,
 				projectId,
+				...(projectMemory === undefined || userMemory === undefined
+					? {}
+					: {
+							memory: {
+								project: projectMemory,
+								user: userMemory,
+								owner,
+								isSessionOpen: (id: string) =>
+									isLockHeld(sessionLock(id), owner.boot_id),
+							},
+						}),
+				extensions: {
+					trust,
+					plugins,
+					verdicts,
+					fetch: options.fetch ?? globalThis.fetch,
+					locations: {
+						root,
+						home: options.env.HOME,
+						workspace,
+						projectRoot: config.projectRoot,
+						projectId,
+					},
+					credentials: (server, sessionConfig) =>
+						mcpCredentials.connect(server, {
+							workspace,
+							sources: sessionConfig.credentials,
+							clients: sessionConfig.mcpClients,
+							secrets: sessionConfig.mcpSecrets,
+						}),
+					secrets: (server, sessionConfig) =>
+						mcpCredentials.secrets(server, {
+							workspace,
+							sources: sessionConfig.credentials,
+							clients: sessionConfig.mcpClients,
+							secrets: sessionConfig.mcpSecrets,
+						}),
+					resolveMode: (name) => {
+						const resolved = resolveConfig({ ...current, sandboxMode: name });
+						return {
+							baseSandboxMode: resolved.baseSandboxMode,
+							...(resolved.permissionProfile === undefined
+								? {}
+								: { permissionProfile: resolved.permissionProfile }),
+						};
+					},
+				},
 				// 切换沙盒模式和重新加载配置时再调用，所以模式和路径都取这一次给的
 				createSandbox: async (context) => {
 					const { denied, bash, env, directories, tracker } = context;
@@ -509,23 +1026,30 @@ export function createHost(options: HostOptions): Host {
 							"Host 的环境变量里没有 HOME，找不到要禁止读取的密钥位置",
 						);
 					}
-					return sandboxedSession({
+					const policy = {
+						mode,
+						workspace,
+						tmpdir: directories.tmp,
+						cache: directories.cache,
+						readOnly: [directories.output, ...inheritedOutputs],
+						denyRead: [...denied.read],
+						denyWrite: [...denied.write],
+						home: env.HOME,
+						hostRoot: root,
+						hostEntries,
+						install,
+						...(profile === undefined ? {} : { profile }),
+					};
+					const capabilities = checkSandboxSupport(process.platform);
+					const placeholders = new Placeholders(data, owner, workspace);
+					const sandbox = await sandboxedSession({
 						helperEntry,
+						// agent 和它的命令只读已启用插件的版本目录：skills 的文件在那里
 						policy: {
-							mode,
-							workspace,
-							tmpdir: directories.tmp,
-							cache: directories.cache,
-							readOnly: [directories.output],
-							denyRead: [...denied.read],
-							denyWrite: [...denied.write],
-							home: env.HOME,
-							hostRoot: root,
-							hostEntries,
-							install,
-							...(profile === undefined ? {} : { profile }),
+							...policy,
+							readOnly: [...policy.readOnly, ...context.pluginDirectories],
 						},
-						capabilities: checkSandboxSupport(process.platform),
+						capabilities,
 						env,
 						bash,
 						agentCommand,
@@ -536,21 +1060,63 @@ export function createHost(options: HostOptions): Host {
 						...(options.env.SSH_AUTH_SOCK === undefined
 							? {}
 							: { sshAuthSock: options.env.SSH_AUTH_SOCK }),
-						placeholders: new Placeholders(data, owner, workspace),
+						placeholders,
 						onWarning: context.onWarning,
 						onProcess: context.onProcess,
 					});
+					// 扩展的沙盒不含别的插件的目录：每个插件的 server 和 hooks 只读自己的版本目录
+					const sandboxes = new ExtensionSandboxes({
+						helperEntry,
+						policy,
+						capabilities,
+						env,
+						bash,
+						tracker,
+						placeholders,
+						onWarning: context.onWarning,
+						onProcess: context.onProcess,
+					});
+					return {
+						...sandbox,
+						extensions: { sandboxes, policy },
+						stop: async () => {
+							await sandboxes.stop();
+							await sandbox.stop();
+						},
+					};
 				},
 				onEvent: sessionOptions.onEvent,
 			});
 		} catch (error) {
 			writer?.close();
 			store?.close();
+			projectMemory?.close();
+			userMemory?.close();
 			lock.release();
 			throw error;
 		}
-		// 会话中换过的设置和启动参数排在同一层：重新加载配置时不被配置文件盖掉
-		let current: SessionOptions = sessionOptions;
+		// 移动当前位置（回退、切换分支）：新路径上的模型和现在的不同时跟着换，先按新模型做完检查，
+		// 不满足就不移动
+		const withPathModel = async <T>(
+			recorded: RecordedModel | undefined,
+			move: () => Promise<T>,
+		): Promise<T> => {
+			const { model, reasoningEffort } = session.config;
+			const next =
+				recorded === undefined ||
+				(recorded.model === model.id &&
+					recorded.reasoningEffort === reasoningEffort)
+					? undefined
+					: { ...current, ...recorded };
+			const settings =
+				next === undefined ? undefined : await settingsFor(resolveConfig(next));
+			const moved = await move();
+			if (next !== undefined && settings !== undefined) {
+				await session.setModel(settings);
+				current = next;
+			}
+			return moved;
+		};
 		return {
 			id: session.sessionId,
 			ended: session.ended,
@@ -560,6 +1126,23 @@ export function createHost(options: HostOptions): Host {
 			followUp: (input) => session.followUp(input),
 			dequeue: (inputId) => session.dequeue(inputId),
 			inputQueue: () => session.inputQueue(),
+			history: () => session.history(),
+			checkpoints: () => session.checkpoints(),
+			diff: (checkpointId) => session.diff(checkpointId),
+			undo: (checkpointId, undoOptions = {}) =>
+				session.undo(checkpointId, undoOptions.overwrite ?? false),
+			rewind: async (checkpointId, rewindOptions = {}) =>
+				withPathModel(session.modelBefore(checkpointId), () =>
+					session.rewind(checkpointId, {
+						code: rewindOptions.code ?? false,
+						overwrite: rewindOptions.overwrite ?? false,
+					}),
+				),
+			branches: () => session.branches(),
+			switchBranch: async (branchId) =>
+				withPathModel(session.modelOn(branchId), () =>
+					session.switchBranch(branchId),
+				),
 			resumeFollowUps: () => session.resumeFollowUps(),
 			async setModel(model, reasoningEffort) {
 				const next = {
@@ -575,11 +1158,14 @@ export function createHost(options: HostOptions): Host {
 				await session.setModel(await settingsFor(resolveConfig(next)));
 				current = next;
 			},
+			compact: () => session.compact(),
 			backgroundCommands: () => session.backgroundCommands(),
 			stopBackgroundCommand: (backgroundId) =>
 				session.stopBackgroundCommand(backgroundId),
 			whenIdle: () => session.whenIdle(),
 			respond: (requestId, answer) => session.respond(requestId, answer),
+			extensions: () => session.extensions(),
+			mcpServers: () => session.mcpServers(),
 			setApprovalPolicy(policy, granular) {
 				const next = {
 					...current,
@@ -591,6 +1177,11 @@ export function createHost(options: HostOptions): Host {
 				current = next;
 			},
 			cancel: () => session.cancel(),
+			memory: session.memory?.manager((purged) =>
+				redactMemory(redaction, workspace, purged),
+			),
+			extractMemory: (sourceSessionId) =>
+				session.extractMemory(sourceSessionId),
 			close: () => session.close(),
 			async setSandboxMode(mode) {
 				const next = { ...current, sandboxMode: mode };
@@ -615,11 +1206,37 @@ export function createHost(options: HostOptions): Host {
 		resolveConfig,
 		async openSession(sessionOptions) {
 			try {
-				return await openSession(sessionOptions);
+				return await openSession(sessionOptions, { kind: "new" });
 			} catch (error) {
 				log.write({
 					level: "error",
 					message: `打开 session 失败：${(error as Error).message}`,
+				});
+				throw error;
+			}
+		},
+		async resumeSession({ sessionId, ...sessionOptions }) {
+			try {
+				return await openSession(sessionOptions, { kind: "resume", sessionId });
+			} catch (error) {
+				log.write({
+					level: "error",
+					message: `恢复 session ${sessionId} 失败：${(error as Error).message}`,
+				});
+				throw error;
+			}
+		},
+		async forkSession({ sessionId, checkpointId, ...sessionOptions }) {
+			try {
+				return await openSession(sessionOptions, {
+					kind: "fork",
+					sessionId,
+					...(checkpointId === undefined ? {} : { checkpointId }),
+				});
+			} catch (error) {
+				log.write({
+					level: "error",
+					message: `分叉 session ${sessionId} 失败：${(error as Error).message}`,
 				});
 				throw error;
 			}
@@ -638,10 +1255,19 @@ export function createHost(options: HostOptions): Host {
 		saveCredential: async (id, value) => requireStore().set(id, value),
 		deleteCredential: async (id) => requireStore().delete(id),
 		defaultService: () => defaultService(root, options.env.HOME),
+		proxy: () => userLayer(root, options.env.HOME).proxy,
 		credentialStatus: (statusOptions = {}) =>
 			credentialStatus({ root, home: options.env.HOME, store }, statusOptions),
 		listSessions: (listOptions = {}) =>
 			listSessions(data, registry, listOptions),
+		sessionForks: (ref) => sessionForks(maintenance, ref),
+		deleteSession: (deleteOptions) => deleteSession(maintenance, deleteOptions),
+		exportSession: (ref) => exportSession(maintenance, scrub, ref),
+		rebuildSessions: ({ directory }) => rebuildSessions(maintenance, directory),
+		redactionScope: (ref) => redactionScope(redaction, ref),
+		redactEvents: (redactOptions) => redactEvents(redaction, redactOptions),
+		cleanExpiredSessions: () =>
+			cleanExpiredSessions(maintenance, options.env.HOME, new Date()),
 		clearCache: (cacheOptions = {}) => clearCache(root, registry, cacheOptions),
 		runInSandbox: (runOptions) =>
 			runInSandbox(runOptions, {
@@ -656,5 +1282,15 @@ export function createHost(options: HostOptions): Host {
 				resolveConfig,
 				shellParser,
 			}),
+		extensions: new ExtensionAdmin({
+			root,
+			data,
+			owner,
+			home: options.env.HOME,
+			registry,
+			trust,
+			plugins,
+			credentials: mcpCredentials,
+		}),
 	};
 }

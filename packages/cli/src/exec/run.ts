@@ -6,14 +6,19 @@ import {
 	type CancelSignal,
 	exitCodeFor,
 	type HostEvent,
+	InputBlockedError,
+	type OpenSessionOptions,
 	type TaskEndedEvent,
 	type TaskOutcome,
 } from "@ospreycode/agent-host";
 import { flag, type ParsedArgs, value } from "../args/parse.js";
+import { type ResumeTarget, resumeArgs } from "../args/resume.js";
 import { sessionArgs } from "../args/session.js";
+import { startSessionCleanup } from "../cleanup.js";
 import type { CliContext, CliInput } from "../context.js";
 import { UsageError } from "../errors.js";
 import { openHost } from "../host.js";
+import { targetSessionId } from "../resume.js";
 import { jsonOutput, replyText, textOutput } from "./output.js";
 
 /** `--max-cost` 和 `--max-requests` 的取值：数，或 `none` 表示不设。范围由 Host 检查。 */
@@ -43,8 +48,10 @@ function timeoutArg(args: ParsedArgs): number | undefined {
 }
 
 /** 命令行里的 PROMPT；写 `-`，或者没有写而标准输入不是终端时，从标准输入读。 */
-async function readPrompt(args: ParsedArgs, stdin: CliInput): Promise<string> {
-	const written = args.positionals.at(0);
+async function readPrompt(
+	written: string | undefined,
+	stdin: CliInput,
+): Promise<string> {
 	if (written === undefined && stdin.isTTY === true) {
 		throw new UsageError("没有 PROMPT：写在命令行里，或从标准输入传入");
 	}
@@ -88,13 +95,46 @@ export async function runExec(
 	args: ParsedArgs,
 	context: CliContext,
 ): Promise<number> {
+	return execute(args, context, { prompt: args.positionals.at(0) });
+}
+
+/**
+ * `ospreycode exec resume`：恢复当前工作区的一个 session，接着执行一个任务后退出。输出、退出码和
+ * 失败的处理都和 `runExec` 相同。上次中断的 task 里有调用要由用户决定重新执行还是跳过时，Host
+ * 抛出 `SessionResumeError`，session 记录不变。
+ */
+export async function runExecResume(
+	args: ParsedArgs,
+	context: CliContext,
+): Promise<number> {
+	const { target, rest } = resumeArgs(args);
+	if (target === undefined) {
+		throw new UsageError("缺少参数 <SESSION_ID|--last>");
+	}
+	if (rest.length > 1) {
+		throw new UsageError(`多余的参数：${rest.slice(1).join(" ")}`);
+	}
+	return execute(args, context, { prompt: rest.at(0), resume: target });
+}
+
+/** 这次运行的任务：命令行里写的 PROMPT，和要恢复的 session（新建时没有）。 */
+interface ExecTask {
+	prompt: string | undefined;
+	resume?: ResumeTarget;
+}
+
+async function execute(
+	args: ParsedArgs,
+	context: CliContext,
+	task: ExecTask,
+): Promise<number> {
 	const options = sessionArgs(args, context.cwd);
 	const timeoutMs = timeoutArg(args);
 	const budget: BudgetOptions = {
 		maxCostUsd: limitArg(args, "max-cost"),
 		maxRequests: limitArg(args, "max-requests"),
 	};
-	const prompt = await readPrompt(args, context.stdin);
+	const prompt = await readPrompt(task.prompt, context.stdin);
 	const host = openHost(context);
 	const config = host.resolveConfig({ ...options, budget });
 	context.useProxy(config.proxy);
@@ -146,7 +186,7 @@ export async function runExec(
 		);
 	};
 
-	const session = await host.openSession({
+	const sessionOptions: OpenSessionOptions = {
 		...options,
 		approvalPolicy: "never",
 		budget: {
@@ -162,7 +202,16 @@ export async function runExec(
 					}),
 		},
 		onEvent,
-	});
+	};
+	const session =
+		task.resume === undefined
+			? await host.openSession(sessionOptions)
+			: await host.resumeSession({
+					...sessionOptions,
+					sessionId: targetSessionId(task.resume, host, config.workspace),
+				});
+	// 到期的 session 在任务进行的同时清理，退出之前等它做完
+	const cleaned = startSessionCleanup(host, context);
 
 	const forced = Promise.withResolvers<number>();
 	const failed = Promise.withResolvers<never>();
@@ -243,9 +292,16 @@ export async function runExec(
 		// session 已经打开：照常关闭它，让事件流以 session.ended 结束，再把错误写到 stderr
 		crashed = true;
 		await session.close();
-		context.stderr.write(`ospreycode: ${(error as Error).stack}\n`);
+		context.stderr.write(
+			// `UserPromptSubmit` hooks 拦下了输入不是程序出错：只写 hooks 给的原因
+			error instanceof InputBlockedError
+				? `ospreycode: hook 拦下了这条输入：${error.message}\n`
+				: `ospreycode: ${(error as Error).stack}\n`,
+		);
 		return 1;
 	} finally {
 		unsubscribe();
+		// 第二个信号之后立即退出，不等也不再输出
+		if (!stopped) await cleaned();
 	}
 }

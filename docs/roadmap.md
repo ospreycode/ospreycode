@@ -44,18 +44,18 @@
 | 后台命令和监视，后台通知的唤醒 | P1 | 已完成 | agent-runtime 的[后台命令](packages/agent-runtime.md#后台命令) |
 | steering 和 follow-up | P1 | 已完成 | agent-runtime 的[运行中的用户输入](packages/agent-runtime.md#运行中的用户输入) |
 | `@` 提及文件和粘贴图片，`read` 读图片 | P1 | 已完成 | agent-host 的[提及文件和附件](packages/agent-host.md#提及文件和附件) |
-| skills、MCP、插件的接入，`skill_load` 工具；插件的安装、更新和启用 | P2 | 未开始 | [skills](packages/skills.md)、[mcp](packages/mcp.md)、[agent-plugins](packages/agent-plugins.md)；agent-host 的[扩展的存放和安装来源](packages/agent-host.md#扩展的存放和安装来源) |
-| MCP 的 OAuth 授权、远程 server 的静态令牌、本地 server 密钥的 mask | P2 | 未开始 | mcp 的[授权](packages/mcp.md#授权)；agent-host 的[插件之外的 `mcp.json`](packages/agent-host.md#插件之外的-mcpjson) |
-| OAuth 客户端元数据文件在 `https://ospreycode.dev/oauth/client-metadata.json` 上线 | P2 | 未开始 | mcp 的[授权](packages/mcp.md#授权) |
-| hooks：`hooks.json` 的格式、输入输出、七个触发时机 | P2 | 未开始 | agent-host 的 [Hooks](packages/agent-host.md#hooks) |
-| 扩展的信任确认 | P2 | 未开始 | agent-host 的[扩展的管理和信任](packages/agent-host.md#扩展的管理和信任) |
-| 长期记忆的两种范围，`memory_propose`、`memory_search`、`memory_read` 工具；查看、纠正和删除记忆；后台提取 | P3 | 未开始 | [memory](packages/memory.md) |
-| memory 对比实验：无记忆、直接提供历史或摘要、只检索、完整 memory、等长无关记忆对照 | P3 | 未开始 | evaluation 的 [Memory 评测](packages/evaluation.md#memory-评测) |
-| 中断后的恢复，`resume` 子命令 | P3 | 未开始 | agent-host 的[中断后的恢复](packages/agent-host.md#中断后的恢复) |
-| 快照、检查点、撤销改动 | P3 | 未开始 | agent-host 的[快照和撤销](packages/agent-host.md#快照和撤销)；session-store 的[检查点的保留](packages/session-store.md#检查点的保留) |
-| 回退和分叉会话 | P3 | 未开始 | session-store 的[会话的分支和回退](packages/session-store.md#会话的分支和回退) |
-| session 记录的保存期限和清理；session 的删除、导出（JSONL）、索引重建和按事件脱敏 | P3 | 未开始 | session-store 的[保存期限](packages/session-store.md#保存期限)和[要点](packages/session-store.md#要点) |
-| 上下文压缩，经 Host 的 token 计数接口 | P3 | 未开始 | api 的[上下文压缩](packages/api.md#上下文压缩)和 [token 计数](packages/api.md#token-计数) |
+| skills、MCP、插件的接入，`skill_load` 工具；插件的安装、更新和启用 | P2 | 进行中 | [skills](packages/skills.md)、[mcp](packages/mcp.md)、[agent-plugins](packages/agent-plugins.md)；agent-host 的[扩展的存放和安装来源](packages/agent-host.md#扩展的存放和安装来源) |
+| MCP 的 OAuth 授权、远程 server 的静态令牌、本地 server 密钥的 mask | P2 | 进行中 | mcp 的[授权](packages/mcp.md#授权)；agent-host 的[插件之外的 `mcp.json`](packages/agent-host.md#插件之外的-mcpjson) |
+| OAuth 客户端元数据文件在 `https://ospreycode.dev/oauth/client-metadata.json` 上线 | P2 | 进行中 | mcp 的[授权](packages/mcp.md#授权) |
+| hooks：`hooks.json` 的格式、输入输出、七个触发时机 | P2 | 已完成 | agent-host 的 [Hooks](packages/agent-host.md#hooks) |
+| 扩展的信任确认 | P2 | 已完成 | agent-host 的[扩展的管理和信任](packages/agent-host.md#扩展的管理和信任) |
+| 长期记忆的两种范围，`memory_propose`、`memory_search`、`memory_read` 工具；查看、纠正和删除记忆；后台提取 | P3 | 已完成 | [memory](packages/memory.md) |
+| memory 对比实验：无记忆、直接提供历史或摘要、只检索、完整 memory、等长无关记忆对照 | P3 | 进行中 | evaluation 的 [Memory 评测](packages/evaluation.md#memory-评测) |
+| 中断后的恢复，`resume` 子命令 | P3 | 已完成 | agent-host 的[中断后的恢复](packages/agent-host.md#中断后的恢复) |
+| 快照、检查点、撤销改动 | P3 | 进行中 | agent-host 的[快照和撤销](packages/agent-host.md#快照和撤销)；session-store 的[检查点的保留](packages/session-store.md#检查点的保留) |
+| 回退和分叉会话 | P3 | 已完成 | session-store 的[会话的分支和回退](packages/session-store.md#会话的分支和回退) |
+| session 记录的保存期限和清理；session 的删除、导出（JSONL）、索引重建和按事件脱敏 | P3 | 已完成 | session-store 的[保存期限](packages/session-store.md#保存期限)和[要点](packages/session-store.md#要点) |
+| 上下文压缩，经 Host 的 token 计数接口 | P3 | 进行中 | api 的[上下文压缩](packages/api.md#上下文压缩)和 [token 计数](packages/api.md#token-计数) |
 | 保留题集、memory 连续场景、逐项关闭模块的对比、开关沙盒的对比、版本对比；DeepSWE v1.1 作主 benchmark | P4 | 未开始 | [evaluation](packages/evaluation.md) |
 | Mem0 作记忆评测的外部系统对照组 | P4 | 未开始 | evaluation 的 [Memory 评测](packages/evaluation.md#memory-评测) |
 | 更多 benchmark、模型服务（Azure、Foundry、AWS、Vertex、Gemini）和平台 | P5 | 未开始 | api 的[首批支持的协议](packages/api.md#首批支持的协议)；overview 的[实施阶段](overview.md#实施阶段) |

@@ -1,9 +1,15 @@
+import { randomUUID } from "node:crypto";
 import {
 	type AgentConfig,
 	type HandlerContext,
+	type HooksRunParams,
+	type HooksRunResult,
 	type HostChannel,
 	type ImagePutParams,
 	type InputContent,
+	type MemoryEntry,
+	type MemoryProposeParams,
+	type MemoryProposeResult,
 	openHostChannel,
 	type PendingInput,
 	ReceivedImages,
@@ -11,6 +17,7 @@ import {
 	type RuntimeEvent,
 	type RuntimeRequests,
 	runAgent,
+	type SkillLoadResult,
 	type TaskEndParams,
 	type ToolCallRunParams,
 	type ToolResult,
@@ -18,7 +25,9 @@ import {
 import type {
 	AssistantMessage,
 	Message,
+	ModelErrorInfo,
 	ModelRequest,
+	Usage,
 	UserContent,
 } from "@ospreycode/api/protocol";
 import { socketPair } from "./socket-pair.js";
@@ -28,6 +37,10 @@ export interface Turn {
 	content: AssistantMessage["content"];
 	/** 不写时：有工具调用是 `tool_use`，否则是 `end_turn`。 */
 	stop_reason?: AssistantMessage["stop_reason"];
+	/** 这次回复报告的用量；不写时输入和输出各 1 个 token。 */
+	usage?: Partial<Usage>;
+	/** 模型服务报的错误：回复以 `error` 结束。 */
+	error?: ModelErrorInfo;
 }
 
 export interface FakeHostOptions {
@@ -39,6 +52,12 @@ export interface FakeHostOptions {
 		index: number,
 		context: HandlerContext<RuntimeRequests["model/request"]["stream"]>,
 	) => Turn | Promise<Turn>;
+	/** 假的计数接口（`model/count_tokens`）：参数是要数的请求，返回 token 数或计数接口报的错误。 */
+	countTokens?: (request: ModelRequest) => number | ModelErrorInfo;
+	/** `hooks/run` 的回复。 */
+	hooks?: (params: HooksRunParams) => HooksRunResult;
+	/** `skill/load` 的回复。 */
+	loadSkill?: (name: string) => SkillLoadResult;
 	/** `task/end` 的回复里的 `continue`；不写时都是 false。 */
 	taskEnd?: (params: TaskEndParams, index: number) => boolean;
 	/** `input/take` 的回复；不写时没有待插入的输入。 */
@@ -52,8 +71,17 @@ export interface FakeHostOptions {
 		params: ToolCallRunParams,
 		context: HandlerContext<RuntimeRequests["tool_call/run"]["stream"]>,
 	) => ToolResult | Promise<ToolResult>;
+	/** `tool_call/complete` 的回复里补充之后的结果（Host 的 hooks 补充了信息）；不写时没有。 */
+	amendResult?: (result: ToolResult) => ToolResult | undefined;
 	/** 一次登记的回复发出之后做的事：这时 runtime 开始执行这次调用。 */
 	afterRegister?: () => void;
+	/** 假 Host 的记忆库：`memory/search`、`memory/read` 和 `memory/propose` 的回复。 */
+	memory?: {
+		/** `toolCallId` 是请求带的 `tool_call_id`：自动注入的检索没有。 */
+		search?: (query: string, toolCallId?: string) => MemoryEntry[];
+		read?: (id: string, toolCallId: string) => MemoryEntry | null;
+		propose?: (params: MemoryProposeParams) => MemoryProposeResult;
+	};
 }
 
 /** 假 Host 看到的东西。 */
@@ -63,6 +91,8 @@ export interface FakeHost {
 	requests: ModelRequest[];
 	/** 每次模型请求在通道上的消息：图片都是引用。 */
 	wire: RequestMessage[][];
+	/** 每次计数请求，图片的引用已经换回图片。 */
+	counts: ModelRequest[];
 	/** runtime 用 `image/put` 交来的图片，按交来的顺序。 */
 	puts: ImagePutParams["image"][];
 	/** runtime 经 `record/append` 上报的事件。 */
@@ -75,6 +105,8 @@ export interface FakeHost {
 	failures: Error[];
 	/** 开始一个 task。 */
 	start(input: string | InputContent[]): Promise<void>;
+	/** 开始一个压缩上下文的 task。 */
+	compact(): Promise<void>;
 	/** 等到条件成立：假 Host 每收到一条消息检查一次。 */
 	until(condition: () => boolean): Promise<void>;
 	/** 关闭通道，等 runtime 结束。 */
@@ -103,6 +135,7 @@ export async function startFakeHost(
 	const channel = openHostChannel(hostSide, (error) => failures.push(error));
 	const requests: ModelRequest[] = [];
 	const wire: RequestMessage[][] = [];
+	const counts: ModelRequest[] = [];
 	const puts: ImagePutParams["image"][] = [];
 	// 和 Host 一样留着收到过的图片：工具结果里的，和 runtime 用 `image/put` 交来的
 	const images = new ReceivedImages();
@@ -158,20 +191,52 @@ export async function startFakeHost(
 				reasoning_effort: request.reasoning_effort,
 				stop_reason:
 					turn.stop_reason ??
-					(turn.content.some((block) => block.type === "tool_call")
-						? "tool_use"
-						: "end_turn"),
+					(turn.error !== undefined
+						? "error"
+						: turn.content.some((block) => block.type === "tool_call")
+							? "tool_use"
+							: "end_turn"),
 				usage: {
 					input: 1,
 					output: 1,
 					cache_read: 0,
 					cache_write: 0,
 					reasoning: 0,
+					...turn.usage,
 				},
 			};
-			return { message };
+			return turn.error === undefined
+				? { message }
+				: { message, error: turn.error };
 		},
 	);
+	channel.handle("model/count_tokens", async (params) => {
+		if (options.countTokens === undefined) {
+			throw new Error("假 Host 没有准备计数");
+		}
+		const request: ModelRequest = {
+			...params.request,
+			messages: images.restore(params.request.messages),
+		};
+		counts.push(request);
+		changed();
+		const result = options.countTokens(request);
+		return typeof result === "number"
+			? { input_tokens: result }
+			: { error: result };
+	});
+	channel.handle("hooks/run", async (params) => {
+		if (options.hooks === undefined) {
+			throw new Error("假 Host 没有准备运行 hooks");
+		}
+		return options.hooks(params);
+	});
+	channel.handle("skill/load", async ({ name }) => {
+		if (options.loadSkill === undefined) {
+			throw new Error("假 Host 没有准备加载 skill");
+		}
+		return options.loadSkill(name);
+	});
 	channel.handle("tool_call/register", async () => {
 		registered += 1;
 		// 回复在这个处理函数返回后的微任务里写出，setImmediate 排在它后面
@@ -183,7 +248,8 @@ export async function startFakeHost(
 		completed.push(result);
 		images.remember(result.content);
 		changed();
-		return {};
+		const amended = options.amendResult?.(result);
+		return amended === undefined ? {} : { result: amended };
 	});
 	channel.handle("tool_call/run", async (params, context) => {
 		if (options.runTool === undefined) {
@@ -214,6 +280,24 @@ export async function startFakeHost(
 	channel.handle("image/read", async ({ sha256 }) => ({
 		image: images.image(sha256),
 	}));
+	channel.handle("memory/search", async ({ query, tool_call_id }) => {
+		if (options.memory?.search === undefined) {
+			throw new Error("假 Host 没有准备检索记忆");
+		}
+		return { memories: options.memory.search(query, tool_call_id) };
+	});
+	channel.handle("memory/read", async ({ id, tool_call_id }) => {
+		if (options.memory?.read === undefined) {
+			throw new Error("假 Host 没有准备读取记忆");
+		}
+		return { memory: options.memory.read(id, tool_call_id) };
+	});
+	channel.handle("memory/propose", async (params) => {
+		if (options.memory?.propose === undefined) {
+			throw new Error("假 Host 没有准备接收记忆候选");
+		}
+		return options.memory.propose(params);
+	});
 	channel.handle("task/end", async (params) => {
 		const index = ends.length;
 		ends.push(params);
@@ -230,6 +314,7 @@ export async function startFakeHost(
 		channel,
 		requests,
 		wire,
+		counts,
 		puts,
 		events,
 		ends,
@@ -238,7 +323,9 @@ export async function startFakeHost(
 		start: (input) =>
 			channel.notify("task/start", {
 				input: typeof input === "string" ? text(input) : input,
+				message_id: randomUUID(),
 			}),
+		compact: () => channel.notify("task/start", { input: [], kind: "compact" }),
 		until: async (condition) => {
 			while (!condition()) {
 				await new Promise<void>((resolve) => waiters.push(resolve));

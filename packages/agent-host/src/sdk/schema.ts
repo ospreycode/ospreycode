@@ -16,7 +16,12 @@ const scope = {
 	run_id: Type.String(),
 	agent_id: Type.String(),
 };
-const stored = { event_id: Type.String(), seq: Type.Integer({ minimum: 1 }) };
+const stored = {
+	event_id: Type.String(),
+	seq: Type.Integer({ minimum: 1 }),
+	// 按事件脱敏覆盖过的事件带它：读回 session 记录时才有
+	redacted: Type.Optional(Type.Literal(true)),
+};
 
 const TaskOutcome = Type.Union([
 	Type.Literal("completed"),
@@ -208,6 +213,8 @@ const TaskStarted = event({
 		Type.Literal("notification"),
 	]),
 	input: Type.Array(p.inputContent),
+	message_id: Type.Optional(Type.String()),
+	kind: Type.Optional(Type.Literal("compact")),
 });
 
 const RunStarted = event({
@@ -236,6 +243,16 @@ const MessageCompleted = event({
 	...stored,
 	type: Type.Literal("message.completed"),
 	message: p.assistantMessage,
+});
+
+const ContextCompacted = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("context.compacted"),
+	trigger: Type.Union([Type.Literal("auto"), Type.Literal("manual")]),
+	tokens_before: Type.Integer({ minimum: 0 }),
+	summary: Type.String(),
 });
 
 const ToolCallStarted = event({
@@ -292,6 +309,32 @@ const ApprovalRequested = Type.Union([
 		max: Type.Number({ minimum: 0 }),
 		used: Type.Number({ minimum: 0 }),
 	}),
+	event({
+		...base,
+		...scope,
+		...stored,
+		type: Type.Literal("approval.requested"),
+		request_id: Type.String(),
+		kind: Type.Literal("resume_uncertain"),
+		tool_call_id: Type.String(),
+		name: Type.String(),
+		arguments: Type.String(),
+		reasons: Type.Array(Type.String()),
+	}),
+	event({
+		...base,
+		...scope,
+		...stored,
+		type: Type.Literal("approval.requested"),
+		request_id: Type.String(),
+		kind: Type.Literal("extension_changed"),
+		tool_call_id: Type.String(),
+		skill: Type.String(),
+		directory: Type.String(),
+		action: Type.Union([Type.Literal("load"), Type.Literal("script")]),
+		command: Type.Optional(Type.String()),
+		reasons: Type.Array(Type.String()),
+	}),
 ]);
 
 const ApprovalDecided = event({
@@ -313,6 +356,7 @@ const QueuedInput = Type.Object(
 		input_id: Type.String(),
 		kind: Type.Union([Type.Literal("steering"), Type.Literal("follow_up")]),
 		input: Type.Array(p.inputContent),
+		hook_context: Type.Optional(Type.String()),
 	},
 	closed,
 );
@@ -325,6 +369,9 @@ const InputQueue = Type.Object(
 	},
 	closed,
 );
+
+/** 队列的快照：恢复 session 时从记录里读回最后一份，用之前按它检查。 */
+export const inputQueueSchema = InputQueue;
 
 const InputQueued = event({
 	...base,
@@ -422,6 +469,7 @@ const BackgroundEnded = event({
 		Type.Literal("time_limit"),
 		Type.Literal("output_limit"),
 		Type.Literal("session_closed"),
+		Type.Literal("lost"),
 	]),
 	exit_code: Type.Union([Type.Integer(), Type.Null()]),
 	signal: Type.Union([Type.String(), Type.Null()]),
@@ -500,6 +548,179 @@ const ApprovalPolicyChanged = event({
 	to: ApprovalPolicy,
 });
 
+const MemoryScope = Type.Union([Type.Literal("project"), Type.Literal("user")]);
+
+const MemoryCandidates = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("memory.candidates"),
+	candidates: Type.Array(
+		Type.Object(
+			{
+				id: Type.String(),
+				version: Type.Integer({ minimum: 1 }),
+				scope: MemoryScope,
+				kind: Type.Union([
+					Type.Literal("fact"),
+					Type.Literal("preference"),
+					Type.Literal("decision"),
+					Type.Literal("lesson"),
+				]),
+				title: Type.String(),
+				target: Type.Optional(
+					Type.Object(
+						{
+							id: Type.String(),
+							action: Type.Union([
+								Type.Literal("correct"),
+								Type.Literal("expire"),
+							]),
+						},
+						closed,
+					),
+				),
+				source_event_ids: Type.Optional(Type.Array(Type.String())),
+			},
+			closed,
+		),
+	),
+});
+
+const MemoryRetrieved = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("memory.retrieved"),
+	operation: Type.Union([Type.Literal("search"), Type.Literal("read")]),
+	query: Type.String(),
+	memory_ids: Type.Array(Type.String()),
+	tool_call_id: Type.Optional(Type.String()),
+	message_id: Type.Optional(Type.String()),
+});
+
+const MemoryUpdated = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("memory.updated"),
+	change: Type.Union([
+		Type.Literal("added"),
+		Type.Literal("confirmed"),
+		Type.Literal("rejected"),
+		Type.Literal("corrected"),
+		Type.Literal("rolled_back"),
+		Type.Literal("retired"),
+		Type.Literal("restored"),
+		Type.Literal("expired"),
+		Type.Literal("purged"),
+	]),
+	scope: MemoryScope,
+	memory_id: Type.String(),
+	target_id: Type.Optional(Type.String()),
+});
+
+const MemoryExtractionStarted = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("memory.extraction.started"),
+	source_session_id: Type.String(),
+});
+
+const MemoryExtractionEnded = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("memory.extraction.ended"),
+	source_session_id: Type.String(),
+	outcome: Type.Union([
+		Type.Literal("completed"),
+		Type.Literal("limit_reached"),
+		Type.Literal("failed"),
+		Type.Literal("cancelled"),
+	]),
+	candidate_ids: Type.Array(Type.String()),
+	dropped: Type.Integer({ minimum: 0 }),
+	requests: Type.Integer({ minimum: 0 }),
+	usage: p.usage,
+	error: Type.Optional(Type.String()),
+});
+
+const HooksRan = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("hooks.ran"),
+	event: Type.Union([
+		Type.Literal("SessionStart"),
+		Type.Literal("UserPromptSubmit"),
+		Type.Literal("PreToolUse"),
+		Type.Literal("PostToolUse"),
+		Type.Literal("PreCompact"),
+		Type.Literal("Stop"),
+		Type.Literal("SessionEnd"),
+	]),
+	task_id: Type.Optional(Type.String()),
+	tool_call_id: Type.Optional(Type.String()),
+	input_id: Type.Optional(Type.String()),
+	message_id: Type.Optional(Type.String()),
+	blocked: Type.Boolean(),
+	reason: Type.Optional(Type.String()),
+	additional_context: Type.Optional(Type.String()),
+	system_messages: Type.Array(Type.String()),
+});
+
+const ElicitationRequested = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("elicitation.requested"),
+	request_id: Type.String(),
+	server: Type.String(),
+	message: Type.String(),
+	schema: Type.Record(Type.String(), Type.Unknown()),
+});
+
+const ElicitationAnswered = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("elicitation.answered"),
+	request_id: Type.String(),
+	action: Type.Union([
+		Type.Literal("accept"),
+		Type.Literal("decline"),
+		Type.Literal("cancel"),
+	]),
+});
+
+const ServerApprovalRequested = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("server_approval.requested"),
+	request_id: Type.String(),
+	kind: Type.Literal("network"),
+	server: Type.String(),
+	request: NetworkRequest,
+	reasons: Type.Array(Type.String()),
+});
+
+const ServerApprovalDecided = event({
+	...base,
+	...stored,
+	run_id: Type.String(),
+	type: Type.Literal("server_approval.decided"),
+	request_id: Type.String(),
+	decision: Type.Union([
+		Type.Literal("approved"),
+		Type.Literal("denied"),
+		Type.Literal("denied_by_policy"),
+	]),
+	answer: Type.Optional(ApprovalAnswer),
+});
+
 const Warning = event({
 	...base,
 	type: Type.Literal("warning"),
@@ -539,6 +760,7 @@ export const hostEventSchema = Type.Union([
 	RunStarted,
 	TaskEnded,
 	MessageCompleted,
+	ContextCompacted,
 	ToolCallStarted,
 	ToolCallCompleted,
 	...ApprovalRequested.anyOf,
@@ -557,6 +779,16 @@ export const hostEventSchema = Type.Union([
 	ProcessExited,
 	SandboxModeChanged,
 	ApprovalPolicyChanged,
+	MemoryCandidates,
+	MemoryRetrieved,
+	MemoryUpdated,
+	MemoryExtractionStarted,
+	MemoryExtractionEnded,
+	HooksRan,
+	ElicitationRequested,
+	ElicitationAnswered,
+	ServerApprovalRequested,
+	ServerApprovalDecided,
 	Warning,
 	ErrorEvent,
 	ModelDelta,

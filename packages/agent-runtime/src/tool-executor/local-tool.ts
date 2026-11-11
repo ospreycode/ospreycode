@@ -23,8 +23,12 @@ export interface FileEdit {
 /** 准备好、在 agent 沙盒里执行的一次调用：登记后等 Host 允许。 */
 export interface LocalCall {
 	edit?: FileEdit;
-	/** 执行，返回交给模型的内容。要花时间的工具在途中检查 `signal`，被取消时抛出它的原因。 */
-	run(signal: AbortSignal): Promise<UserContent[]>;
+	/**
+	 * 执行，返回交给模型的内容。要花时间的工具在途中检查 `signal`，被取消时抛出它的原因。
+	 * `toolCallId` 是 Host 登记这次调用时分配的编号：经通道向 Host 取内容的工具带上它，Host 才知道
+	 * 请求属于哪次调用。
+	 */
+	run(signal: AbortSignal, toolCallId: string): Promise<UserContent[]>;
 }
 
 /** 目标在可写范围之外的文件改动：交给 Host，用户批准后由 apply-edits 执行。 */

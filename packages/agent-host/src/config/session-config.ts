@@ -18,6 +18,11 @@ import {
 	type SandboxMode,
 } from "@ospreycode/sandbox";
 import type { CredentialSource } from "../credentials/sources.js";
+import {
+	type MemoryOptions,
+	type MemorySettings,
+	resolveMemorySettings,
+} from "../memory/settings.js";
 import { ConfigError, joinKey, KeyError } from "./errors.js";
 import { readRepoToml, readUserToml } from "./files.js";
 import {
@@ -26,6 +31,7 @@ import {
 	checkStartupLayer,
 	type LayerContext,
 	type Limit,
+	type McpClientLayer,
 	type ParsedLayer,
 	parseConfigTable,
 	repoConfigPath,
@@ -71,6 +77,8 @@ export interface SessionOptions {
 	environment?: Readonly<Record<string, string>>;
 	/** 另外指定的权限规则文件（`--rules FILE`），绝对路径；和用户级的 `rules/*.toml` 一样可以写 `allow`。 */
 	rules?: readonly string[];
+	/** 长期记忆的选项，给评测用：只能从这里给出，CLI 和配置文件都不能设置。 */
+	memory?: MemoryOptions;
 }
 
 /** 每个 run 的上限，`null` 表示不设。 */
@@ -99,6 +107,12 @@ export interface SessionConfig {
 	reasoningEffort: ReasoningEffort;
 	/** 凭据来源，键是凭据的 ID。 */
 	credentials: Readonly<Record<string, CredentialSource>>;
+	/** 预先注册的 MCP OAuth 客户端（`[mcp_clients.<标签>]`），键是 server 的标签。 */
+	mcpClients: Readonly<Record<string, McpClientLayer>>;
+	/** 本地 MCP server 的密钥（`[mcp_secrets.<标签>]`）：server 的标签、环境变量名到可以发往的域名。 */
+	mcpSecrets: Readonly<Record<string, Readonly<Record<string, string[]>>>>;
+	/** 打开 session 时等每个 MCP server 就绪的毫秒数（`mcp_startup_timeout_sec`）。 */
+	mcpStartupTimeoutMs: number;
 	/** 沙盒模式的名字：内置的三种之一，或命名权限配置的名字。 */
 	sandboxMode: SandboxMode;
 	/** 沙盒按哪个内置模式建立：选用命名权限配置时是它在这个工作区上的模式。 */
@@ -115,8 +129,13 @@ export interface SessionConfig {
 	denyWrite: readonly string[];
 	/** 启动参数指定的权限规则文件（`--rules FILE`），绝对路径；内容在打开 session 时读取和校验。 */
 	ruleFiles: readonly string[];
-	/** 启用的工具，按它们在系统指令和工具声明里的顺序：默认启用的在前，`[tools]` 打开的可选工具在后。 */
+	/**
+	 * 启用的工具，按它们在系统指令和工具声明里的顺序：默认启用的在前，`[tools]` 打开的可选工具在后。
+	 * 记忆工具不在里面：启用哪几个由 `memory` 决定，声明时排在最后。
+	 */
 	tools: readonly string[];
+	/** 长期记忆的写入策略和注入方式；这个 session 不用长期记忆时没有。 */
+	memory?: MemorySettings;
 	/** 交互界面的显示设置（`[ui]`），Host 只读取和合并，由前端使用。 */
 	ui: UiSettings;
 	/** 访问模型服务用的 HTTP 代理，由 CLI 入口应用。 */
@@ -230,6 +249,9 @@ interface MergedLayer extends ConfigLayer {
 	budget: Required<BudgetLayer>;
 	models: Record<string, ModelFields>;
 	credentials: Record<string, CredentialSource>;
+	mcp_clients: Record<string, McpClientLayer>;
+	mcp_secrets: Record<string, Record<string, string[]>>;
+	mcp_startup_timeout_sec: number;
 	deny_read: string[];
 	deny_write: string[];
 	tools: Record<string, boolean>;
@@ -263,6 +285,8 @@ function mergeLayers(lower: MergedLayer, higher: ConfigLayer): MergedLayer {
 		budget: { ...lower.budget, ...withoutUndefined(higher.budget ?? {}) },
 		models: mergeModels(lower.models, higher.models),
 		credentials: { ...lower.credentials, ...higher.credentials },
+		mcp_clients: { ...lower.mcp_clients, ...higher.mcp_clients },
+		mcp_secrets: { ...lower.mcp_secrets, ...higher.mcp_secrets },
 		deny_read: union(lower.deny_read, higher.deny_read),
 		deny_write: union(lower.deny_write, higher.deny_write),
 		tools: { ...lower.tools, ...higher.tools },
@@ -424,6 +448,9 @@ export function resolveSessionConfig(
 		budget: { max_cost_usd: 10, max_requests: 200, max_duration_ms: null },
 		models: {},
 		credentials: {},
+		mcp_clients: {},
+		mcp_secrets: {},
+		mcp_startup_timeout_sec: 30,
 		deny_read: [],
 		deny_write: [],
 		tools: {},
@@ -490,6 +517,7 @@ export function resolveSessionConfig(
 		throw new ConfigError(`权限规则文件要给出绝对路径：${relative}`);
 	}
 
+	const memory = resolveMemorySettings(options.memory);
 	const { budget } = merged;
 	return {
 		workspace: context.workspace,
@@ -498,6 +526,9 @@ export function resolveSessionConfig(
 		models,
 		reasoningEffort: merged.reasoning_effort,
 		credentials: merged.credentials,
+		mcpClients: merged.mcp_clients,
+		mcpSecrets: merged.mcp_secrets,
+		mcpStartupTimeoutMs: merged.mcp_startup_timeout_sec * 1000,
 		...sandbox,
 		approvalPolicy,
 		...(granular === undefined ? {} : { granular }),
@@ -515,6 +546,7 @@ export function resolveSessionConfig(
 			...defaultTools,
 			...optionalTools.filter((name) => merged.tools[name] === true),
 		],
+		...(memory === undefined ? {} : { memory }),
 		ui: { showReasoning: merged.ui.show_reasoning },
 		...(merged.proxy === undefined ? {} : { proxy: merged.proxy }),
 		warnings,

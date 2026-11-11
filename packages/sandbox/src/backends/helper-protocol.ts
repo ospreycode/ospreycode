@@ -13,6 +13,11 @@ export type HelperRequest =
 				config: Record<string, unknown>;
 				/** 名单之外的域名是否交给 Host 回答；否则全部拒绝。 */
 				ask: boolean;
+				/**
+				 * 配置里要 mask 的环境变量的真实值。经这条管道给出，不放进辅助进程启动时的环境变量：
+				 * macOS 上沙盒里能读到其他进程启动时的环境变量。
+				 */
+				secrets?: Record<string, string>;
 			};
 	  }
 	| {

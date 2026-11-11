@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -202,6 +202,7 @@ async function run(rounds: Call[][], options: Options = {}): Promise<Trace> {
 	const agent = runAgent(agentSide);
 	await channel.notify("task/start", {
 		input: [{ type: "text", text: "go" }],
+		message_id: randomUUID(),
 	});
 	await ended.promise;
 	channel.close();

@@ -23,6 +23,38 @@ const storedCompleted = Compile(
 );
 const sentMessage = Compile(Type.Object({ message: protocolSchemas.message }));
 
+/** 带一条消息的事件（`message.sent`、`message.completed`）和带压缩后上下文的 `context.compacted`。 */
+const withMessage = Compile(
+	Type.Object({ message: Type.Object({ message_id: Type.String() }) }),
+);
+const withMessages = Compile(
+	Type.Object({
+		messages: Type.Array(Type.Object({ message_id: Type.String() })),
+	}),
+);
+
+/**
+ * 读回的事件里已经在 session 记录里的消息的编号：runtime 按原来的编号把它们放回历史，之后随模型
+ * 请求再发来，Host 靠这些编号知道不用再记一遍。
+ */
+export function recordedMessageIds(events: readonly RecordedEvent[]): string[] {
+	return events.flatMap(({ type, run_id, seq, data }) => {
+		const malformed = () =>
+			new Error(
+				`session 记录里的 ${type} 格式不对：${run_id} 的第 ${seq} 个事件`,
+			);
+		if (type === "message.sent" || type === "message.completed") {
+			if (!withMessage.Check(data)) throw malformed();
+			return [data.message.message_id];
+		}
+		if (type === "context.compacted") {
+			if (!withMessages.Check(data)) throw malformed();
+			return data.messages.map((message) => message.message_id);
+		}
+		return [];
+	});
+}
+
 /** 一页里事件内容的字节数上限：通道上单条消息不能超过 16 MiB，留出余量。 */
 const pageBytes = 4 * 1024 * 1024;
 
@@ -74,7 +106,8 @@ export function readRecord(
 				},
 			};
 			if (!sentMessage.Check(sent)) throw malformed();
-			data = { message: images.refer(sent.message) };
+			// 别的字段（按事件脱敏的标记）原样留着：runtime 重建历史时要看
+			data = { ...data, message: images.refer(sent.message) };
 		} else if (type === "tool_call.completed") {
 			if (!storedCompleted.Check(data)) throw malformed();
 			data = {

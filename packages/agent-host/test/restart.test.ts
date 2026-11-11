@@ -16,6 +16,7 @@ import {
 	scriptedModel,
 } from "@ospreycode/api/testing";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { writeSkill } from "./extension-harness.js";
 import {
 	EventLog,
 	type TestDirectories,
@@ -538,6 +539,94 @@ describe("切换沙盒模式", () => {
 				expect({ ...after, messages: [] }).toEqual({ ...before, messages: [] });
 			}
 			expect(agentPids()).toHaveLength(3);
+		});
+
+		test("验收：已加载的 skill 也一样：切换后的请求原样带着 skills 列表、skill_load 的调用和它当时返回的内容，skill 的文件之后改了也不变；之后压缩，带过去的还是当时返回的内容", async () => {
+			const skills = join(dirs.home, ".agents", "skills");
+			const directory = writeSkill(
+				skills,
+				"release-notes",
+				"写发布说明",
+				"先看 git log，再按模板写。",
+			);
+			const turns: ScriptedTurn[] = [
+				{
+					content: [
+						{
+							type: "tool_call",
+							call_id: "call_0",
+							name: "skill_load",
+							arguments: JSON.stringify({ name: "release-notes" }),
+						},
+					],
+				},
+				reply("加载好了"),
+			];
+			const current = await open(
+				(_request, call) => turns[call] ?? reply(`第 ${call} 次回答`),
+				{},
+				{ sandboxMode: "workspace-write", approvalPolicy: "on-request" },
+			);
+			await ended(await current.submit("加载 skill"));
+			/** 最近一次模型请求里每条消息的文字。 */
+			const lastTexts = () =>
+				(requests.at(-1) as ModelRequest).messages.map((message) =>
+					message.content
+						.map((block) => (block.type === "text" ? block.text : ""))
+						.join(""),
+				);
+			const texts = lastTexts();
+			expect(texts.join("\n")).toContain(
+				`- release-notes: 写发布说明 (directory: ${directory})`,
+			);
+			const loaded = texts.at(-1);
+			expect(loaded).toContain('<skill_content name="release-notes">');
+			expect(loaded).toContain("先看 git log，再按模板写。");
+			// 历史从 session 记录重建，不重新读 skill 的文件
+			writeSkill(skills, "release-notes", "写发布说明", "改过的正文。");
+
+			for (const [mode, input] of [
+				["read-only", "第二个任务"],
+				["workspace-write", "第三个任务"],
+			] as const) {
+				const before = requests.at(-1) as ModelRequest;
+				const lastReply = log.events.findLast(
+					(event) => event.type === "message.completed",
+				);
+				await current.setSandboxMode(mode);
+				expect(await ended(await current.submit(input))).toMatchObject({
+					outcome: "completed",
+				});
+
+				const after = requests.at(-1) as ModelRequest;
+				const sent = before.messages.length;
+				expect(after.messages.slice(0, sent)).toEqual(before.messages);
+				expect(after.messages[sent]).toEqual(lastReply?.message);
+				// skills 列表没变：不再告诉模型一遍
+				expect(after.messages.slice(sent + 1)).toMatchObject([
+					{ role: "user", content: [{ type: "text", text: input }] },
+					{
+						role: "system",
+						content: [
+							{
+								type: "text",
+								text: expect.stringContaining(`Sandbox mode: ${mode}`),
+							},
+						],
+					},
+				]);
+				expect({ ...after, messages: [] }).toEqual({ ...before, messages: [] });
+				expect(after.tools.map((tool) => tool.name)).toContain("skill_load");
+			}
+			expect(agentPids()).toHaveLength(3);
+
+			// 新进程从记录里认出加载过的 skill：压缩时带过去的是记录里的内容
+			await ended(await current.compact());
+			await ended(await current.submit("第四个任务"));
+			const compacted = lastTexts().join("\n");
+			expect(compacted).toContain('<loaded_skill name="release-notes">');
+			expect(compacted).toContain("先看 git log，再按模板写。");
+			expect(compacted).not.toContain("改过的正文。");
 		});
 
 		test("task 运行时不能切换", async () => {

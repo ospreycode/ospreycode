@@ -75,42 +75,52 @@ test("会存储的事件都写进项目的 session 记录，新的 run 接在上
 				.filter((event) => sent.has(event.event_id))
 				.map((event) => [event.type, event.event_id, event.seq]),
 		).toEqual(external);
-		// 只存不发的事件：进程事件所在的那个 run 的开始、系统指令的记录、发给模型的每条输入消息
+		// 只存不发的事件：进程事件所在的那个 run 的开始、每次用户输入的检查点和它名下的第一次快照、
+		// 系统指令的记录、发给模型的每条输入消息
 		expect(
 			events
 				.filter((event) => !sent.has(event.event_id))
 				.map((event) => event.type),
 		).toEqual([
 			"run.started",
+			"checkpoint.created",
 			"instructions.recorded",
 			// 系统指令、上下文消息和第一条用户输入
 			"message.sent",
 			"message.sent",
 			"message.sent",
+			// 命令执行之前的快照；命令没有改文件，执行之后的快照不另记
+			"checkpoint.snapshot",
 			// 工具结果
 			"message.sent",
+			"checkpoint.created",
 			"message.sent",
+			"checkpoint.snapshot",
 			"message.sent",
 		]);
 		const tasks = events.filter((event) => event.task_id !== null);
 		expect(tasks.map((event) => event.type)).toEqual([
 			"run.started",
 			"task.started",
+			"checkpoint.created",
 			"instructions.recorded",
 			"message.sent",
 			"message.sent",
 			"message.sent",
 			"message.completed",
 			"tool_call.started",
+			"checkpoint.snapshot",
 			"tool_call.completed",
 			"message.sent",
 			"message.completed",
 			"task.ended",
 			"run.started",
 			"task.started",
+			"checkpoint.created",
 			"message.sent",
 			"message.completed",
 			"tool_call.started",
+			"checkpoint.snapshot",
 			"tool_call.completed",
 			"message.sent",
 			"message.completed",
@@ -125,7 +135,7 @@ test("会存储的事件都写进项目的 session 记录，新的 run 接在上
 		const [first, next] = store
 			.runs(session.id)
 			.filter((run) => run.task_id !== null) as [RunRecord, RunRecord];
-		const firstEnd = tasks[11];
+		const firstEnd = tasks[13];
 		expect(first.base).toBeNull();
 		expect(next.base).toEqual({ run_id: firstEnd?.run_id, seq: firstEnd?.seq });
 		expect(store.sessions()).toMatchObject([

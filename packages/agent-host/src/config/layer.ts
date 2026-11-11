@@ -11,6 +11,8 @@ import {
 	builtinSandboxModes,
 	type GranularCategory,
 	granularCategories,
+	InvalidHostError,
+	normalizeHostPattern,
 	PermissionConfigError,
 	type PermissionProfile,
 	parsePermissionProfile,
@@ -56,10 +58,28 @@ export interface ConfigLayer {
 	deny_write?: string[];
 	models?: Record<string, ModelFields>;
 	credentials?: Record<string, CredentialSource>;
+	/** `[mcp_clients.<标签>]`：预先注册的 MCP OAuth 客户端，键是 server 的标签。 */
+	mcp_clients?: Record<string, McpClientLayer>;
+	/**
+	 * `[mcp_secrets.<标签>]`：本地 MCP server 的密钥，键是 server 的标签，再是环境变量名，
+	 * 值是真实值可以发往的域名。
+	 */
+	mcp_secrets?: Record<string, Record<string, string[]>>;
+	/** 打开 session 时等每个 MCP server 就绪的秒数。 */
+	mcp_startup_timeout_sec?: number;
 	proxy?: string;
 	/** 可选工具的开关，键是工具名。 */
 	tools?: Record<string, boolean>;
 	ui?: UiLayer;
+	/** session 记录保存的天数，从最后一次写入算起；只认用户级配置。 */
+	session_retention_days?: number;
+}
+
+/** 在授权服务器预先注册的 OAuth 客户端。 */
+export interface McpClientLayer {
+	client_id: string;
+	/** 注册时写了固定回调地址的客户端监听的端口。 */
+	callback_port?: number;
 }
 
 /** `[ui]`：交互界面的显示设置。 */
@@ -88,9 +108,13 @@ export const keyClasses: Readonly<Record<keyof ConfigLayer, KeyClass>> = {
 	deny_write: "tighten",
 	models: "user_only",
 	credentials: "user_only",
+	mcp_clients: "user_only",
+	mcp_secrets: "user_only",
+	mcp_startup_timeout_sec: "user_only",
 	proxy: "user_only",
 	tools: "normal",
 	ui: "normal",
+	session_retention_days: "user_only",
 };
 
 const variableName = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -374,6 +398,89 @@ function proxy(value: unknown, key: string): string {
 	return url.href;
 }
 
+function mcpClients(
+	value: unknown,
+	key: string,
+): Record<string, McpClientLayer> {
+	const result: Record<string, McpClientLayer> = {};
+	for (const [label, client] of Object.entries(table(value, key))) {
+		const itemKey = joinKey(key, label);
+		const fields = table(client, itemKey);
+		for (const name of Object.keys(fields)) {
+			if (name !== "client_id" && name !== "callback_port") {
+				throw new KeyError(joinKey(itemKey, name), "不认识的键");
+			}
+		}
+		const port = fields.callback_port;
+		if (
+			port !== undefined &&
+			!(
+				Number.isSafeInteger(port) &&
+				(port as number) >= 1 &&
+				(port as number) <= 65535
+			)
+		) {
+			throw new KeyError(
+				joinKey(itemKey, "callback_port"),
+				"要是 1 到 65535 的端口号",
+			);
+		}
+		result[label] = {
+			client_id: string(fields.client_id, joinKey(itemKey, "client_id")),
+			...(port === undefined ? {} : { callback_port: port as number }),
+		};
+	}
+	return result;
+}
+
+function mcpSecrets(
+	value: unknown,
+	key: string,
+): Record<string, Record<string, string[]>> {
+	const result: Record<string, Record<string, string[]>> = {};
+	for (const [label, secrets] of Object.entries(table(value, key))) {
+		const labelKey = joinKey(key, label);
+		const hosts: Record<string, string[]> = {};
+		for (const [name, list] of Object.entries(table(secrets, labelKey))) {
+			const nameKey = joinKey(labelKey, name);
+			if (!variableName.test(name)) {
+				throw new KeyError(nameKey, "不是合法的环境变量名");
+			}
+			if (!Array.isArray(list) || list.length === 0) {
+				throw new KeyError(nameKey, "要是非空的域名列表");
+			}
+			hosts[name] = list.map((host: unknown) => {
+				try {
+					return normalizeHostPattern(string(host, nameKey));
+				} catch (error) {
+					if (!(error instanceof InvalidHostError)) throw error;
+					throw new KeyError(
+						nameKey,
+						`域名 ${host} 写得不对：${error.message}`,
+					);
+				}
+			});
+		}
+		result[label] = hosts;
+	}
+	return result;
+}
+
+function startupTimeout(value: unknown, key: string): number {
+	if (!Number.isSafeInteger(value) || (value as number) < 1) {
+		throw new KeyError(key, "要是正整数（秒）");
+	}
+	return value as number;
+}
+
+/** 最小为 1 天，没有 0 或"永久"这类特殊值：清理因此不会碰 24 小时内写过的 session。 */
+function retentionDays(value: unknown, key: string): number {
+	if (!Number.isSafeInteger(value) || (value as number) < 1) {
+		throw new KeyError(key, "要是不小于 1 的整数（天）");
+	}
+	return value as number;
+}
+
 /** 仓库配置里出现、因为只认用户级配置和启动参数而忽略的键。 */
 export interface ParsedLayer {
 	layer: ConfigLayer;
@@ -440,6 +547,15 @@ export function parseConfigTable(
 			case "credentials":
 				layer.credentials = credentials(value, key, context.home);
 				break;
+			case "mcp_clients":
+				layer.mcp_clients = mcpClients(value, key);
+				break;
+			case "mcp_secrets":
+				layer.mcp_secrets = mcpSecrets(value, key);
+				break;
+			case "mcp_startup_timeout_sec":
+				layer.mcp_startup_timeout_sec = startupTimeout(value, key);
+				break;
 			case "proxy":
 				layer.proxy = proxy(value, key);
 				break;
@@ -448,6 +564,9 @@ export function parseConfigTable(
 				break;
 			case "ui":
 				layer.ui = ui(value, key);
+				break;
+			case "session_retention_days":
+				layer.session_retention_days = retentionDays(value, key);
 				break;
 		}
 	}

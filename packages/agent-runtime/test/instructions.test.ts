@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -311,9 +312,10 @@ test("重启后不重新生成开头的消息：规则文件变了追加 user �
 			history: [...first.messages],
 			invalidated: new Map(),
 			instructions: snapshot,
+			loadedSkills: new Map(),
 		},
 	);
-	loop.start(text("continue"));
+	loop.start({ input: text("continue"), message_id: randomUUID() });
 	await ended.promise;
 	hostChannel.close();
 

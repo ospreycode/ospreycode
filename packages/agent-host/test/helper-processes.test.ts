@@ -198,24 +198,25 @@ describe.runIf(process.platform === "darwin")(
 				outcome: "completed",
 			});
 			expect(output(results()[1])).toContain("again");
-			// 只有命令的辅助进程按需换新；离线的那个要到下一次重启 agent 进程或写工作区之外的文件时才用到
+			// 两个辅助进程都按需换新：命令用带代理的那个，命令前后的快照用离线的那个
 			const replaced = helperPids().filter((pid) => !original.includes(pid));
-			expect(replaced).toHaveLength(1);
+			expect(replaced).toHaveLength(2);
 
 			await current.close();
-			expect(
-				processEvents().filter(
-					(event) =>
-						event.type === "process.exited" && event.pid === replaced[0],
-				),
-			).toMatchObject([{ kind: "helper", exit_code: 0, signal: null }]);
+			for (const pid of replaced) {
+				expect(
+					processEvents().filter(
+						(event) => event.type === "process.exited" && event.pid === pid,
+					),
+				).toMatchObject([{ kind: "helper", exit_code: 0, signal: null }]);
+			}
 			// 每个辅助进程的启动和退出各记一次
 			const count = (type: ProcessEvent["type"]) =>
 				processEvents().filter(
 					(event) => event.type === type && event.kind === "helper",
 				).length;
-			expect(count("process.started")).toBe(3);
-			expect(count("process.exited")).toBe(3);
+			expect(count("process.started")).toBe(4);
+			expect(count("process.exited")).toBe(4);
 		});
 
 		test("为一条越界命令单独启动的辅助进程不另记进程事件：它随这次工具调用开始和结束", async () => {

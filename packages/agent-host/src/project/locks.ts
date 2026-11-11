@@ -135,6 +135,31 @@ export async function acquireExclusiveLock(
 	return { release: () => unlinkSync(path) };
 }
 
+/**
+ * 试着取得一个长时间持有的锁：被一个还在运行的进程持有时返回空，持有者已经不在时接管。
+ * 用在"被占着就跳过或换一种说法报错"的地方（清理锁、删除和重建时的 session 写锁），调用方
+ * 不用从错误信息里分辨是不是被占着。
+ */
+export function tryAcquireExclusiveLock(
+	path: string,
+	owner: ProcessIdentity,
+): { release(): void } | undefined {
+	while (!tryCreate(path, owner)) {
+		const holder = readLock(path);
+		if (holder !== undefined && isSameProcess(holder, owner.boot_id)) {
+			return undefined;
+		}
+		if (holder !== undefined) removeStale(path, holder);
+	}
+	return { release: () => unlinkSync(path) };
+}
+
+/** 这个锁是不是正被一个还在运行的进程持有；没有锁文件，或者持有者已经不在时为 false。 */
+export function isLockHeld(path: string, bootId: string): boolean {
+	const holder = readLock(path);
+	return holder !== undefined && isSameProcess(holder, bootId);
+}
+
 /** 原子地写入一个文件：写到同一目录的临时文件，再改名覆盖。 */
 export function writeFileAtomic(path: string, content: string): void {
 	const temp = `${path}.${randomUUID()}.tmp`;

@@ -1,13 +1,21 @@
 import {
 	ChannelRequestError,
 	type HandlerContext,
+	type ModelCountTokensParams,
+	type ModelCountTokensResult,
 	type ModelRequestParams,
 	type ModelRequestResult,
 	ProtocolError,
 	type ReceivedImages,
 	type RuntimeRequests,
 } from "@ospreycode/agent-runtime";
-import type { ModelEntry, RawPart, StreamModel } from "@ospreycode/api";
+import type {
+	CountTokens,
+	ModelEntry,
+	RawPart,
+	StreamModel,
+	TokenCount,
+} from "@ospreycode/api";
 import type {
 	AssistantMessage,
 	ImageBlock,
@@ -17,6 +25,7 @@ import type {
 } from "@ospreycode/api/protocol";
 import type { LoadedCredential } from "../credentials/sources.js";
 import type { EventSink } from "../sessions/emitter.js";
+import type { RecordedModel } from "../sessions/history.js";
 import { addUsage, emptyUsage, type Run } from "../sessions/run.js";
 import { RawCache } from "./raws.js";
 
@@ -30,6 +39,8 @@ export interface ModelProxyOptions {
 	credential: LoadedCredential;
 	fetch: typeof globalThis.fetch;
 	streamModel: StreamModel;
+	/** 调模型服务的 token 计数接口。 */
+	countTokens: CountTokens;
 	events: EventSink;
 	/** 这个 session 收到过的图片：模型请求的消息里只有它们的引用（见 agent-runtime 的通道）。 */
 	images: ReceivedImages;
@@ -39,6 +50,8 @@ export interface ModelProxyOptions {
 	onSecret: (value: string) => void;
 	/** 每次发出请求之前检查这个 run 的上限；返回 false 时 run 已经因为超出上限而停止。 */
 	admit: (run: Run) => Promise<boolean>;
+	/** 恢复和分叉时，路径上最后一次请求用的模型和推理强度：这次用的不同就记一条变更。 */
+	recorded?: RecordedModel;
 }
 
 interface Attempt {
@@ -78,6 +91,29 @@ export class ModelProxy {
 	constructor(options: ModelProxyOptions) {
 		this.#options = options;
 		this.setModel(options.entry, options.credential);
+		this.moved(options.recorded);
+	}
+
+	/**
+	 * runtime 重建历史时从 session 记录读回去的消息：它们已经在记录里，随请求再发来时不重复记。
+	 * 恢复和分叉之后这个进程还没有见过它们。
+	 */
+	recorded(messageIds: readonly string[]): void {
+		for (const id of messageIds) this.#recorded.add(id);
+	}
+
+	/**
+	 * 当前位置移到了别处（回退）：之后的变更和新路径上最后一次请求用的模型和推理强度相比，路径上
+	 * 还没有请求时不比。
+	 */
+	moved(recorded: RecordedModel | undefined): void {
+		this.#last =
+			recorded === undefined
+				? undefined
+				: {
+						model: recorded.model,
+						reasoning_effort: recorded.reasoningEffort,
+					};
 	}
 
 	/**
@@ -166,6 +202,69 @@ export class ModelProxy {
 					message,
 					error: { ...error, message: this.#options.scrub(error.message) },
 				};
+	}
+
+	/**
+	 * 用模型服务的计数接口数一次请求的输入 token。请求和接下来真正发出的相同，原文也取同一份：
+	 * 第一次出现的消息在这里生成原文并记下，之后的模型请求原样重放。计入这个 run 的请求次数上限；
+	 * 不记 `message.sent`，数过的请求不一定发出。
+	 */
+	async count(
+		params: ModelCountTokensParams,
+		signal: AbortSignal,
+		run: Run,
+	): Promise<ModelCountTokensResult> {
+		const { events, images } = this.#options;
+		const model = this.#models.get(params.request.model);
+		if (model === undefined) {
+			throw new ProtocolError(
+				`runtime 请求了配置之外的模型：${params.request.model}`,
+			);
+		}
+		if (model.entry.protocol === "openai.chat") {
+			// runtime 知道模型用的协议，不该为没有计数接口的模型发来请求
+			throw new ProtocolError(
+				`${model.entry.id} 用的 openai.chat 没有 token 计数接口`,
+			);
+		}
+		const request: ModelRequest = {
+			...params.request,
+			messages: images.restore(params.request.messages),
+		};
+		if (!(await this.#options.admit(run))) {
+			throw new ChannelRequestError("cancelled", "超出了这个 run 的上限");
+		}
+		run.budget.count();
+		let result: TokenCount;
+		try {
+			result = await this.#options.countTokens(model.entry, request, {
+				apiKey: model.credential.value,
+				fetch: this.#options.fetch,
+				signal: AbortSignal.any([signal, run.signal]),
+				raws: this.#raws.store((part) =>
+					events.protocolRaw(run, part, partImages(request, part)),
+				),
+			});
+		} catch (thrown) {
+			// 和模型请求一样：转换模块遇到了没有列出的内容时，这次计数按请求格式错误失败
+			result = {
+				error: {
+					category: "invalid_request",
+					message: thrown instanceof Error ? thrown.message : String(thrown),
+				},
+			};
+		}
+		if ("cancelled" in result) {
+			throw new ChannelRequestError("cancelled", "token 计数已取消");
+		}
+		return "error" in result
+			? {
+					error: {
+						...result.error,
+						message: this.#options.scrub(result.error.message),
+					},
+				}
+			: result;
 	}
 
 	async #attempt(

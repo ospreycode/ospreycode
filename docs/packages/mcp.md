@@ -38,7 +38,7 @@ MCP 客户端放在 Host，runtime 不接触 MCP 协议：
 授权只用于 HTTP 传输，基于 OAuth 2.1（`draft-ietf-oauth-v2-1-13`），令牌由 Host 存进系统凭据库，不进入沙盒。Linux 上没有接入系统凭据库，不支持需要 OAuth 的 server（静态令牌见 agent-host 的[插件之外的 `mcp.json`](agent-host.md#插件之外的-mcpjson)）。
 
 - **注册方式**的顺序：先用预先注册的凭据；授权服务器的元数据声明了 `client_id_metadata_document_supported` 时用 Client ID Metadata Documents；最后才用 2026-07-28 已弃用的动态注册，这时带 `application_type: "native"`。
-- **客户端元数据文件**放在 `https://ospreycode.dev/oauth/client-metadata.json`（域名见 overview 的[名字](../overview.md#名字)），P2 上线，直接返回 200、不经重定向（Client ID Metadata Documents 要求授权服务器不跟随重定向）。`redirect_uris` 只写不带端口的 `http://127.0.0.1/callback`：OAuth 2.1 要求授权服务器允许环回地址用任意端口，常见的授权服务器也都只核对路径。
+- **客户端元数据文件**放在 `https://ospreycode.dev/oauth/client-metadata.json`（域名见 overview 的[名字](../overview.md#名字)），P2 上线，直接返回 200、不经重定向（Client ID Metadata Documents 要求授权服务器不跟随重定向）。`redirect_uris` 只写不带端口的 `http://127.0.0.1/callback`：OAuth 2.1 要求授权服务器允许环回地址用任意端口，常见的授权服务器也都只核对路径。要发布的文件是仓库里的 `packages/agent-host/oauth/client-metadata.json`，测试核对它和登录时用的客户端信息一致：两处不一致时授权服务器会拒绝登录。
 - 每次登录监听 `127.0.0.1:0` 接收回调，收到回调或过了 300 秒就关闭端口；不用固定端口，端口被占用时登录会失败。只有要求固定回调地址的预先注册客户端，才由用户在 `[mcp_clients.<标签>]` 里指定端口（见 agent-host 的[配置项](agent-host.md#配置项)）。
 - 2026-07-28 要求兑换授权码前按 RFC 9207 核对 `iss`，按授权服务器的 issuer 分别保存客户端凭据，授权服务器变了就重新注册。
 - **登录的时机**：授权只由用户运行 `ospreycode mcp login <server>` 发起，不在 session 里打开浏览器（SDK 的调用方可能在另一个进程里）。打开 session 时没有有效令牌的远程 server 标为"需要登录"并跳过，CLI 提示登录命令。任何请求都可能返回 403 `insufficient_scope` 要求提升权限：这时这次调用以失败返回，提示用户另开终端运行登录命令，Host 在下次调用前重新读取令牌。
@@ -51,14 +51,16 @@ MCP 客户端放在 Host，runtime 不接触 MCP 协议：
 
 - 连接时用 SDK 的 `versionNegotiation: 'auto'` 探测，回退由 SDK 按规范完成。Host 按"server 配置 + 凭据身份"把结果存进 `data/mcp/`，下次用 `connect(transport, { prior })` 跳过探测。结果不跨凭据身份复用；存放位置对沙盒不可读，沙盒内的程序没法把结果改成"旧版本"来降级。
 - 判为旧版本的结果 7 天后重新探测，判为新版本的结果在连接失败时作废并重新探测一次。
-- 探测超时单独设为 5 秒，不用 SDK 默认的 60 秒：不回应探测的旧 server 会让连接一直等到超时。
+- 探测超时单独设为 5 秒，不用 SDK 默认的 60 秒：不回应探测的旧 server 会让连接一直等到超时。本地 server 到时没有回应就判为旧版本、改用 `initialize` 握手，探测用的兄弟进程的启动时间也算在这 5 秒里；远程 server 到时没有回应，连接以超时失败。第一次启动要下载包的本地 server 因此按旧版本握手，这个结果同样保存 7 天：过渡期的 server 两种握手都接受，实测 `@modelcontextprotocol/server-filesystem` 第一次启动协商出 `2025-11-25`、16 个工具可用。
+- 握手（`initialize`）不用 SDK 默认的 60 秒，由 Host 的启动超时决定（`connect*` 的 `handshakeTimeoutMs`）：启动超时在等用户回答网络询问时暂停，SDK 自己的计时不会；启动超时调大以后，60 秒也会先到。
+- 缓存的键是 server 定义的哈希加凭据身份。凭据身份里没有凭据本身：显式指定来源的令牌用来源写法的哈希，系统凭据库里的令牌和登录各用一个随机标识，每次保存或登录时换一个；刷新令牌不换，登录的还是同一个账号。
 
 ## 支持的功能
 
 P2 只支持 tools 和 form 模式的 elicitation。
 
 - **工具**：Host 向 server 列出、调用、取消，接收 `list_changed`（2026-07-28 起要先用 `subscriptions/listen` 订阅）。
-- **elicitation**：Host 在 CLI 中标明来自哪个 server 后交给用户回答，转给前端的方式是对外事件 `elicitation.requested` 和 `elicitation.answered`，`session.respond` 接受表单答复（见 agent-host 的[对外的事件格式](agent-host.md#对外的事件格式)）。非交互模式不声明这项能力，server 会直接返回结果或错误，不会挂起。
+- **elicitation**：Host 在 CLI 中标明来自哪个 server 后交给用户回答，转给前端的方式是对外事件 `elicitation.requested` 和 `elicitation.answered`，`session.respond` 接受表单答复（见 agent-host 的[对外的事件格式](agent-host.md#对外的事件格式)）。答复按 schema 的校验在前端做（CLI 的表单逐项检查必填、类型、范围和格式），Host 和 SDK 不再校验：哪一项不对要在表单里指给用户。非交互模式不声明这项能力，server 会直接返回结果或错误，不会挂起。
 - 进度通知只在 Host 内用于 CLI 显示和超时计算。
 - 通道只用到四个操作：启动配置里的 MCP 工具声明、`tool_call/run` 发起的调用、对调用的 `cancel`、`config/update` 里的工具增减（见 agent-runtime 的[操作](agent-runtime.md#操作)）。elicitation 和进度都在 Host 一侧完成，不经过通道。
 
@@ -76,9 +78,11 @@ P2 只支持 tools 和 form 模式的 elicitation。
 封装官方 TypeScript SDK 的客户端包 `@modelcontextprotocol/client`，固定到确切版本 2.4.0，不自行实现：授权是安全上最容易出错的部分。
 
 - 2.4.0 已覆盖上文用到的协议和 OAuth 功能，包括 `input_required` 多轮重发、`Mcp-*` 请求头、`-32020` 的处理、新旧版本协商、Client ID Metadata Documents 和按 issuer 保存凭据。不用 `@modelcontextprotocol/sdk`：它是 1.x，只支持到 2025-11-25。
-- 本地 server 用 SDK 自带的 `StdioClientTransport`：`command` 和 `args` 传沙盒包装后的命令行（`/bin/sh -c` 加包装的结果），显式给出 `cwd`，并设 `stderr: 'pipe'`：这个传输只有三个标准流，macOS 上的收尾进程靠监视 stderr 的连接察觉 Host 关闭（见 sandbox 的 [macOS 上结束全部进程](sandbox.md#macos-上结束全部进程)）。不自写传输：SDK 只对自带的 stdio 传输用一次性的兄弟进程探测版本，自定义传输会在原连接上探测，遇到收到探测就退出的旧 server 直接失败。
+- 本地 server 用 SDK 自带的 `StdioClientTransport`：`command` 和 `args` 传沙盒包装后的命令行（`/bin/sh -c` 加包装的结果），显式给出 `cwd`，并设 `stderr: 'pipe'`：这个传输只有三个标准流，macOS 上的收尾进程靠监视 stderr 的连接察觉 Host 关闭（见 sandbox 的 [macOS 上结束全部进程](sandbox.md#macos-上结束全部进程)）。不自写传输：SDK 只对自带的 stdio 传输用一次性的兄弟进程探测版本，自定义传输会在原连接上探测，遇到收到探测就退出的旧 server 直接失败。探测用的兄弟进程由 SDK 以同样的命令行启动，stderr 接的是 `/dev/null`，收尾进程读它会立刻读到结束、把探测杀掉：包装的命令行在 stderr 不是管道时改让收尾进程监视 stdout 的连接，SDK 结束探测时会关掉它。
+- server 进程退出后由本包放开它的输出管道：SDK 要等三个标准流都关闭才算连接断了，收尾进程或 server 留下的后台进程还拿着管道时，调用只能等到超时。本包监听进程的退出，先关 stderr 的写方向，1 秒后强行关闭还开着的管道。SDK 不公开它启动的进程，这里读的是 2.4.0 的内部字段 `_process`：升级 SDK 时要重新核对，字段没了连接直接报错。
 - 这个传输总会并入 Host 进程的 `HOME`、`LOGNAME`、`PATH`、`SHELL`、`TERM`、`USER` 六个环境变量，由沙盒包装按白名单覆盖。SDK 拿到的 `pid` 是包装进程的，结束 server 时不依赖它。
-- OAuth 由 Host 实现 SDK 的 `OAuthClientProvider`，提供回调地址、`clientMetadataUrl` 和凭据存取。
+- SDK 的 `OAuthClientProvider` 由本包实现：`createOAuthSession` 把登录（监听回调端口、交出授权地址、兑换授权码）和连接时取令牌、刷新令牌包成一个对象。Host 提供 `clientMetadataUrl`，并经 `OAuthStore` 提供凭据的存取：存在哪里由 Host 决定。
+- 协议和传输的失败统一抛 `McpError`，带 `kind`（如 `unauthorized`、`insufficient_scope`、`timeout`、`cancelled`、`closed`）：Host 按它决定状态和交给模型的话，不解析 SDK 的错误消息。
 - 保留 `autoFulfill` 的默认值（自动多轮重发，最多 10 轮），只注册 `elicitation/create` 的处理函数，不注册 sampling 和 roots，SDK 就不会声明这两项能力。
 - 依赖较重，接受：直接和间接依赖都没有安装脚本，`@modelcontextprotocol/core` 固定为同一版本，许可证为 Apache-2.0，要求 Node 20 以上。间接依赖写的是 `^` 范围，由 `cli` 的打包固定。
 
@@ -86,7 +90,10 @@ P2 只支持 tools 和 form 模式的 elicitation。
 
 本地 server 在 Host 打开 session 时全部启动，各自在沙盒里并行运行，活到 session 关闭。
 
-- 工具声明要在 agent 进程启动时交给 runtime，所以 Host 在启动 agent 进程之前等每个 server 就绪、失败或到达启动超时（30 秒）。初始工具集因此确定，评测可以复现，也少有中途追加工具破坏提示缓存。超时的 server 停掉，并在 CLI 中报告。远程 server 的连接同样在这一步完成。
+- 工具声明要在 agent 进程启动时交给 runtime，所以 Host 在启动 agent 进程之前等每个 server 就绪、失败或到达启动超时。初始工具集因此确定，评测可以复现，也少有中途追加工具破坏提示缓存。超时的 server 停掉，并在 CLI 中报告。远程 server 的连接同样在这一步完成。
+- 启动超时默认 30 秒，用户级配置的 `mcp_startup_timeout_sec` 可以改：`npx -y`、`uvx` 第一次启动要下载包，耗时随网速和依赖的多少差别很大。在一台访问 npm 源每个请求约 4 秒的机器上实测，`@modelcontextprotocol/server-filesystem` 第一次启动 24 秒，`server-memory` 超过 30 秒，`server-everything` 在沙盒外也要 212 秒，`uvx mcp-server-time` 在沙盒外要 84 秒；下载过的包留在这个 server 的缓存目录里（见 agent-host 的[插件之外的 `mcp.json`](agent-host.md#插件之外的-mcpjson)），再启动只要 1 到 6 秒，超时后 `/reload` 或重新打开 session 接着上次的进度下载。超时的提示写明这个配置项。
+- 启动时停在等用户回答网络询问上的 server 不等：前端要等 session 打开才能回答。它在后台接着启动，等回答的时间不计入启动超时，就绪后它的工具经 `config/update` 加入。
+- 启动失败、超时和没有令牌的 server 记在各自的状态里（`connected`、`needs_login`、`failed`、`exited`，SDK 的 `session.mcpServers()`），不影响别的 server；`/reload` 时重新启动它们（见 agent-host 的[会话内命令](agent-host.md#会话内命令)）。
 - server 进程不随单个 task 或 run 结束，agent 进程重启时也不受影响。session 关闭时（关闭顺序见 agent-host 的 [session 的打开和关闭](agent-host.md#session-的打开和关闭)）按规范先关 stdin，再依次发 SIGTERM、SIGKILL，最后由收尾进程结束沙盒实例里剩下的进程（见 sandbox 的[沙盒后端](sandbox.md#沙盒后端)）。`/fork` 在同一个 Host 里先关闭旧 session 再打开分叉，server 也随之重启。
 - 一个 Host 同时只有一个 session，不为跨进程共用加守护进程；多个 worker 由 Host 作为唯一的客户端共用同一组 server。
 - server 的联网经它自己的代理，批准按 server 和域名在整个 session 内有效（见 sandbox 的[网络访问的审批](sandbox.md#网络访问的审批)）。
@@ -98,5 +105,6 @@ P2 只支持 tools 和 form 模式的 elicitation。
 P2：
 
 - 在沙盒里实测 rmcp 旧版本、Playwright 等 server 的版本探测耗时，确认 5 秒的探测超时够用。
-- 实测 `npx` 第一次下载、`uvx` 等常见启动方式的冷启动时间，确认 30 秒的启动超时和每个 session 3 次的重启上限够用。
+- 在网速正常的机器上实测 `npx` 第一次下载、`uvx` 等常见启动方式的冷启动时间，确认默认 30 秒的启动超时够用（慢网络上的实测见[本地 server 进程的生命周期](#本地-server-进程的生命周期)）；实测常用 server 中途退出的频率，确认每个 session 3 次的重启上限够用。
 - 用常用的 server 做兼容测试，统计依赖 resources、prompts 或 URL 模式 elicitation 的数量。
+- 域名可用后，把仓库里的 `packages/agent-host/oauth/client-metadata.json` 发布到 `https://ospreycode.dev/oauth/client-metadata.json`，确认直接返回 200、不经重定向、内容和仓库里的一致。

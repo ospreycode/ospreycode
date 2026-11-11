@@ -251,3 +251,21 @@ test("下一个 task 的 task/start 比 task/end 的响应先到时，等响应�
 	).toEqual([text("first task"), "assistant", text("next task")]);
 	expect(host.failures).toEqual([]);
 });
+
+test("放开始 task 的输入的那条 user 消息用 Host 在 task/start 里给的编号", async () => {
+	host = await startFakeHost({ config: { workspace }, model: () => done });
+	await host.channel.notify("task/start", {
+		input: text("first task"),
+		message_id: "message-from-host",
+	});
+	await host.until(() => host?.ends.length === 1);
+
+	expect(conversation(host.requests[0] as ModelRequest)).toMatchObject([
+		{
+			role: "user",
+			message_id: "message-from-host",
+			content: text("first task"),
+		},
+	]);
+	expect(host.failures).toEqual([]);
+});

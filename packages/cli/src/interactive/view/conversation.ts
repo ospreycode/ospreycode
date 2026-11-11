@@ -192,7 +192,7 @@ function approvalLines(
 		...(entry.decided === undefined
 			? []
 			: wrapped(
-					decisionText(entry.decided),
+					decisionText(entry.decided, entry.request),
 					width,
 					entry.decided.decision === "approved" ? style.success : style.error,
 					"    ",
@@ -207,7 +207,10 @@ function noticeLines(entry: NoticeEntry, width: number): string[] {
 		warning: ["! ", style.warning] as const,
 		error: ["✗ ", style.error] as const,
 	}[entry.level];
-	return wrapped(sanitize(entry.text), width, paint, "  ", paint(marker));
+	return [
+		...wrapped(sanitize(entry.text), width, paint, "  ", paint(marker)),
+		...detailLines(entry.detail ?? [], width, "    "),
+	];
 }
 
 function outcomeText(event: TaskEndedEvent): string {
@@ -227,7 +230,8 @@ function outcomeText(event: TaskEndedEvent): string {
 		case "cancelled":
 			return "已取消";
 		case "refused":
-			return "模型拒绝回答";
+			// 触发拒绝的输入留在对话里，之后的请求会接着被拒
+			return "模型拒绝回答：用 /rewind 回退到这次输入之前，改写后重发";
 	}
 }
 
@@ -326,6 +330,11 @@ export class ConversationView implements Component {
 
 	invalidate(): void {
 		for (const view of this.#views.values()) view.invalidate();
+	}
+
+	/** 对话按记录重画之后调用：原来的条目都不在了，画好的行不用留着。 */
+	clear(): void {
+		this.#views.clear();
 	}
 
 	render(width: number): string[] {

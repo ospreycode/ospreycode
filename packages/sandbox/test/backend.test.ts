@@ -305,6 +305,41 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 		}
 	});
 
+	test("快照沙盒：只有影子仓库可读写，工作区只在还原时可写，这时受保护的名字也能写；凭据照样读不到", async () => {
+		const sandbox = await helper();
+		const repository = join(paths.root, "snapshots", "project", "workspace");
+		mkdirSync(repository, { recursive: true });
+		const inWorkspace = join(paths.workspace, "restored.txt");
+		const guarded = join(paths.workspace, ".envrc");
+		const exit = async (script: string, restore: boolean) =>
+			(await run(sandbox, script, { kind: "snapshot", repository, restore }))
+				.status;
+		try {
+			expect(await exit(`echo x > '${repository}/object'`, false)).toBe(0);
+			expect(await exit(`cat '${repository}/object'`, false)).toBe(0);
+			expect(await exit(`echo x > '${inWorkspace}'`, false)).not.toBe(0);
+			expect(existsSync(inWorkspace)).toBe(false);
+			expect(await exit(`echo x > '${inWorkspace}'`, true)).toBe(0);
+			expect(await exit(`echo x > '${guarded}'`, true)).toBe(0);
+			// 影子仓库之外的 Host 数据、凭据和工作区之外的目录，两种情况都碰不到
+			for (const restore of [false, true]) {
+				expect(
+					await exit(`cat '${paths.root}/data/identity.json'`, restore),
+				).not.toBe(0);
+				expect(await exit(`cat '${paths.credential}'`, restore)).not.toBe(0);
+				expect(
+					await exit(`echo x > '${paths.outside}/leak.txt'`, restore),
+				).not.toBe(0);
+				expect(
+					await exit(`echo x > '${paths.tmp}/leak.txt'`, restore),
+				).not.toBe(0);
+			}
+		} finally {
+			for (const path of [inWorkspace, guarded]) rmSync(path, { force: true });
+			rmSync(join(paths.root, "snapshots"), { recursive: true, force: true });
+		}
+	});
+
 	describe("受保护的路径", () => {
 		test("工作区里任意深度的受保护名字都不能新建和修改，其他文件照常可写", async () => {
 			const sandbox = await helper();

@@ -79,15 +79,39 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 					break;
 				case "tool_call.completed":
 					if (event.result.status !== "succeeded") {
+						// 恢复 session 时 Host 给上次中断的调用补上结果，调用开始的事件在上一次运行里
+						const name = names.get(event.tool_call_id);
 						stderr.write(
-							`工具 ${names.get(event.tool_call_id)} 的结果：${event.result.status}\n`,
+							name === undefined
+								? `上次中断的工具调用的结果：${event.result.status}\n`
+								: `工具 ${name} 的结果：${event.result.status}\n`,
 						);
 					}
+					break;
+				case "context.compacted":
+					stderr.write(
+						`上下文接近模型的上限，已自动压缩（压缩前约 ${event.tokens_before} token）\n`,
+					);
 					break;
 				case "background.ended":
 					stderr.write(
 						`后台命令 ${event.background_id} 结束了（${event.reason}）\n`,
 					);
+					break;
+				case "memory.candidates":
+					stderr.write(
+						`有 ${event.candidates.length} 条记忆候选待确认，没有生效：在交互模式里用 /memory 处理\n`,
+					);
+					break;
+				case "hooks.ran":
+					for (const message of event.system_messages) {
+						stderr.write(`hook（${event.event}）：${brief(message)}\n`);
+					}
+					if (event.blocked) {
+						stderr.write(
+							`${event.event} hook 拦下了${event.reason === undefined ? "" : `：${brief(event.reason)}`}\n`,
+						);
+					}
 					break;
 				case "warning":
 					stderr.write(`警告：${event.message}\n`);

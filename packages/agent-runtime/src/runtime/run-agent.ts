@@ -2,6 +2,7 @@ import type { Duplex } from "node:stream";
 import { openRuntimeChannel } from "../channel/open.js";
 import { resumeState } from "../context/resume.js";
 import type { ToolSpec } from "../contracts/index.js";
+import { changedMemories } from "../instructions/memory-context.js";
 import { loadRuleFiles } from "../instructions/rule-files.js";
 import { AgentLoop } from "../loop/agent-loop.js";
 import { ToolExecutor } from "../tool-executor/executor.js";
@@ -10,9 +11,11 @@ import type { LocalTool } from "../tool-executor/local-tool.js";
 import { editTool } from "../tools/edit.js";
 import { grepTool } from "../tools/grep.js";
 import { lsTool } from "../tools/ls.js";
+import { memoryToolRegistry, memoryTools } from "../tools/memory.js";
 import { readTool } from "../tools/read.js";
 import { requestPermissionsTool } from "../tools/request-permissions.js";
 import { shellTool } from "../tools/shell.js";
+import { skillLoadLocalTool, skillLoadTool } from "../tools/skill-load.js";
 import { writeTool } from "../tools/write.js";
 import { version } from "../version.js";
 
@@ -52,8 +55,8 @@ export async function runAgent(stream: Duplex): Promise<void> {
 	});
 	// 处理函数要在 initialize 之前注册：响应和紧随其后的 task/start 可能在同一段数据里到达
 	const ready = Promise.withResolvers<AgentLoop>();
-	channel.on("task/start", ({ input }) => {
-		void ready.promise.then((loop) => loop.start(input));
+	channel.on("task/start", (task) => {
+		void ready.promise.then((loop) => loop.start(task));
 	});
 	channel.on("config/update", (update) => {
 		void ready.promise.then((loop) => loop.update(update));
@@ -74,7 +77,7 @@ export async function runAgent(stream: Duplex): Promise<void> {
 			writableRoots: config.writable_roots,
 			records: new FileRecords(),
 		},
-		localTools,
+		[...localTools, ...memoryTools(channel), skillLoadLocalTool(channel)],
 	);
 	const ruleFiles = await loadRuleFiles(
 		config.workspace,
@@ -85,8 +88,22 @@ export async function runAgent(stream: Duplex): Promise<void> {
 		config.resume === undefined
 			? undefined
 			: await resumeState(channel, config.resume);
+	// 新会话开头的上下文消息里有记忆索引：先在沙盒里核对它引用的文件有没有改动
+	const index = resumed === undefined ? config.memory?.index : undefined;
 	ready.resolve(
-		new AgentLoop(channel, config, toolRegistry, executor, ruleFiles, resumed),
+		new AgentLoop(
+			channel,
+			config,
+			new Map([
+				...toolRegistry,
+				...memoryToolRegistry,
+				[skillLoadTool.declaration.name, skillLoadTool],
+			]),
+			executor,
+			ruleFiles,
+			resumed,
+			index === undefined ? undefined : await changedMemories(index),
+		),
 	);
 	await channel.closed;
 	if (failure !== undefined) throw failure;

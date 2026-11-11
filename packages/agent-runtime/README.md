@@ -18,6 +18,7 @@ npm install @ospreycode/agent-runtime
 - `runAgent(stream)`：在给定的连接上运行 runtime，测试时由测试实现 Host 一侧。
 - 工具调用的格式：工具声明 `ToolSpec`、工具结果 `ToolResult`，以及 Host 写入 session 记录的工具调用事件。
 - `toolRegistry`：runtime 提供的全部工具的声明，默认启用的在前，可选的 `grep`（按行搜索文件内容）和 `ls`（列出目录下的一层）在后。`read`、`edit`、`write`、`grep` 和 `ls` 由 runtime 在 agent 沙盒里执行，先向 Host 登记；`shell` 交给 Host 执行。Host 在启动配置里选择启用哪些。
+- `memoryToolRegistry`：长期记忆的三个工具 `memory_propose`、`memory_search`、`memory_read` 的声明。runtime 不持有记忆库：工具先向 Host 登记，再经通道的 `memory/propose`、`memory/search`、`memory/read` 提交候选或取内容。生效记忆的索引由 Host 放在启动配置的 `memory` 里（`MemoryConfig`），runtime 把它放进会话开始的上下文消息。
 
 通道上每条消息是一行 JSON，只按字节 0x0A 分帧：
 
@@ -27,7 +28,10 @@ import { encodeMessage, LineDecoder } from "@ospreycode/agent-runtime";
 const decoder = new LineDecoder();
 const bytes = encodeMessage({
 	method: "task/start",
-	params: { input: [{ type: "text", text: "第一行\u2028第二行" }] },
+	params: {
+		input: [{ type: "text", text: "第一行\u2028第二行" }],
+		message_id: "0f0e6c1e-4c5e-4d0e-9a57-1f1b6a4f7d11",
+	},
 });
 console.log(decoder.push(bytes));
 ```

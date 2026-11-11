@@ -2,7 +2,10 @@ import {
 	AgentStartError,
 	ConfigError,
 	CredentialError,
+	McpError,
 	SandboxUnavailableError,
+	SessionBlockedError,
+	SessionResumeError,
 	startupErrorEvent,
 	startupExitCode,
 	toJsonLine,
@@ -20,7 +23,12 @@ function expected(error: Error): boolean {
 		error instanceof CredentialError ||
 		error instanceof WorkspaceError ||
 		error instanceof SandboxUnavailableError ||
-		error instanceof AgentStartError
+		error instanceof AgentStartError ||
+		error instanceof SessionResumeError ||
+		// 会话开始的 hooks 拦下了这次启动，信息里是 hooks 给的原因
+		error instanceof SessionBlockedError ||
+		// `mcp login` 没有成功：授权服务器连不上、用户没有完成授权
+		error instanceof McpError
 	);
 }
 

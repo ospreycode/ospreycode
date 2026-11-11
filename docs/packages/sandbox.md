@@ -49,7 +49,7 @@ sandbox/
 - **切换沙盒模式**（P1 起）：agent 沙盒的策略在启动时固定，所以只在 session 空闲（两个 task 之间）时切换，task 运行中拒绝并说明原因。
   - 由用户在 CLI 里发起，模型读到的内容不能触发切换；切换记成事件。
   - Host 结束 agent 进程，按新模式重新启动（见 agent-host 的 [agent 进程的重启](agent-host.md#agent-进程的重启)）。
-  - 切换不改写已经发给模型的内容（macOS 上已验收，`agent-host/test/restart.test.ts` 的"切换沙盒模式"）：新进程的第一次模型请求原样带着之前发过的全部消息（系统指令、规则文件、工具调用和结果，消息标识也不变）和最后一条回复，只多出新的输入和写着新模式的系统指令补丁，工具声明和请求参数不变，提示缓存的前缀因此不失效。
+  - 切换不改写已经发给模型的内容（macOS 上已验收，`agent-host/test/restart.test.ts` 的"切换沙盒模式"）：新进程的第一次模型请求原样带着之前发过的全部消息（系统指令、规则文件、工具调用和结果，消息标识也不变）和最后一条回复，只多出新的输入和写着新模式的系统指令补丁，工具声明和请求参数不变，提示缓存的前缀因此不失效。压缩过的 session 也一样（`agent-host/test/compaction.test.ts` 的"压缩之后重启 agent 进程"）：原样带着的是压缩时重新生成的系统指令、摘要和之后的消息。已加载的 skill 也一样（同一组测试）：skills 列表、`skill_load` 的调用和它当时返回的内容原样带着，列表不再告诉模型一遍；skill 的文件在加载之后改了也不变，之后压缩时带过去的仍是当时返回的内容，因为历史和已加载的 skill 都从 session 记录重建，不重新读文件。
   - 切换的耗时在 macOS 上实测（Apple M4、16 GB、macOS 26.7.1、Node 26.13；脚本模型，`workspace-write` 和 `read-only` 来回切换 240 次，历史约 90 条和约 480 条消息各 120 次）：从发起切换到新的 agent 进程握手完成，机器上其他负载较轻的两轮（80 次）每轮的中位数在 0.23 到 0.27 秒，最长 0.46 秒，和历史长短无关；机器被其他程序占着的四轮（load average 9 到 12）每轮的中位数在 0.34 到 1.1 秒，最长 6.4 秒。时间大致四成花在启动两个新的辅助进程上，五成花在启动新的 agent 进程并完成握手上；重建历史只让重启后的第一次模型请求比不重启时晚发出，负载较轻时晚约 7 毫秒（约 90 条消息）到 16 毫秒（约 480 条消息）。
   - 已在运行的后台命令：换到更窄的模式时由 Host 结束，在 CLI 显示，下一次用户输入时告诉模型；换到更宽的模式时保留。新模式没有包含旧模式全部的读写路径和放行域名，就按更窄处理。已经撤销的权限不能继续生效。比较的是可写根、禁止读写的路径、权限规则放行和禁止的域名，按写法逐项比，判断不了的算更窄；[命名权限配置](#命名权限配置)的 `write` 算进可写根，`deny` 和设成只读的路径算进禁止读写的路径，域名算进规则的域名，重新放开读的路径另比一项（旧的都要在新的里）；`/reload` 换上的配置也这样比，没有变窄时后台命令保留。
   - Host 为新模式启动新的命令辅助进程（见[辅助进程](#辅助进程)），旧的辅助进程等保留的后台命令都结束后退出。
@@ -69,10 +69,10 @@ sandbox/
 
 | 资源 | 规则 |
 |---|---|
-| 文件写入 | 只允许工作区、这个 session 的临时目录（Host 把 `TMPDIR` 指向它）和这个项目的构建缓存目录（见[构建工具的缓存](#构建工具的缓存)）；插件的 MCP server 还可以写它自己的数据目录。可写范围里的[受保护的路径](#受保护的路径)保持只读。因为 `.git` 只读，`git add`、`git commit` 这类命令要走越界申请，或者由用户写 `allow` 规则放行 |
+| 文件写入 | 只允许工作区、这个 session 的临时目录（Host 把 `TMPDIR` 指向它）和这个项目的构建缓存目录（见[构建工具的缓存](#构建工具的缓存)）；本地 MCP server 还可以写它自己的数据目录和缓存目录，不能写项目的构建缓存。可写范围里的[受保护的路径](#受保护的路径)保持只读。因为 `.git` 只读，`git add`、`git commit` 这类命令要走越界申请，或者由用户写 `allow` 规则放行 |
 | 文件读取 | 不能读 Host 根目录 `~/.ospreycode/`（按用途放开的子目录除外，见 agent-host 的[目录位置](agent-host.md#目录位置)）、凭据和常见密钥位置（`~/.ssh`、云服务凭据、`~/.netrc`、`~/.npmrc`、`~/.docker`、`~/.kube`、浏览器数据、`~/Library/Keychains`），其余默认可读。这份黑名单列不全，需要更严格时用命名权限配置只允许读工作区和运行所需的目录 |
 | 网络 | 默认不能联网。联网经 Host 一侧的代理按域名放行（见[网络访问的审批](#网络访问的审批)），`deny` 优先于 `allow`；本机和私有网段的地址一律拒绝，解析到这些地址的域名也一样。监听端口和连接本机端口另按 `local_binding` 申请（见[本机服务和本地端口](#本机服务和本地端口)） |
-| 本机通信 | Unix socket（如 Docker、ssh-agent 的 socket）、钥匙串和 Apple Events 等系统服务默认不能访问；Unix socket 按单条命令申请，Linux 上不支持。macOS 上放行 `com.apple.FSEvents`，监视目录的命令才能运行 |
+| 本机通信 | Unix socket（如 Docker、ssh-agent 的 socket）、钥匙串和 Apple Events 等系统服务默认不能访问；Unix socket 按单条命令申请，Linux 上不支持。macOS 上放行 `com.apple.FSEvents`（监视目录的命令才能运行）和 `com.apple.SystemConfiguration.configd`（读系统的网络配置，见[接入时要处理的限制](#接入时要处理的限制)） |
 | 环境变量 | 由 Host 按白名单设置（见表下），不继承 Host 的环境变量；凭据不通过环境变量进入沙盒 |
 | 子进程 | 继承同样的限制，不能自行解除 |
 | 时间和资源 | 每个动作有超时；不限制 CPU、内存和进程数（见[实施计划](../roadmap.md#不做的功能)）。session 结束时 Host 结束这个 session 的全部沙盒和其中的进程 |
@@ -171,7 +171,7 @@ sandbox-runtime 写不出"最具体的一条生效"的全部情形，写不出�
 
 ## 构建工具的缓存
 
-只允许写工作区和临时目录时，Go、npm、pip、uv、Gradle 的缓存都写不进去。缓存放在 Host 根目录下按项目划分的 `cache/<项目>/`（见 agent-host 的[目录位置](agent-host.md#目录位置)），只对这个项目的命令沙盒和它的越界进程可写。
+只允许写工作区和临时目录时，Go、npm、pip、uv、Gradle 的缓存都写不进去。缓存放在 Host 根目录下按项目划分的 `cache/<项目>/`（见 agent-host 的[目录位置](agent-host.md#目录位置)），只对这个项目的命令沙盒和它的越界进程可写。本地 MCP server 的沙盒用它自己的缓存目录（见 agent-host 的[插件之外的 `mcp.json`](agent-host.md#插件之外的-mcpjson)）。
 
 - 按项目划分是为了防投毒：Go 的构建缓存只按输入计算键、不校验内容，按项目隔离后，能写这份缓存的只有本来就能改这个项目代码的 agent。代价是每个项目第一次构建较慢。
 - 不让沙盒写用户自己的全局缓存，也不和用户的构建共用：沙盒内写进去的内容会被完整权限的构建用上。也不从全局缓存复制或只读挂载：Go、uv、pnpm 都要在缓存目录里写锁文件。
@@ -332,7 +332,7 @@ not_match = ["gh pr --repo openai/codex view 7888"]
   - 加载时用 Node 的 `url.domainToASCII()` 转成小写的 A-label，再去掉末尾的点，CLI 显示转换后的写法：sandbox-runtime 只接受 ASCII 主机名。
   - 端口和协议不参与匹配，保存的规则对所有端口有效。保存时跳过主机和决定都相同的规则，并把端口写进 `justification` 供用户查看。
 - **MCP 工具规则**是一个 `[[mcp_rules]]` 块：`server`（Host 分配的标签，见 agent-host 的[所有扩展共同遵守](agent-host.md#所有扩展共同遵守)）、`tool`（可选，不写表示整个 server）、`decision`（`allow`、`prompt` 或 `forbidden`）和可选的 `justification`。
-- MCP 工具在 server 自己的进程或远程服务里执行，agent 的沙盒管不到它做什么，所以每次调用都按越界处理，默认询问。用户在仓库以外的配置里为具体的 server 或工具写 `allow` 规则。工具自己的只读标注不能免除询问；server 明确标注 `destructiveHint: true` 的工具，即使有 `allow` 规则也每次询问。只看明确的标注：MCP 规范里 `destructiveHint` 的默认值是 true，按默认值判断的话 `allow` 规则就不起作用了。
+- MCP 工具在 server 自己的进程或远程服务里执行，agent 的沙盒管不到它做什么，所以每次调用都按越界处理，默认询问。用户在仓库以外的配置里为具体的 server 或工具写 `allow` 规则。工具自己的只读标注不能免除询问；server 明确标注 `destructiveHint: true` 的工具，即使有 `allow` 规则也每次询问。只看明确的标注：MCP 规范里 `destructiveHint` 的默认值是 true，按默认值判断的话 `allow` 规则就不起作用了。"本任务内批准"按 server 和工具记，参数不同也不再问；明确标注了破坏性的工具选了它也照样每次询问。
 
 ### 保存和来源
 
@@ -397,6 +397,7 @@ sandbox-runtime 的 `SandboxManager` 是进程级单例：初始化之后再调�
 - **macOS 的 xcrun 垫片**：`/usr/bin/git` 这类垫片想把查找结果缓存到用户的临时目录（`DARWIN_USER_TEMP_DIR`），沙盒里写不进去，每次多打印一行 `couldn't create cache file`，不影响结果。不放开这份缓存：沙盒外的 `git`、`clang` 也按它找程序。
 - **代理在调用 `initialize()` 的进程里**：这个进程的事件循环被占住时，沙盒里所有经代理的连接都挂起，没有任何输出。设计阶段的实验里 `git ls-remote`（SSH）挂起到被结束就是这个原因：实验脚本在加载 sandbox-runtime 的同一个进程里用 `spawnSync` 运行包装后的命令，代理在命令结束之前回答不了它的连接；同样的配置换成异步的 `spawn`，不到 2 秒就连到 GitHub。本项目里代理在辅助进程里，辅助进程自己不运行命令，命令由 Host 异步启动，所以不受影响：macOS 上实测经辅助进程的代理，ssh 连到 `github.com:22` 和 `ssh.github.com:443` 并完成密钥交换用 2 秒左右，没放行的主机马上失败并在 stderr 写出原因；`sandbox` 包的真实沙盒测试用本机的假 SSH 服务核对这两点。
 - **监视目录**：macOS 上 `fs.watch` 监视目录要用 FSEvents 的 mach 服务，被拒时长时间运行的 Node 进程会出现 `EMFILE`。适配层对所有沙盒配置 `network.allowMachLookup: ['com.apple.FSEvents']`；`denyRead` 目录里的变化不产生事件，不会泄露其中的文件名。
+- **系统的网络配置**：reqwest 这类 HTTP 库创建客户端时经 mach 服务 `com.apple.SystemConfiguration.configd` 读系统的代理设置，被拒时 uv（实测 0.9.15）直接崩溃，沙盒里的 `uv`、`uvx` 都用不了。适配层对所有沙盒把它加进 `network.allowMachLookup`：它给出的是代理、DNS、网卡和主机名这些网络配置，沙盒里本来就读得到 `/Library/Preferences/SystemConfiguration/`；修改配置要管理员授权。
 
 ### macOS 上结束全部进程
 
@@ -411,7 +412,11 @@ Host 启动的每个沙盒实例先运行一个收尾进程，持有 Host 经 `s
 
 ### 凭据的 mask
 
-sandbox-runtime 的 `credentials` 设置有一种 mask 模式：沙盒里只看到占位值，代理把请求发往指定域名时再换成真实凭据（需要开启 TLS 终止）。本地 MCP server 的密钥用它（见 agent-host 的[插件之外的 `mcp.json`](agent-host.md#插件之外的-mcpjson)）。替换按原样的子串进行，所以 git 走 HTTPS 时换不成真实凭据；AWS 密钥是例外，代理会重新做 SigV4 签名。对文件的 mask 只在 Linux 上生效，macOS 上这类文件只是不可读。
+sandbox-runtime 的 `credentials` 设置有一种 mask 模式：沙盒里只看到占位值，代理把请求发往指定域名时再换成真实凭据（需要开启 TLS 终止）。本地 MCP server 的密钥用它（见 agent-host 的[插件之外的 `mcp.json`](agent-host.md#插件之外的-mcpjson)）。替换按原样的子串进行，所以 git 走 HTTPS 时换不成真实凭据。只用环境变量的整值 mask：sandbox-runtime 对 AWS 密钥重新签名、对文件做 mask（只在 Linux 上生效）这两种都不接。
+
+- 要 mask 的环境变量和它们的域名按辅助进程设置（`HelperScope.maskedEnv`），代理的 TLS 终止也按进程设置：只有给了要 mask 的环境变量的辅助进程终止 TLS，别的沙盒里的程序不必信任代理的证书。
+- 真实值由 Host 在初始化时经辅助进程的 stdin 交给它（`SandboxHelperOptions.secrets`），不放进它启动时的环境变量：macOS 上沙盒里读得到其他进程启动时的环境变量。辅助进程把它放进自己运行时的环境变量，sandbox-runtime 每次包装时从那里取。
+- macOS 上已验收（`sandbox/test/masked-env.test.ts`，本机的 HTTPS 服务）：沙盒里这个环境变量是占位值，用 `ps eww` 看辅助进程也读不到真实值；发往指定域名的 HTTPS 请求里换成了真实值，发往别的域名的还是占位值。
 
 ### 备选和更强的隔离
 
@@ -428,17 +433,14 @@ P1：
 - Linux 上实测 `local_binding`：同一条命令内可用、两条命令之间和到宿主的 127.0.0.1 都不通。
 - 实测 Linux 上 Host 对受保护名字的扫描（深度 3、10 秒）和 sandbox-runtime 自己的扫描合起来的耗时。
 - Linux 上实测[命名权限配置](#命名权限配置)：`deny` 里重新放开的目录和单个文件读得到、放开的路径里再 `deny` 的读不到；`deny` 指向还不存在的路径时挡不住（见[接入时要处理的限制](#接入时要处理的限制)），要不要在加载时报错；可写路径里设成只读的路径不存在时放的占位有没有记进占位登记表。macOS 上这些已经有真实沙盒的测试。
+- 机器很忙时命令的沙盒偶尔启动失败，调用以 `sandbox_launch` 结束，报 `Shell '/bin/bash' not found in PATH`（三路测试同时运行、load average 60 以上时出现过，没有在负载下单独复现）。原因在 sandbox-runtime 0.0.81：每次包装命令都用 `which` 找一遍 shell（`dist/utils/which.js` 的 `whichSync`，Node 下是超时 1 秒的 `spawnSync`，结果不缓存，传入的已经是绝对路径也照样找），超时和找不到都返回空，于是报成找不到 shell。待定：向上游反馈，还是适配层对这一种报错重试一次。
 - 交付前，下面这一组写成 sandbox 专项评测里的自动化测试，结果不符的项按"后端做不到要求的隔离"处理，报告不支持并停止：
   - Linux：bwrap 能否启动（AppArmor 的限制）；结束 bwrap 后 PID 命名空间里的进程全部退出；Host 被 `SIGKILL` 后辅助进程启动的 socat 不残留（残留时由 Host 下次启动时按进程登记表结束）；强制保护扫描的耗时和 bwrap 参数的上限（`BWRAP_MAX_ARGS = 9000`）；新建仓库的保护范围。
 
 P2：
 
 - 用评测统计按参数识别 skill 脚本的误判率。
-- 切换沙盒模式的验收补上已加载的 skill：重启前后发给模型的请求里，已加载的 skill 的内容保持一致。
-
-P3：
-
-- 切换沙盒模式的验收补上压缩摘要：压缩过的 session 重启前后发给模型的请求一致。
+- Linux 上实测[凭据的 mask](#凭据的-mask)：`sandbox/test/masked-env.test.ts` 在 Linux 上运行一遍（macOS 上已验收）。
 
 P5：
 

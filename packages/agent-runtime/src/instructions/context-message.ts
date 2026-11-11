@@ -18,15 +18,20 @@ function ruleFileBlock(file: RuleFile): TextBlock {
 }
 
 /**
- * 会话开始的上下文消息的内容：规则文件（用户级的在前，然后从根目录到工作区）、当前日期和操作系统。
- * 只渲染一次，之后原样发送。
+ * 会话开始的上下文消息的内容：规则文件（用户级的在前，然后从根目录到工作区）、skills 列表、
+ * 记忆索引、当前日期和操作系统。只渲染一次，之后原样发送。`memoryIndex` 是渲染好的记忆索引，
+ * `skills` 是渲染好的 skills 列表，没有时不放。
  */
 export function renderContextMessage(
 	files: readonly RuleFile[],
 	environment: { date: string; os: string },
+	memoryIndex?: TextBlock,
+	skills?: TextBlock,
 ): TextBlock[] {
 	return [
 		...files.map(ruleFileBlock),
+		...(skills === undefined ? [] : [skills]),
+		...(memoryIndex === undefined ? [] : [memoryIndex]),
 		{
 			type: "text",
 			text: `<environment>\nCurrent date: ${environment.date}\nOperating system: ${environment.os}\n</environment>`,

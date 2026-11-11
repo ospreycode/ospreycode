@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { networkFilesystem } from "./filesystem.js";
@@ -113,18 +114,38 @@ export interface SessionDirectories {
 }
 
 /**
- * 创建 session 的临时目录、输出目录和它所属项目的缓存目录。session 的目录名取 session 标识的
- * 前 12 个字符：Unix socket 的路径有长度上限，沙盒后端的 socket 建在临时目录里。
+ * 一个 session 自己的临时目录和输出目录的位置。目录名取 session 标识的前 12 个字符：Unix socket 的
+ * 路径有长度上限，沙盒后端的 socket 建在临时目录里。
  */
+export function sessionPaths(
+	root: string,
+	sessionId: string,
+): Pick<SessionDirectories, "tmp" | "output"> {
+	const name = sessionId.slice(0, 12);
+	return { tmp: join(root, "tmp", name), output: join(root, "output", name) };
+}
+
+/**
+ * 一个工作区的影子仓库所在的目录 `snapshots/<项目>/<工作区>/`。目录名和工作区锁的文件名用同一个
+ * 摘要：工作区真实路径 SHA-256 的前 16 位十六进制。
+ */
+export function snapshotDirectory(
+	root: string,
+	projectId: string,
+	workspace: string,
+): string {
+	const digest = createHash("sha256").update(workspace).digest("hex");
+	return join(root, "snapshots", projectId, digest.slice(0, 16));
+}
+
+/** 创建 session 的临时目录、输出目录和它所属项目的缓存目录。 */
 export function createSessionDirectories(
 	root: string,
 	sessionId: string,
 	projectId: string,
 ): SessionDirectories {
-	const name = sessionId.slice(0, 12);
 	const directories = {
-		tmp: join(root, "tmp", name),
-		output: join(root, "output", name),
+		...sessionPaths(root, sessionId),
 		cache: join(root, "cache", projectId),
 	};
 	for (const parent of ["tmp", "output", "cache"]) {

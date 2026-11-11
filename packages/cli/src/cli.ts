@@ -6,16 +6,42 @@ import {
 	parseCommandLine,
 	selectCommand,
 } from "./args/parse.js";
+import { resumeArgs } from "./args/resume.js";
 import { approvalArg, sessionArgs } from "./args/session.js";
 import { runCacheClear } from "./commands/cache.js";
 import { runCompletion } from "./commands/completion.js";
 import { runDoctor } from "./commands/doctor.js";
+import { runHooksList } from "./commands/hooks.js";
 import { runLogin, runLoginStatus, runLogout } from "./commands/login.js";
+import {
+	runMcpAdd,
+	runMcpGet,
+	runMcpList,
+	runMcpLogin,
+	runMcpLogout,
+	runMcpRemove,
+	runMcpSecret,
+	runMcpToken,
+} from "./commands/mcp.js";
+import {
+	runPluginAdd,
+	runPluginList,
+	runPluginRemove,
+	runPluginUpdate,
+} from "./commands/plugin.js";
 import { runProjectLink, runProjectList } from "./commands/project.js";
 import { runSandbox } from "./commands/sandbox.js";
-import { runSessionList } from "./commands/session.js";
+import {
+	runSessionDelete,
+	runSessionExport,
+	runSessionList,
+	runSessionRebuild,
+	runSessionRedact,
+} from "./commands/session.js";
+import { runTrustList, runTrustReview } from "./commands/trust.js";
 import type { CliContext } from "./context.js";
-import { runExec } from "./exec/run.js";
+import { UsageError } from "./errors.js";
+import { runExec, runExecResume } from "./exec/run.js";
 import { runInteractive } from "./interactive/index.js";
 import { reportFailure } from "./report.js";
 
@@ -37,16 +63,55 @@ async function runRoot(args: ParsedArgs, context: CliContext): Promise<number> {
 	});
 }
 
+/** `resume`：在交互模式里恢复一个 session；没有写 SESSION_ID 也没有写 `--last` 时从列表里选。 */
+async function runResume(
+	args: ParsedArgs,
+	context: CliContext,
+): Promise<number> {
+	const { target, rest } = resumeArgs(args);
+	if (rest.length > 0) {
+		throw new UsageError(`多余的参数：${rest.join(" ")}`);
+	}
+	const approvalPolicy = approvalArg(args);
+	return runInteractive({
+		session: sessionArgs(args, context.cwd),
+		...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+		resume: target ?? { kind: "pick" },
+		context,
+	});
+}
+
 /** 各条命令的实现，键是命令的各级名字用空格连起来。 */
 const handlers: Readonly<Record<string, Handler>> = {
 	"": runRoot,
 	exec: runExec,
+	resume: runResume,
+	"exec resume": runExecResume,
 	"session list": runSessionList,
+	"session delete": runSessionDelete,
+	"session export": runSessionExport,
+	"session rebuild": runSessionRebuild,
+	"session redact": runSessionRedact,
 	"project list": runProjectList,
 	"project link": runProjectLink,
 	login: runLogin,
 	"login status": runLoginStatus,
 	logout: runLogout,
+	"mcp list": runMcpList,
+	"mcp get": runMcpGet,
+	"mcp add": runMcpAdd,
+	"mcp remove": runMcpRemove,
+	"mcp secret": runMcpSecret,
+	"mcp token": runMcpToken,
+	"mcp login": runMcpLogin,
+	"mcp logout": runMcpLogout,
+	"plugin list": runPluginList,
+	"plugin add": runPluginAdd,
+	"plugin update": runPluginUpdate,
+	"plugin remove": runPluginRemove,
+	"trust list": runTrustList,
+	"trust review": runTrustReview,
+	"hooks list": runHooksList,
 	"cache clear": runCacheClear,
 	sandbox: runSandbox,
 	doctor: runDoctor,

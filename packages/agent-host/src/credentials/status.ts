@@ -33,7 +33,7 @@ export interface CredentialStatus {
  * 只读用户级配置这一层：模型的选用、模型的定义和凭据来源都只认它和启动参数，和当前目录无关，
  * 所以 `login` 一类的命令在任何目录下都能用。
  */
-function userLayer(root: string, home: string | undefined): ConfigLayer {
+export function userLayer(root: string, home: string | undefined): ConfigLayer {
 	const file = join(root, "config.toml");
 	const raw = readUserToml(file);
 	if (raw === undefined) return {};

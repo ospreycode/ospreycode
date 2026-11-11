@@ -63,6 +63,68 @@ export function editDiff(edit: FileEditOp, current: Buffer | null): string {
 	);
 }
 
+/** 磁盘上这个文件现在是改动后的内容、改动前的内容，还是都不是。 */
+function editState(edit: RegisteredEdit): "new" | "old" | "neither" {
+	const current = readTarget(edit.path);
+	const hash =
+		current === undefined || current === null ? current : sha256(current);
+	return hash === edit.new_sha256
+		? "new"
+		: hash === edit.old_sha256
+			? "old"
+			: "neither";
+}
+
+/**
+ * 恢复中断的 session 时，只有"开始执行"、没有结果的文件改动：按记下的哈希核对磁盘。全是新内容
+ * 记成功，全是旧内容记失败，其余记结果不确定并逐个列出。
+ */
+export function settleInterruptedEdits(
+	edits: readonly RegisteredEdit[],
+): ToolResult {
+	const states = edits.map((edit) => ({
+		path: edit.path,
+		state: editState(edit),
+	}));
+	const paths = edits.map((edit) => edit.path).join(", ");
+	if (states.every(({ state }) => state === "new")) {
+		return {
+			status: "succeeded",
+			content: [
+				{
+					type: "text",
+					text: `The session was interrupted during this call. ${paths} had already been written.`,
+				},
+			],
+		};
+	}
+	if (states.every(({ state }) => state === "old")) {
+		return {
+			status: "failed",
+			content: [
+				{
+					type: "text",
+					text: `The session was interrupted before this call changed anything: ${paths} still has the old content.`,
+				},
+			],
+		};
+	}
+	const describe = {
+		new: "written",
+		old: "not changed",
+		neither: "matches neither the old nor the new version",
+	};
+	return {
+		status: "interrupted",
+		content: [
+			{
+				type: "text",
+				text: `The session was interrupted during this call. Read these files before relying on them:\n${states.map(({ path, state }) => `${path}: ${describe[state]}`).join("\n")}`,
+			},
+		],
+	};
+}
+
 /**
  * 登记了文件改动、task 结束时还没有结果的调用：按登记的哈希核对磁盘，是新内容记成功，
  * 是旧内容记失败，都不是记结果不确定。

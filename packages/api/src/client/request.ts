@@ -10,6 +10,7 @@ import type {
 	StreamEvent,
 	Usage,
 } from "../protocol/index.js";
+import type { CountOptions, TokenCount } from "./count.js";
 import { parseSse, type SseEvent } from "./sse.js";
 import type { StreamOptions } from "./stream.js";
 
@@ -140,6 +141,59 @@ export async function* runStream(
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+/** 计数请求这么久没有结果按网络超时处理：它不流式返回，没有"空闲"可言。 */
+export const countTimeoutMs = 60_000;
+
+/**
+ * 发出一次计数请求，读出响应里的 `input_tokens`。服务报错、网络中断、超时和取消都体现在结果里，
+ * 不抛出。
+ */
+export async function runCount(
+	options: CountOptions,
+	http: HttpRequest,
+	classify: ErrorClassifier,
+): Promise<TokenCount> {
+	const timeout = AbortSignal.timeout(countTimeoutMs);
+	const network = (message: string): TokenCount => ({
+		error: { category: "network", message },
+	});
+	let status: number;
+	let body: string;
+	let retryAfter: string | null;
+	try {
+		const response = await options.fetch(http.url, {
+			method: "POST",
+			headers: http.headers,
+			body: http.body,
+			signal: AbortSignal.any([options.signal, timeout]),
+		});
+		status = response.status;
+		retryAfter = response.headers.get("retry-after");
+		body = await response.text();
+	} catch (error) {
+		if (options.signal.aborted) return { cancelled: true };
+		return network(
+			timeout.aborted
+				? `计数请求超过 ${countTimeoutMs / 1000} 秒没有结果`
+				: describe(error),
+		);
+	}
+	if (status < 200 || status >= 300) {
+		return { error: classify(status, body, retryAfter) };
+	}
+	let count: unknown;
+	try {
+		count = (JSON.parse(body) as { input_tokens?: unknown }).input_tokens;
+	} catch {
+		// 中转服务和网关可能用 200 返回 HTML 一类的页面，和下面缺字段的情况一样处理
+		count = undefined;
+	}
+	if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+		return network("计数接口的响应里没有 input_tokens");
+	}
+	return { input_tokens: count };
 }
 
 /** 没有用量时的初值。 */

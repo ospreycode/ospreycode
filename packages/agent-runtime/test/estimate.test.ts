@@ -156,4 +156,48 @@ describe("估算", () => {
 			).toBe(toolTokens + 100 + 50 + 10);
 		}
 	});
+
+	test("Host 数过的位置比最后一条回复更靠后时以它为锚点；换了模型或那条消息不在了就不用", () => {
+		const messages = [system, reply({}), result];
+		const counted = { message_id: "t", model: "m", tokens: 3_333 };
+		const more: Message = {
+			role: "user",
+			message_id: "u",
+			content: [{ type: "text", text: "z".repeat(34) }],
+		};
+		expect(estimateContext(model, messages, [], { counted })).toBe(3_333);
+		expect(estimateContext(model, [...messages, more], [], { counted })).toBe(
+			3_333 + 20,
+		);
+		// 数的位置在回复之前：回复报告的用量更新
+		expect(
+			estimateContext(model, messages, [], {
+				counted: { ...counted, message_id: "s" },
+			}),
+		).toBe(3_350 + 10);
+		for (const stale of [
+			{ ...counted, model: "other" },
+			{ ...counted, message_id: "gone" },
+		]) {
+			expect(estimateContext(model, messages, [], { counted: stale })).toBe(
+				3_350 + 10,
+			);
+		}
+	});
+
+	test("乐观的估算：锚点之后的文字按每 token 4 字节算", () => {
+		const long: Message = {
+			role: "user",
+			message_id: "u",
+			content: [{ type: "text", text: "z".repeat(400) }],
+		};
+		expect(estimateContext(model, [system, reply({}), long], [])).toBe(
+			3_350 + Math.ceil(400 / 1.7),
+		);
+		expect(
+			estimateContext(model, [system, reply({}), long], [], {
+				optimistic: true,
+			}),
+		).toBe(3_350 + 100);
+	});
 });

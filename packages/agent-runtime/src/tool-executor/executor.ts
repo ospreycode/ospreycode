@@ -111,12 +111,17 @@ export class ToolExecutor {
 		});
 		onRegistered(registered.tool_call_id);
 		if (!registered.allowed) return registered.result;
-		const result = await this.#execute(prepared, signal);
-		await this.#channel.request("tool_call/complete", {
+		const result = await this.#execute(
+			prepared,
+			signal,
+			registered.tool_call_id,
+		);
+		const completed = await this.#channel.request("tool_call/complete", {
 			tool_call_id: registered.tool_call_id,
 			result,
 		});
-		return result;
+		// hooks 补充了信息时，交给模型的是 Host 保存的那一份
+		return completed.result ?? result;
 	}
 
 	async #prepare(call: ToolCallBlock): Promise<PreparedCall> {
@@ -143,6 +148,7 @@ export class ToolExecutor {
 	async #execute(
 		prepared: LocalCall | ToolResult,
 		signal: AbortSignal,
+		toolCallId: string,
 	): Promise<ToolResult> {
 		if ("status" in prepared) return prepared;
 		const cancelled: ToolResult = {
@@ -151,7 +157,10 @@ export class ToolExecutor {
 		};
 		if (signal.aborted) return cancelled;
 		try {
-			return { status: "succeeded", content: await prepared.run(signal) };
+			return {
+				status: "succeeded",
+				content: await prepared.run(signal, toolCallId),
+			};
 		} catch (error) {
 			// 工具在途中发现被取消时抛出的是取消的原因，不是它自己的失败
 			if (signal.aborted && error === signal.reason) return cancelled;

@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import type { Socket } from "node:net";
@@ -152,6 +153,7 @@ test("握手报告包版本，task 经通道请求模型、执行工具后报告
 	expect(await reported).toBe(version);
 	await host.notify("task/start", {
 		input: [{ type: "text", text: "列出文件" }],
+		message_id: randomUUID(),
 	});
 
 	expect(await ended).toEqual({ outcome: "completed" });
@@ -187,6 +189,7 @@ test("取消时 runtime 取消进行中的模型请求，报告 task 以 cancell
 
 	await host.notify("task/start", {
 		input: [{ type: "text", text: "写一首长诗" }],
+		message_id: randomUUID(),
 	});
 	await requested.promise;
 	expect(await host.request("status", {})).toEqual({

@@ -18,7 +18,11 @@ import type {
 	SandboxLaunch,
 	TaskGrants,
 } from "../actions/tool-calls.js";
+import { isInside } from "../project/paths.js";
 import type { ProcessEvent } from "../sessions/events.js";
+import type { SandboxedRunner } from "../workspace/git.js";
+import type { ExtensionSandboxes } from "./extension-sandbox.js";
+import { runGit } from "./git-runner.js";
 import type { Placeholders } from "./placeholders.js";
 import type { ProcessTracker } from "./registry.js";
 
@@ -27,6 +31,13 @@ export const agentReaperFd = 4;
 
 /** 命令和 apply-edits 的收尾进程管道所在的文件描述符。 */
 const commandReaperFd = 3;
+
+/** 快照沙盒：在里面运行影子仓库的 git。 */
+export interface SnapshotSandbox {
+	run: SandboxedRunner;
+	/** 快照沙盒能不能读这个路径（真实路径）：读不到的文件不保存进快照。 */
+	canRead(path: string): boolean;
+}
 
 /**
  * 一个 session 的沙盒：agent 进程的启动命令、命令沙盒和 apply-edits 的启动方式，session 结束时
@@ -40,6 +51,16 @@ export interface SessionSandbox {
 	capabilities?: BackendCapabilities;
 	commands: CommandLauncher;
 	edits?: EditLauncher;
+	/**
+	 * 扩展（本地 MCP server 和 hooks）的沙盒，以及它们在其上加读写路径的沙盒策略：和 agent 沙盒的
+	 * 相同，只是不含别的插件的目录。没有沙盒时为空，扩展的进程由 Host 直接启动。
+	 */
+	extensions?: { sandboxes: ExtensionSandboxes; policy: SandboxPolicy };
+	/**
+	 * 快照沙盒：不能联网，只有影子仓库 `repository` 可写，还原时工作区也可写。没有沙盒时 git 由
+	 * Host 直接运行，环境变量相同。
+	 */
+	snapshots(repository: string): Promise<SnapshotSandbox>;
 	stop(): Promise<void>;
 }
 
@@ -91,6 +112,7 @@ export function unsandboxedSession(
 				network: "unrestricted",
 			}),
 		},
+		snapshots: async () => ({ run: runGit, canRead: () => true }),
 		stop: async () => {},
 	};
 }
@@ -279,7 +301,8 @@ export async function sandboxedSession(
 		helper: SandboxHelper,
 		command: string,
 		scope: SandboxScope,
-		reaperFd: { fd: number; close: number[] },
+		// 不给时实例里没有收尾进程：快照沙盒里的 git 不留下后台进程
+		reaperFd: { fd: number; close: number[] } | undefined,
 	) => {
 		const filesystem = await sandboxFilesystem(policy, scope, platform);
 		if (filesystem.scanTimedOut) {
@@ -436,6 +459,44 @@ export async function sandboxedSession(
 					reaper,
 					proxyLost: () => false,
 					release: () => cleanup(helper),
+				};
+			},
+			snapshots: async (repository) => {
+				const { rules } = await sandboxFilesystem(
+					policy,
+					{ kind: "snapshot", repository, restore: false },
+					platform,
+				);
+				const deepest = (entries: readonly string[], path: string) =>
+					entries
+						.filter((entry) => isInside(path, entry))
+						.reduce((depth, entry) => Math.max(depth, entry.length), -1);
+				return {
+					// 读取规则里更具体的一条生效，同一个路径上放开优先于禁止
+					canRead: (path) =>
+						deepest(rules.allowRead, path) >= deepest(rules.denyRead, path),
+					run: async (argv, run) => {
+						const helper = await offline.current();
+						// 沙盒的启动命令用 session 的环境变量找到；git 自己的环境变量只有调用方给的那些
+						const assignments = Object.entries(run.env).map(
+							([name, value]) => `${name}=${value}`,
+						);
+						const wrapped = await wrap(
+							helper,
+							shellQuote(["/usr/bin/env", "-i", ...assignments, ...argv]),
+							{
+								kind: "snapshot",
+								repository,
+								restore: run.writeWorkspace,
+							},
+							undefined,
+						);
+						try {
+							return await runGit(wrapped, { ...run, env: options.env });
+						} finally {
+							await cleanup(helper);
+						}
+					},
 				};
 			},
 			stop,

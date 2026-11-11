@@ -94,7 +94,13 @@ export type SandboxScope =
 	 * apply-edits：写权限只给批准的文件，工作区也不给。Linux 上 sandbox-runtime 跳过不存在的可写路径，
 	 * 要新建的文件放开它所在的目录，目录里的受保护名字照样禁止写入。
 	 */
-	| { kind: "edits"; files: string[] };
+	| { kind: "edits"; files: string[] }
+	/**
+	 * 快照沙盒：运行 Host 给定参数的 git。只有影子仓库 `repository` 可读写；`restore` 是还原，
+	 * 这时工作区也可写，受保护的名字不另外禁止：`danger-full-access` 下改过的受保护文件，换了沙盒
+	 * 模式之后也要能还原。
+	 */
+	| { kind: "snapshot"; repository: string; restore: boolean };
 
 /** 一个沙盒的文件规则。 */
 export interface SandboxFilesystem {
@@ -228,12 +234,14 @@ export async function sandboxFilesystem(
 	const allowWrite =
 		scope.kind === "edits"
 			? [...scope.files.filter((path) => !created.includes(path)), ...opened]
-			: [
-					...writableRoots(policy),
-					...(command === undefined ? [] : [policy.cache]),
-					...granted,
-					...(escalated ? ["/"] : []),
-				];
+			: scope.kind === "snapshot"
+				? [scope.repository, ...(scope.restore ? [policy.workspace] : [])]
+				: [
+						...writableRoots(policy),
+						...(command === undefined ? [] : [policy.cache]),
+						...granted,
+						...(escalated ? ["/"] : []),
+					];
 	const denyWrite = [
 		...policy.denyWrite,
 		// 写入规则里禁止优先于允许：批准的路径和越界执行也写不进这些位置
@@ -281,17 +289,26 @@ export async function sandboxFilesystem(
 	const roots: ProtectedRoot[] =
 		scope.kind === "edits"
 			? opened.map((root) => ({ root, options: {}, missing: true }))
-			: [
-					{ root: policy.workspace, options: workspaceOptions, missing: true },
-					...outside.map((root) => ({ root, options: {}, missing: true })),
-					// 越界执行时整个文件系统都可写，主目录作为根；不在主目录里放占位：名单很长，用户看得到
-					...(escalated
-						? [{ root: policy.home, options: { open }, missing: false }]
-						: []),
-				];
+			: scope.kind === "snapshot"
+				? []
+				: [
+						{
+							root: policy.workspace,
+							options: workspaceOptions,
+							missing: true,
+						},
+						...outside.map((root) => ({ root, options: {}, missing: true })),
+						// 越界执行时整个文件系统都可写，主目录作为根；不在主目录里放占位：名单很长，用户看得到
+						...(escalated
+							? [{ root: policy.home, options: { open }, missing: false }]
+							: []),
+					];
 	const placeholders: string[] = [];
 	let scanTimedOut = false;
-	if (platform === "linux" && scope.kind !== "edits") {
+	// 工作区不可写的沙盒（apply-edits、不还原的快照沙盒）不用先放这些占位
+	const workspaceWritable =
+		scope.kind === "snapshot" ? scope.restore : scope.kind !== "edits";
+	if (platform === "linux" && workspaceWritable) {
 		const ahead = missingRuntimeChildren(
 			policy.workspace,
 			workspaceOptions.gitWritable === true,
@@ -334,8 +351,10 @@ export async function sandboxFilesystem(
 			],
 			// sandbox-runtime 的 allowRead 优先于 denyRead，用它在 Host 根目录里放开 session 的子目录
 			allowRead: [
-				policy.tmpdir,
-				...policy.readOnly,
+				// 快照沙盒在 Host 根目录里只放开影子仓库，不读 session 的临时目录和输出目录
+				...(scope.kind === "snapshot"
+					? [scope.repository]
+					: [policy.tmpdir, ...policy.readOnly]),
 				...(command === undefined ? [] : [policy.cache, ...command.read]),
 				...granted,
 				...(profile?.reopened ?? []),
@@ -359,26 +378,55 @@ export interface HelperScope {
 	unixSockets?: string[];
 	/** 批准了监听端口和连接本机端口，只能按进程设置。 */
 	localBinding?: boolean;
+	/**
+	 * 值要 mask 的环境变量：沙盒里只看到占位值，代理把请求发往 `hosts` 时换成真实值。真实值经
+	 * `SandboxHelperOptions.secrets` 给出。给了以后代理终止 TLS，沙盒里的程序要信任它的证书。
+	 */
+	maskedEnv?: MaskedEnv[];
+}
+
+/** 一个值要 mask 的环境变量。 */
+export interface MaskedEnv {
+	name: string;
+	/** 真实值只发往这些域名，写法和网络名单里的域名相同。 */
+	hosts: string[];
 }
 
 /**
  * 交给辅助进程初始化 sandbox-runtime 的配置。文件规则在每次包装时给出，这里只有按进程设置的部分。
- * macOS 上放行 FSEvents，监视目录的命令才能运行。
+ * macOS 上放行 FSEvents，监视目录的命令才能运行；放行 configd，读系统代理设置的程序（如 uv）才不会崩溃。
  */
 export function runtimeConfig(scope: HelperScope): Record<string, unknown> {
+	const masked = scope.maskedEnv ?? [];
 	return {
 		network: {
 			allowedDomains: scope.network?.allowedDomains ?? [],
 			deniedDomains: scope.network?.deniedDomains ?? [],
 			// sandbox-runtime 默认不拒绝私有网段
 			deniedResolvedAddresses: privateRanges,
-			allowMachLookup: ["com.apple.FSEvents"],
+			allowMachLookup: [
+				"com.apple.FSEvents",
+				"com.apple.SystemConfiguration.configd",
+			],
 			...(scope.unixSockets === undefined
 				? {}
 				: { allowUnixSockets: scope.unixSockets }),
 			...(scope.localBinding === true ? { allowLocalBinding: true } : {}),
+			// 占位值在 HTTPS 请求里面，代理要终止 TLS 才换得了
+			...(masked.length === 0 ? {} : { tlsTerminate: {} }),
 		},
 		// 每次包装都给出完整的文件规则；初始化时的这份不会用到，按最严的写
 		filesystem: { denyRead: [], allowRead: [], allowWrite: [], denyWrite: [] },
+		...(masked.length === 0
+			? {}
+			: {
+					credentials: {
+						envVars: masked.map(({ name, hosts }) => ({
+							name,
+							mode: "mask",
+							injectHosts: hosts,
+						})),
+					},
+				}),
 	};
 }

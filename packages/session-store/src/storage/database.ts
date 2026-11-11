@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, openSync } from "node:fs";
+import { chmodSync, closeSync, openSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { storageVersion } from "../events/index.js";
 
@@ -15,7 +15,10 @@ CREATE TABLE sessions (
 	last_written_at TEXT NOT NULL,
 	title TEXT,
 	current_run_id TEXT,
-	current_seq INTEGER
+	current_seq INTEGER,
+	parent_session_id TEXT,
+	fork_run_id TEXT,
+	fork_seq INTEGER
 ) STRICT;
 
 CREATE TABLE events (
@@ -56,7 +59,40 @@ CREATE TABLE blob_refs (
 	session_id TEXT NOT NULL REFERENCES sessions (session_id),
 	PRIMARY KEY (sha256, session_id)
 ) STRICT;
+${treeAndCheckpointTables()}`;
+
+function treeAndCheckpointTables(): string {
+	return `
+CREATE TABLE abandoned_positions (
+	session_id TEXT NOT NULL REFERENCES sessions (session_id),
+	run_id TEXT NOT NULL,
+	seq INTEGER NOT NULL,
+	PRIMARY KEY (session_id, run_id, seq)
+) STRICT;
+
+CREATE TABLE checkpoints (
+	session_id TEXT NOT NULL REFERENCES sessions (session_id),
+	input_event_id TEXT NOT NULL,
+	kind TEXT NOT NULL CHECK (kind IN ('task', 'steering')),
+	run_id TEXT NOT NULL,
+	seq INTEGER NOT NULL,
+	before_run_id TEXT,
+	before_seq INTEGER,
+	cleaned INTEGER NOT NULL DEFAULT 0,
+	snapshots TEXT NOT NULL DEFAULT '[]',
+	PRIMARY KEY (session_id, input_event_id)
+) STRICT;
 `;
+}
+
+/** 按顺序执行的迁移：下标 N 的一项把第 N+1 版的库改成第 N+2 版。 */
+const migrations: readonly string[] = [
+	`
+ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
+ALTER TABLE sessions ADD COLUMN fork_run_id TEXT;
+ALTER TABLE sessions ADD COLUMN fork_seq INTEGER;
+${treeAndCheckpointTables()}`,
+];
 
 /** 在一个写事务里执行：写事务一律 `BEGIN IMMEDIATE`，等锁时阻塞，所以事务要短。 */
 export function writeTransaction<T>(db: DatabaseSync, run: () => T): T {
@@ -76,9 +112,37 @@ function userVersion(db: DatabaseSync): number {
 		.user_version;
 }
 
+/** 迁移前的备份放在库的旁边，文件名带旧的格式版本。 */
+function backupPath(path: string, version: number): string {
+	return `${path}.v${version}.bak`;
+}
+
+/** 删掉迁移失败时留下的备份：它们是迁移之前的整个库，彻底删除要把它们算进去。 */
+export function removeBackups(path: string): void {
+	for (let version = 1; version < storageVersion; version++) {
+		rmSync(backupPath(path, version), { force: true });
+	}
+}
+
+function migrate(db: DatabaseSync, path: string, from: number): void {
+	const backup = backupPath(path, from);
+	// 备份和库一样只对当前用户可读写；VACUUM INTO 要求目标不存在或是空文件
+	closeSync(openSync(backup, "w", 0o600));
+	db.prepare("VACUUM INTO ?").run(backup);
+	writeTransaction(db, () => {
+		// 另一个 Host 可能刚迁移完，以事务里读到的版本为准
+		for (let version = userVersion(db); version < storageVersion; version++) {
+			db.exec(migrations[version - 1] as string);
+		}
+		db.exec(`PRAGMA user_version = ${storageVersion}`);
+	});
+	removeBackups(path);
+}
+
 /**
  * 打开一个项目的 session 记录库，不存在时以 0600 创建：WAL、busy timeout 5 秒、`synchronous=FULL`、
- * `secure_delete=ON`。格式版本记在 `PRAGMA user_version`，比程序新时报错、不打开。
+ * `secure_delete=ON`。格式版本记在 `PRAGMA user_version`：比程序旧时先在同一目录备份再迁移，
+ * 成功后删除备份；比程序新时报错、不打开。
  */
 export function openDatabase(path: string): DatabaseSync {
 	// SQLite 按数据库文件的权限创建 -wal 和 -shm，先建好只对当前用户可读写的空文件
@@ -97,17 +161,21 @@ export function openDatabase(path: string): DatabaseSync {
 		}
 		db.exec("PRAGMA synchronous = FULL");
 		db.exec("PRAGMA secure_delete = ON");
-		writeTransaction(db, () => {
-			const version = userVersion(db);
-			if (version === 0) {
+		const version = writeTransaction(db, () => {
+			const found = userVersion(db);
+			if (found === 0) {
 				db.exec(schema);
 				db.exec(`PRAGMA user_version = ${storageVersion}`);
-			} else if (version !== storageVersion) {
-				throw new StorageError(
-					`${path} 的存储格式版本是 ${version}，这个版本的程序只认识 ${storageVersion}`,
-				);
+				return storageVersion;
 			}
+			return found;
 		});
+		if (version > storageVersion) {
+			throw new StorageError(
+				`${path} 的存储格式版本是 ${version}，这个版本的程序只认识 ${storageVersion}`,
+			);
+		}
+		if (version < storageVersion) migrate(db, path, version);
 		return db;
 	} catch (error) {
 		db.close();

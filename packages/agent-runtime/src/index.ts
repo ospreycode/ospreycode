@@ -32,6 +32,8 @@ export {
 	type CancelParams,
 	type ConfigUpdate,
 	type Empty,
+	type HooksRunParams,
+	type HooksRunResult,
 	type HostNotifications,
 	type HostRequests,
 	hostStreamMethods,
@@ -42,7 +44,21 @@ export {
 	type InitializeParams,
 	type InputContent,
 	type InputTakeResult,
+	type McpToolInfo,
+	type MemoryConfig,
+	type MemoryEntry,
+	type MemoryIndex,
+	type MemoryIndexEntry,
+	type MemoryProposeParams,
+	type MemoryProposeResult,
+	type MemoryReadParams,
+	type MemoryReadResult,
+	type MemoryReference,
+	type MemorySearchParams,
+	type MemorySearchResult,
 	type MentionBlock,
+	type ModelCountTokensParams,
+	type ModelCountTokensResult,
 	type ModelEventParams,
 	type ModelInfo,
 	type ModelRequestParams,
@@ -59,6 +75,9 @@ export {
 	type RuntimeNotifications,
 	type RuntimeRequests,
 	type SentImage,
+	type SkillInfo,
+	type SkillLoadParams,
+	type SkillLoadResult,
 	type StatusResult,
 	type StreamNotification,
 	type TaskEndOutcome,
@@ -66,6 +85,7 @@ export {
 	type TaskEndResult,
 	type TaskStartParams,
 	type ToolCallCompleteParams,
+	type ToolCallCompleteResult,
 	type ToolCallOutputParams,
 	type ToolCallParams,
 	type ToolCallRegisterParams,
@@ -80,18 +100,26 @@ export {
 } from "./channel/schema.js";
 export { ReceivedImages } from "./channel/sent-images.js";
 export {
+	type CountedContext,
+	type EstimateOptions,
 	estimateContext,
 	imageTokens,
 	textTokens,
 } from "./context/estimate.js";
 export {
+	type CompactedMessage,
+	type ContextCompacted,
 	contractsVersion,
 	type DenialCategory,
 	type DenialReason,
 	type InputInserted,
 	type InstructionSection,
+	type LoadedSkill,
+	type RecordedEdit,
 	type RecordedInstructions,
+	type RecordedMemory,
 	type RecordedRuleFile,
+	type RecordedSkill,
 	type RuntimeEvent,
 	type SandboxNetwork,
 	type SandboxSummary,
@@ -107,6 +135,15 @@ export {
 export { maxRuleFilesBytes, ruleFileNames } from "./instructions/rule-files.js";
 export { runAgent, toolRegistry } from "./runtime/run-agent.js";
 export {
+	type MemoryProposeArguments,
+	type MemoryReadArguments,
+	type MemorySearchArguments,
+	memoryProposeArgumentsSchema,
+	memoryReadArgumentsSchema,
+	memorySearchArgumentsSchema,
+	memoryToolRegistry,
+} from "./tools/memory.js";
+export {
 	type RequestPermissionsArguments,
 	requestPermissionsArgumentsSchema,
 	requestPermissionsTool,
@@ -116,4 +153,9 @@ export {
 	shellArgumentsSchema,
 	shellTool,
 } from "./tools/shell.js";
+export {
+	type SkillLoadArguments,
+	skillLoadArgumentsSchema,
+	skillLoadTool,
+} from "./tools/skill-load.js";
 export { version } from "./version.js";

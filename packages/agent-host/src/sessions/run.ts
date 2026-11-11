@@ -27,8 +27,8 @@ export function addUsage(total: Usage, usage: Usage): Usage {
 
 /** 正在进行的 run：task 的一次执行。task 和 run 的标识都由 Host 生成。 */
 export class Run {
-	readonly taskId = newId();
-	readonly runId = newId();
+	readonly taskId: string;
+	readonly runId: string;
 	/** Host 取消这个 run 时中止，进行中的模型请求、命令和询问都跟着结束。 */
 	controller = new AbortController();
 	usage = emptyUsage();
@@ -51,6 +51,8 @@ export class Run {
 	readonly inFlight = new Set<Promise<unknown>>();
 	/** runtime 上报过的事件编号：Host 只在所属 run 内去重。 */
 	readonly runtimeEventIds = new Set<string>();
+	/** 放这个 task 的输入的那条 user 消息的编号；压缩的 task 和恢复后接着写的 run 没有。 */
+	inputMessageId: string | undefined;
 	readonly budget: RunBudget;
 	/** 因为超出这一项上限而停止：task 以 `budget_exceeded` 结束。 */
 	exceeded: BudgetLimit | undefined;
@@ -58,10 +60,20 @@ export class Run {
 	deadline: NodeJS.Timeout | undefined;
 	/** task 结束（`task.ended` 已经记下）时兑现。 */
 	readonly ended = Promise.withResolvers<void>();
-	#seq = 0;
+	#seq: number;
 
-	constructor(limits: RunLimits) {
+	/**
+	 * `interrupted` 是恢复 session 时上次中断的那个 run：Host 在它里面接着写收尾的事件，序号从
+	 * 记录里最后一个事件之后接着编。
+	 */
+	constructor(
+		limits: RunLimits,
+		interrupted?: { taskId: string; runId: string; seq: number },
+	) {
 		this.budget = new RunBudget(limits);
+		this.taskId = interrupted?.taskId ?? newId();
+		this.runId = interrupted?.runId ?? newId();
+		this.#seq = interrupted?.seq ?? 0;
 	}
 
 	/** Host 已经取消了这个 run：之后除了 `task/end`，runtime 的请求都以 `no_active_task` 拒绝。 */

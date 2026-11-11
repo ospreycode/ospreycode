@@ -36,6 +36,22 @@ export {
 	type TaskRuns,
 } from "./reports/benchmark.js";
 export {
+	bootstrapResamples,
+	bootstrapSeed,
+	formatMemoryReport,
+	type GroupResult,
+	type MemoryConditions,
+	type MemoryGroupDetail,
+	type MemoryReport,
+	memoryReport,
+	minimumRuns,
+	type PairedDifference,
+	type PhaseCost,
+	pairedDifference,
+	type SessionCost,
+	type Stratum,
+} from "./reports/memory.js";
+export {
 	type DecisionMismatches,
 	formatSandboxReport,
 	type OverheadEntry,
@@ -52,6 +68,18 @@ export {
 	type CodingBenchmarkOptions,
 	runCodingBenchmark,
 } from "./runners/coding-benchmark.js";
+export {
+	type MaintenanceSession,
+	type MemoryExperimentOptions,
+	type MemoryGroup,
+	type MemorySession,
+	type MemoryTask,
+	type MemoryTrial,
+	memoryExperimentPermissions,
+	memoryGroups,
+	type ProbeCounters,
+	runMemoryExperiment,
+} from "./runners/memory-experiment.js";
 export {
 	credentialMarker,
 	type PreparedCase,
@@ -79,6 +107,7 @@ export {
 	type ScenarioResult,
 	type ScenarioRun,
 } from "./runners/scenario.js";
+export { memorySmokeTasks } from "./suites/memory.js";
 export { p0Scenarios } from "./suites/p0.js";
 export type {
 	DecisionCase,
@@ -101,3 +130,21 @@ export {
 	type TrialMeasurements,
 	type TrialStatus,
 } from "./traces/coding-trials.js";
+export {
+	classifyFailure,
+	type FailureEvidence,
+	historyBlock,
+	historyChars,
+	type MemoryFailure,
+	type MemorySnapshot,
+	memoryFailures,
+	type RepeatCounters,
+	repeatCounters,
+	retrievedBlock,
+	retrievedEntries,
+	type ToolCallTrace,
+	type TranscriptEntry,
+	toolCalls,
+	transcriptEntries,
+	transcriptEntryChars,
+} from "./traces/memory-trials.js";

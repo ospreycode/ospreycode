@@ -1,14 +1,18 @@
 import type {
 	ApprovalDecided,
 	BackgroundEnded,
+	ElicitationRequestedEvent,
+	HookEvent,
 	HostEvent,
 	InputQueueSnapshot,
+	ServerApprovalRequestedEvent,
 	SessionConfig,
 	SessionEndReason,
 	TaskEndedEvent,
 	TaskSource,
 } from "@ospreycode/agent-host";
 import { beyondTaskFailure } from "../task-failure.js";
+import type { DetailLine } from "./format.js";
 import { displayInput } from "./input.js";
 import type { ApprovalEvent, ReasoningEffort, ToolResult } from "./types.js";
 
@@ -50,6 +54,8 @@ export interface NoticeEntry {
 	kind: "notice";
 	level: "info" | "warning" | "error";
 	text: string;
+	/** 接在说明下面的带色调的行：`/diff` 的 unified diff。 */
+	detail?: readonly DetailLine[];
 }
 
 /** task 的结果、用量和费用。 */
@@ -66,6 +72,18 @@ export type Entry =
 	| ApprovalEntry
 	| NoticeEntry
 	| TaskEndedEntry;
+
+/** MCP server 等用户回答的问题：它的提问（elicitation），或者它要访问还没放行的域名。 */
+export type ServerQuestion =
+	| ElicitationRequestedEvent
+	| ServerApprovalRequestedEvent;
+
+/** hooks 拦下一个动作时在对话区里怎么说；没有列出的时机，原因在工具调用或任务的结果里看得到。 */
+const blockedByHook: Partial<Record<HookEvent, string>> = {
+	UserPromptSubmit: "hook 拦下了这条输入",
+	PostToolUse: "hook 对工具结果的反馈",
+	Stop: "hook 要求模型接着做",
+};
 
 /** 状态行上的内容。 */
 export interface Status {
@@ -93,6 +111,8 @@ function describeBackgroundEnd(ended: BackgroundEnded): string {
 			return "输出超过上限";
 		case "session_closed":
 			return "session 关闭";
+		case "lost":
+			return "上次 session 中断时还在运行，已经不在了";
 	}
 }
 
@@ -110,6 +130,8 @@ export class InteractiveState {
 	};
 	/** 等用户回答的询问，按到达的顺序。 */
 	approvals: ApprovalEvent[] = [];
+	/** MCP server 等用户回答的问题，按到达的顺序；它们不属于 task，排在 `approvals` 之后显示。 */
+	serverQuestions: ServerQuestion[] = [];
 	/** 进行中的 task；空闲时为空。 */
 	taskId: string | undefined;
 	/** session 已经关闭时的原因。 */
@@ -147,9 +169,53 @@ export class InteractiveState {
 		this.#showReasoning = config.ui.showReasoning;
 	}
 
-	/** 在对话区加一行说明。 */
-	notice(text: string, level: NoticeEntry["level"] = "info"): void {
-		this.#add({ kind: "notice", level, text });
+	/**
+	 * 恢复、回退和分叉之后按记录重画对话：`events` 是 `Session.history()` 里在这之前记下的事件，
+	 * 按先后；原来显示的对话先清掉。重画完换上现在的情况：记录里进行中的 task 和等着回答的询问现在
+	 * 都没有（恢复时它们随上一次运行结束了，回退和分叉只在空闲、没有询问时做）；排队的输入按 Host
+	 * 给出的队列，恢复时它取的是记录里最后一份，不看会话树的当前路径；状态行按 Host 给出的配置，
+	 * 不按重画时经过的换模型的事件：启动参数指定了模型时用的是指定的那个。
+	 */
+	restore(
+		events: readonly HostEvent[],
+		now: { queue: InputQueueSnapshot; config: SessionConfig },
+	): void {
+		this.entries.length = 0;
+		this.#changed.clear();
+		this.#replies.clear();
+		this.#tools.clear();
+		this.#asked.clear();
+		// `#background` 留着：回退时结束的后台命令，结束的事件在重画之后才处理，说明里要写出是哪条命令
+		for (const event of events) this.apply(event);
+		this.taskId = undefined;
+		this.approvals = [];
+		this.#failure = undefined;
+		this.queue = now.queue;
+		this.configured(now.config);
+	}
+
+	/**
+	 * 界面换到另一个 session（分叉）之后、按它的记录重画之前调用：原来那个 session 的 MCP server 的
+	 * 问题和 agent 进程都随它关闭了。
+	 */
+	switched(): void {
+		this.serverQuestions = [];
+		this.ended = undefined;
+		this.#agentStarted = false;
+	}
+
+	/** 在对话区加一行说明；`detail` 是接在它下面的带色调的行。 */
+	notice(
+		text: string,
+		level: NoticeEntry["level"] = "info",
+		detail?: readonly DetailLine[],
+	): void {
+		this.#add({
+			kind: "notice",
+			level,
+			text,
+			...(detail === undefined ? {} : { detail }),
+		});
 	}
 
 	/** 上次调用以来内容变了的条目，界面据此只更新这些。 */
@@ -183,6 +249,10 @@ export class InteractiveState {
 			case "task.started":
 				this.taskId = event.task_id;
 				this.#failure = undefined;
+				if (event.kind === "compact") {
+					this.notice("正在压缩上下文…");
+					break;
+				}
 				this.#add({
 					kind: "user",
 					source: event.source,
@@ -295,6 +365,13 @@ export class InteractiveState {
 				this.queue = event.queue;
 				break;
 			}
+			case "context.compacted":
+				this.notice(
+					event.trigger === "manual"
+						? `上下文已压缩（压缩前约 ${event.tokens_before} token）`
+						: `上下文接近模型的上限，已自动压缩（压缩前约 ${event.tokens_before} token）`,
+				);
+				break;
 			case "model.changed":
 				this.status.model = event.model;
 				this.notice(
@@ -330,7 +407,10 @@ export class InteractiveState {
 				break;
 			}
 			case "background.notification":
-				this.notice(`后台通知：${event.text}`);
+				// 不是哪条后台命令产生的：Host 自己要告诉模型的事（撤销之后文件还原了、归属不明的网络拒绝）
+				this.notice(
+					`${event.background_id === null ? "给模型的通知" : "后台通知"}：${event.text}`,
+				);
 				break;
 			case "process.started":
 				if (event.kind !== "agent") break;
@@ -345,11 +425,76 @@ export class InteractiveState {
 				if (text !== "") this.notice(text, "error");
 				break;
 			}
+			case "hooks.ran": {
+				for (const message of event.system_messages) {
+					this.notice(`hook（${event.event}）：${message}`);
+				}
+				const blocked = blockedByHook[event.event];
+				if (event.blocked && blocked !== undefined) {
+					this.notice(
+						`${blocked}${event.reason === undefined ? "" : `：${event.reason}`}`,
+						"warning",
+					);
+				}
+				break;
+			}
+			case "elicitation.requested":
+			case "server_approval.requested":
+				this.serverQuestions.push(event);
+				break;
+			case "elicitation.answered": {
+				const { server } = this.#answered(event.request_id);
+				this.notice(
+					`MCP server ${server} 的提问：${{ accept: "已回答", decline: "已拒绝", cancel: "没有回答" }[event.action]}`,
+				);
+				break;
+			}
+			case "server_approval.decided": {
+				const asked = this.#answered(event.request_id);
+				if (asked.type !== "server_approval.requested") {
+					throw new Error(`${event.request_id} 不是网络访问的询问`);
+				}
+				this.notice(
+					`MCP server ${asked.server} 访问 ${asked.request.host}：${
+						{
+							approved:
+								event.answer?.scope === "rule"
+									? "已允许，并保存为规则"
+									: event.answer?.scope === "task"
+										? "已允许，这个 session 内有效"
+										: "已允许这一次",
+							denied: "已拒绝",
+							denied_by_policy: "审批策略不再询问这一类，已拒绝",
+						}[event.decision]
+					}`,
+				);
+				break;
+			}
 			case "run.started":
 			case "process.exited":
 			case "background.delivered":
+			// 候选由 `/memory` 那边列出；记忆的改动由做改动的命令说明，检索在工具调用上看得到
+			case "memory.candidates":
+			case "memory.updated":
+			case "memory.retrieved":
+			case "memory.extraction.started":
+			case "memory.extraction.ended":
 				break;
 		}
+	}
+
+	/** MCP server 的一个问题有了结果：从等回答的问题里取出来。 */
+	#answered(requestId: string): ServerQuestion {
+		const asked = this.serverQuestions.find(
+			(question) => question.request_id === requestId,
+		);
+		if (asked === undefined) {
+			throw new Error(`没有见过的 MCP server 的问题有了结果：${requestId}`);
+		}
+		this.serverQuestions = this.serverQuestions.filter(
+			(question) => question !== asked,
+		);
+		return asked;
 	}
 
 	#add(entry: Entry): void {

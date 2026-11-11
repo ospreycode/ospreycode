@@ -4,6 +4,7 @@ import type {
 	PendingInput,
 } from "@ospreycode/agent-runtime";
 import type { UserContent } from "@ospreycode/api/protocol";
+import { hookContext } from "../hooks/context.js";
 import type { TaskOutcome } from "./events.js";
 import { newId } from "./ids.js";
 
@@ -14,6 +15,8 @@ export interface QueuedInput {
 	kind: "steering" | "follow_up";
 	/** 用户给的输入：提及的路径还没有展开。 */
 	input: InputContent[];
+	/** `UserPromptSubmit` hooks 为这条输入补充的信息：交给模型时放在输入后面单独的文本块里。 */
+	hook_context?: string;
 }
 
 /** 两个队列的完整快照：队列每次变化都随事件记下，恢复时据此重建。 */
@@ -142,6 +145,13 @@ export class InputQueues {
 		this.#record = record;
 	}
 
+	/** 恢复 session：换上记录里最后一份队列的快照。不记事件，快照本来就来自记录。 */
+	restore(snapshot: InputQueueSnapshot): void {
+		this.#steering = [...snapshot.steering];
+		this.#followUp = [...snapshot.follow_up];
+		this.#paused = snapshot.follow_up_paused;
+	}
+
 	/** 当前的队列。 */
 	snapshot(): InputQueueSnapshot {
 		return {
@@ -151,21 +161,47 @@ export class InputQueues {
 		};
 	}
 
-	#queue(kind: QueuedInput["kind"], input: InputContent[]): string {
-		const queued: QueuedInput = { input_id: newId(), kind, input };
+	#queue(
+		kind: QueuedInput["kind"],
+		input: InputContent[],
+		inputId: string,
+		context: string | undefined,
+	): string {
+		const queued: QueuedInput = {
+			input_id: inputId,
+			kind,
+			input,
+			...(context === undefined ? {} : { hook_context: context }),
+		};
 		(kind === "steering" ? this.#steering : this.#followUp).push(queued);
 		this.#record({ type: "input.queued", ...queued, queue: this.snapshot() });
 		return queued.input_id;
 	}
 
-	/** 排一条 steering，返回它的编号。 */
-	steer(input: InputContent[]): string {
-		return this.#queue("steering", input);
+	/**
+	 * 排一条 steering，返回它的编号。`inputId` 是排队之前就告诉了前端的编号：输入先经过
+	 * `UserPromptSubmit` hooks 的检查，通过后才排队；`context` 是 hooks 为它补充的信息。
+	 */
+	steer(input: InputContent[], inputId = newId(), context?: string): string {
+		return this.#queue("steering", input, inputId, context);
 	}
 
-	/** 排一条 follow-up，返回它的编号。 */
-	followUp(input: InputContent[]): string {
-		return this.#queue("follow_up", input);
+	/** 排一条 follow-up，返回它的编号；`inputId` 和 `context` 同 `steer`。 */
+	followUp(input: InputContent[], inputId = newId(), context?: string): string {
+		return this.#queue("follow_up", input, inputId, context);
+	}
+
+	/**
+	 * 一条 steering 通过检查时 task 已经结束：不排队，和 task 结束时还没插入的 steering 一样交还，
+	 * 前端把它放回输入框。
+	 */
+	missed(inputId: string, input: InputContent[]): void {
+		this.#record({
+			type: "input.dequeued",
+			inputs: [{ input_id: inputId, kind: "steering", input }],
+			reason: "task_ended",
+			queue: this.snapshot(),
+		});
 	}
 
 	/** 取回排队的输入：给了编号只取那一条，不给取回全部。返回取回的输入，已经不在队列里的不算。 */
@@ -236,6 +272,17 @@ export class InputQueues {
 		return merged.notification_id;
 	}
 
+	/**
+	 * 回退之后丢掉还没交给模型的、来自这些后台命令的通知：它们在被放弃的那一段里启动，回退后的对话
+	 * 不认识它们。
+	 */
+	dropNotifications(abandoned: (backgroundId: string) => boolean): void {
+		this.#notifications = this.#notifications.filter(
+			({ background_id }) =>
+				background_id === null || !abandoned(background_id),
+		);
+	}
+
 	/** runtime 在插入时机取走全部 steering 和通知：steering 在前，通知在后。 */
 	take(): PendingInput[] {
 		const steering = this.#steering;
@@ -248,10 +295,13 @@ export class InputQueues {
 		}
 		return [
 			...steering.map(
-				({ input_id, input }): PendingInput => ({
+				({ input_id, input, hook_context }): PendingInput => ({
 					input_id,
 					kind: "steering",
-					content: input,
+					content:
+						hook_context === undefined
+							? input
+							: [...input, hookContext("UserPromptSubmit", hook_context)],
 				}),
 			),
 			...notifications.map(

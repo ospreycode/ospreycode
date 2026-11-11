@@ -27,7 +27,7 @@ function serviceArg(args: ParsedArgs, host: Host): string {
 }
 
 /** 在终端上读一行，不回显。按 Ctrl+C 放弃时返回空。 */
-async function readHidden(
+export async function readHidden(
 	context: CliContext,
 	prompt: string,
 ): Promise<string | undefined> {

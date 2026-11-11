@@ -38,6 +38,7 @@ export function helpText(command: CommandSpec): string {
 		if (root) lines.push("      ospreycode <命令> [选项]");
 	}
 	lines.push("", command.summary);
+	if (command.notes !== undefined) lines.push("", ...command.notes);
 	if (listed.length > 0) {
 		lines.push(
 			"",

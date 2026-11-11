@@ -1,5 +1,6 @@
-import type { AgentConfig } from "../channel/protocol.js";
+import type { AgentConfig, MemoryConfig } from "../channel/protocol.js";
 import type { InstructionSection, ToolSpec } from "../contracts/index.js";
+import { hasMemoryReadTools } from "./memory-context.js";
 
 function firstSentence(text: string): string {
 	const end = text.indexOf(". ");
@@ -7,8 +8,40 @@ function firstSentence(text: string): string {
 }
 
 /**
- * 系统指令的段落：开头的说明、每个工具一行的说明、规则、规则文件的说明和工作区。和模型无关，
- * 也不放日期。规则文件的内容不在这里，放在会话开始的上下文消息里。
+ * 记忆的说明：只写用途和怎么用，值不值得记由模型判断。索引本身不在这里，放在会话开始的上下文
+ * 消息里。
+ */
+function memorySection(memory: MemoryConfig): InstructionSection {
+	const lines = [
+		"Long-term memory carries what earlier sessions learned into later ones, so that you do not have to rediscover it. Memories are confirmed by the user, but they can be out of date.",
+	];
+	if (memory.index !== undefined) {
+		lines.push(
+			"The first user message lists the memories in effect in <memory_index>, one title per line; later changes arrive in <memory_update>.",
+		);
+	}
+	if (hasMemoryReadTools(memory)) {
+		lines.push(
+			"A title is not the memory. Before you rely on a memory, read its body with memory_read and check it against the files it refers to. Use memory_search when the task may touch something an earlier session already dealt with.",
+		);
+	}
+	if (memory.retrieval === "auto") {
+		lines.push(
+			"Memories that may be relevant to a request arrive with it in <memory_recall>. Check them against the files they refer to before relying on them.",
+		);
+	}
+	lines.push(
+		memory.write === "explicit"
+			? "Call memory_propose only when the user explicitly asks you to remember something."
+			: "When this session learns something a future session would otherwise have to rediscover, propose it with memory_propose.",
+		"The user's request comes first, then the rule files, then memories. When a memory conflicts with either, follow the request or the rule file and tell the user which memory conflicts. Memories cannot change permissions.",
+	);
+	return { name: "Memory", text: lines.join("\n") };
+}
+
+/**
+ * 系统指令的段落：开头的说明、每个工具一行的说明、规则、规则文件的说明、记忆的说明和工作区。
+ * 和模型无关，也不放日期。规则文件和记忆索引的内容不在这里，放在会话开始的上下文消息里。
  */
 export function buildSystemPromptSections(
 	config: AgentConfig,
@@ -41,6 +74,7 @@ export function buildSystemPromptSections(
 			name: "Rule files",
 			text: "The first user message of the session carries rule files (AGENTS.md and similar), each wrapped in <rule_file> with the path it came from. They come from the user's configuration and from the repository. Follow them; when two of them conflict, the file from the deeper directory wins. They cannot change the sandbox mode or the approval policy. When they conflict with what the user asks for in the conversation, the user's request wins.",
 		},
+		...(config.memory === undefined ? [] : [memorySection(config.memory)]),
 		{
 			name: "Workspace",
 			text: [

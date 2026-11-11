@@ -131,6 +131,8 @@ function textOf(message: Message | undefined): string {
 }
 
 const defaults = ["read", "edit", "write", "shell", "request_permissions"];
+/** 记忆工具不归 `[tools]` 管，声明时排在最后。 */
+const memory = ["memory_propose", "memory_search", "memory_read"];
 
 describe("可选工具 grep 和 ls", () => {
 	test("配置的 [tools] 打开后模型能用：在 agent 进程里执行，结果记进事件、交回模型；工具声明里排在默认工具之后", async () => {
@@ -150,7 +152,12 @@ describe("可选工具 grep 和 ls", () => {
 		});
 
 		expect(current.config().tools).toEqual([...defaults, "grep", "ls"]);
-		expect(toolNames(requests[0])).toEqual([...defaults, "grep", "ls"]);
+		expect(toolNames(requests[0])).toEqual([
+			...defaults,
+			"grep",
+			"ls",
+			...memory,
+		]);
 		expect(
 			log.events.flatMap((event) =>
 				event.type === "tool_call.started"
@@ -187,7 +194,7 @@ describe("可选工具 grep 和 ls", () => {
 			outcome: "completed",
 		});
 
-		expect(toolNames(requests[0])).toEqual(defaults);
+		expect(toolNames(requests[0])).toEqual([...defaults, ...memory]);
 		expect(
 			requests[2]?.messages.filter((message) => message.role === "tool_result"),
 		).toMatchObject([
@@ -221,9 +228,9 @@ describe("可选工具 grep 和 ls", () => {
 			ModelRequest,
 			ModelRequest,
 		];
-		expect(toolNames(first)).toEqual(defaults);
-		expect(toolNames(second)).toEqual([...defaults, "grep", "ls"]);
-		expect(toolNames(third)).toEqual([...defaults, "grep"]);
+		expect(toolNames(first)).toEqual([...defaults, ...memory]);
+		expect(toolNames(second)).toEqual([...defaults, "grep", "ls", ...memory]);
+		expect(toolNames(third)).toEqual([...defaults, "grep", ...memory]);
 		// 前缀不变：后一次请求以前一次请求的全部消息开头
 		expect(second.messages.slice(0, first.messages.length)).toEqual(
 			first.messages,

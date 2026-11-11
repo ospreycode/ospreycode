@@ -134,9 +134,16 @@ test("只换推理强度：模型不变，请求的推理强度变了", async ()
 	]);
 });
 
-test("换到上下文更小的模型后历史放不下：明确报错停止，不发出请求", async () => {
-	host = await startFakeHost({ config: { workspace }, model: () => done });
-	await host.start("x".repeat(20_000));
+test("换到上下文更小的模型后历史放不下：先让新模型把历史压缩成摘要，再接着做", async () => {
+	host = await startFakeHost({
+		config: { workspace },
+		model: (_request, index) =>
+			index === 1
+				? { content: [{ type: "text", text: "SUMMARY: nothing yet" }] }
+				: done,
+	});
+	// 按每 token 4 字节算也放不进新模型的 8,000 token，不用计数
+	await host.start("x".repeat(40_000));
 	await host.until(() => host?.ends.length === 1);
 	await host.channel.notify("config/update", {
 		model: { ...other, context_window: 8_000, max_output_tokens: 1_000 },
@@ -144,7 +151,19 @@ test("换到上下文更小的模型后历史放不下：明确报错停止，�
 	await host.start("again");
 	await host.until(() => host?.ends.length === 2);
 
-	expect(host.requests).toHaveLength(1);
-	expect(host.ends[1]?.outcome).toBe("failed");
-	expect(host.ends[1]?.error).toContain("上下文快到模型的上限了");
+	expect(host.failures).toEqual([]);
+	expect(host.ends[1]).toEqual({ outcome: "completed" });
+	const [, summarizing, after] = host.requests as ModelRequest[];
+	expect(host.requests).toHaveLength(3);
+	// 摘要请求用的是新模型，带着原来的历史
+	expect(summarizing?.model).toBe("other-model");
+	expect(JSON.stringify(summarizing?.messages)).toContain("xxxx");
+	expect(after?.messages.map((message) => message.role)).toEqual([
+		"system",
+		"user",
+		"user",
+		"user",
+	]);
+	expect(JSON.stringify(after?.messages)).not.toContain("xxxx");
+	expect(after?.messages.at(-1)?.content).toEqual(text("again"));
 });

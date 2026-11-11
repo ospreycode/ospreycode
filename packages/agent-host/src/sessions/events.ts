@@ -32,6 +32,10 @@ export interface TaskStarted {
 	source: TaskSource;
 	/** 开始这个 task 的输入：提及的路径还没有展开，展开后的内容在 `message.sent` 里。 */
 	input: InputContent[];
+	/** 放这次输入的那条 user 消息的编号：按事件脱敏靠它找到输入在消息里的那一份。压缩的 task 没有输入，不带。 */
+	message_id?: string;
+	/** `compact`：用户发起的上下文压缩（`/compact`），输入为空，这个 task 只压缩上下文。平常的 task 不带。 */
+	kind?: "compact";
 }
 
 /** `task.ended` 的内容。 */
@@ -91,6 +95,36 @@ export type ApprovalRequested =
 			/** 当前的上限和已用的量：美元、次数或毫秒。 */
 			max: number;
 			used: number;
+	  }
+	| {
+			request_id: string;
+			/**
+			 * 恢复中断的 session 时，只有开始、没有结果的工具调用：批准是重新执行（下一个 task 开始时
+			 * 用相同的参数重新登记），拒绝是跳过（结果记 `interrupted`）。
+			 */
+			kind: "resume_uncertain";
+			tool_call_id: string;
+			name: string;
+			/** 模型写出的参数原文。 */
+			arguments: string;
+			reasons: string[];
+	  }
+	| {
+			request_id: string;
+			/**
+			 * 要用的 skill 内容和基准不一样（仓库和插件的 skill 是确认时的内容，用户级的是 session
+			 * 开始时的内容）。批准只对这份内容和本任务有效，回答的 `scope` 只能是 `once`。
+			 */
+			kind: "extension_changed";
+			tool_call_id: string;
+			/** skill 的名字和目录。 */
+			skill: string;
+			directory: string;
+			/** `load` 是加载 skill 的内容，`script` 是 shell 命令要运行 skill 目录里的脚本。 */
+			action: "load" | "script";
+			/** `script` 时的命令原文。 */
+			command?: string;
+			reasons: string[];
 	  };
 
 /**
@@ -197,7 +231,8 @@ export type BackgroundEndReason =
 /** `background.ended` 的内容。 */
 export interface BackgroundEnded {
 	background_id: string;
-	reason: BackgroundEndReason;
+	/** `lost`：session 中断时还在运行，恢复时已经不在了；退出状态和输出的大小不知道。 */
+	reason: BackgroundEndReason | "lost";
 	exit_code: number | null;
 	signal: string | null;
 	output_bytes: number;
@@ -207,7 +242,10 @@ export interface BackgroundEnded {
 export interface BackgroundNotified {
 	/** 通知的编号；同一条监视命令还没交给模型的几批输出并成一条通知，编号相同。 */
 	notification_id: string;
-	/** 产生它的后台命令；不是哪一条后台命令产生的（归属不明的网络拒绝）为空。 */
+	/**
+	 * 产生它的后台命令；不是哪一条后台命令产生的为空：归属不明的网络拒绝，撤销改动之后告诉模型
+	 * 哪些文件还原了。
+	 */
 	background_id: string | null;
 	/** 交给模型的文字；监视的通知是这一批输出的行。 */
 	text: string;

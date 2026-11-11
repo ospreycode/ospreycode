@@ -13,6 +13,12 @@ export {
 	openaiResponsesRequestBody,
 	type RequestContext,
 } from "./adapters/openai-responses.js";
+export {
+	type CountOptions,
+	type CountTokens,
+	countTokens,
+	type TokenCount,
+} from "./client/count.js";
 export type { RawKey, RawPart, RawStore } from "./client/raw.js";
 export { parseSse, type SseEvent } from "./client/sse.js";
 export {

@@ -39,7 +39,7 @@ my-plugin/
 - 顶层只有 `$schema` 和 `mcpServers`，`mcpServers` 的键是 server 名，一个插件可以声明多个 server。Host 给插件里的 server 分配的标签是 `<插件名>_<server 名>`（见 agent-host 的[所有扩展共同遵守](agent-host.md#所有扩展共同遵守)）。
 - 每个 server 必须写 `type`（`stdio`、`streamable-http` 或 `sse`），有未知字段或其他类型的字段时跳过这个 server（§7.2.1）。`sse` 是规范列为可选支持的旧传输，MCP 规范已弃用，本项目不支持，遇到时跳过并显示原因。
 - stdio server 的 `command` 是单个可执行名或 `./` 开头的插件内路径，不展开占位符；`cwd` 只能落在插件目录或 `PLUGIN_DATA` 下；`args`、`env` 和 `cwd` 展开 `${PLUGIN_ROOT}`、`${PLUGIN_DATA}`。解析接口有一个"用户级配置"选项，开启时 `command` 另外允许写绝对路径，其余规则不变（用于用户级的 `mcp.json`，见 agent-host 的[插件之外的 `mcp.json`](agent-host.md#插件之外的-mcpjson)）。
-- 远程 server 的 `url` 不能带用户信息和片段，除 `localhost` 和环回地址外必须用 HTTPS；`url` 和 `headers` 里不展开任何占位符或环境变量；客户端为 HTTP、MCP 和授权生成的头优先于配置里的同名头；没有用户明确同意，不能把配置的头随重定向发到另一个源（§7.2.1）。最后一条由 Host 在连接远程 server 时处理：fetch 默认跟随重定向，跨源时只去掉少数几个头。
+- 远程 server 的 `url` 不能带用户信息和片段，除 `localhost` 和环回地址外必须用 HTTPS；`url` 和 `headers` 里不展开任何占位符或环境变量；客户端为 HTTP、MCP 和授权生成的头优先于配置里的同名头；没有用户明确同意，不能把配置的头随重定向发到另一个源（§7.2.1）。最后一条由 `mcp` 在连接远程 server 时处理：只跟随同源的重定向，server 把请求重定向到别的源时连接失败，配置的头和令牌到不了那里（fetch 默认跟随重定向，跨源时只去掉少数几个头）。
 - **环境**：插件 server 的基础环境由客户端决定（§9.1），和 Host 按白名单构造环境的做法一致。`env` 里不能有 `PLUGIN_ROOT`、`PLUGIN_DATA`，否则这个 server 无效；这两个变量最后由 Host 设置。`PLUGIN_DATA` 属于安装的插件实例，同一插件的所有 server 共用一个，Host 在启动 server 之前创建它。
 - 规范没有可移植的方式让插件的 MCP server 得知用户的工作区，默认工作目录是插件根目录（issue #40）。Host 给每个本地 server 设环境变量 `OSPREYCODE_WORKSPACE`（见 agent-host 的[插件之外的 `mcp.json`](agent-host.md#插件之外的-mcpjson)）。
 

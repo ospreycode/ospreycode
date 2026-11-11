@@ -16,3 +16,8 @@
   - `runCodingBenchmark` 用 Pier 0.3.1 把每道题运行若干次，每次两遍：先在不联网的任务容器里运行 agent、导出补丁，再把补丁打到干净的镜像上跑题目的测试。`pierCommands` 给出这两条命令。Pier 的适配在 `benchmarks/pier/osprey_pier.py`，它调用的 `benchmarks/pier/run-agent.sh` 在运行 agent 之前检查隐藏测试、上游修复的 commit、仓库里多余的引用和网络限制，任何一项没过都不运行 agent。
   - `readRun` 读入一次运行的结果（通过、不通过还是环境故障，用量、时间、按原因统计的被拒次数：内置 `forbidden`、危险命令判断、`prompt` 规则、越界申请、MCP 各一项，后四项取自被拒结果的 `categories`），`benchmarkReport`、`formatBenchmarkReport` 给出成功率（不含环境故障）、全部运行的费用和时间、超预算和环境故障的次数、各次运行的波动范围和实验条件。
   - `benchmarks/coding-rules.toml` 是编码能力评测用的权限规则文件，只放行 `rm`。
+- memory 对比实验（代码和脚本模型的测试；还没有做过完整的运行）：
+  - `runMemoryExperiment` 把每道题（`MemoryTask`：几个学习会话、一个检验会话、隐藏检查）在五个组里各运行若干次：无记忆、直接提供历史、只检索、完整 memory、等长无关记忆（`memoryGroups`）。各组用同一个模型、同样的权限（`danger-full-access`、`never`、`benchmarks/coding-rules.toml`）和上限。完整 memory 组的提取和确认、等长无关记忆组的添加，都在两个会话之间单独的 session 里做，用量计入这一组。
+  - 每次运行的结果（`MemoryTrial`）带各个会话的事件、用量和耗时，检验会话里重复的工具调用、重复读文件、重复的失败尝试和误用过期记忆的次数（`repeatCounters`），以及完整 memory 组没通过时归到的类（`classifyFailure`：没写入、没确认、没检索到、检索到但没用、误用过期记忆）。
+  - `memoryReport`、`formatMemoryReport`：各组的成功率，和无记忆组同一道题配对比较的差和以题为单位 bootstrap 的 95% 置信区间（`pairedDifference`，10,000 次，固定种子），按无记忆时的通过次数分层，没有记忆和已有记忆两种状态分开的开销，提取的 token、候选数、确认次数和索引 token，每道题各组通过的次数。每组不足 3 次时在报告里注明不能下结论。
+  - `memorySmokeTasks`：试跑用的两道题，只用来确认流程走得通。

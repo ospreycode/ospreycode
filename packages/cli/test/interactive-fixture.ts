@@ -33,6 +33,8 @@ export interface InteractiveArgs {
 	sandboxMode: string;
 	approvalPolicy?: InteractiveOptions["approvalPolicy"];
 	prompt?: string;
+	/** `ospreycode resume`：恢复这个工作区的一个 session，不新建。 */
+	resume?: InteractiveOptions["resume"];
 	/** Ctrl+V 读到的图片；不给时剪贴板里没有图片。 */
 	clipboardImage?: Uint8Array;
 	/** 除了 `fake` 之外也从测试的凭据文件取凭据的模型服务。 */
@@ -92,6 +94,7 @@ export function startInteractive(
 				? {}
 				: { approvalPolicy: args.approvalPolicy }),
 			...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+			...(args.resume === undefined ? {} : { resume: args.resume }),
 			context,
 		},
 		terminal,
@@ -131,7 +134,7 @@ export interface InteractiveFixture {
 	configure(options: ModelOptions): void;
 	/** 断开模型服务：挂着的请求随之失败。 */
 	dropModel(): Promise<void>;
-	/** 启动交互模式，等界面出来。不给沙盒模式时不启用系统隔离。 */
+	/** 启动交互模式，等界面出来（要选 session 时等列表出来）。不给沙盒模式时不启用系统隔离。 */
 	start(args?: Partial<InteractiveArgs>): Promise<InteractiveRun>;
 	/** 等交互模式自己退出，返回退出码。 */
 	exitCode(): Promise<number>;
@@ -212,7 +215,10 @@ export function interactiveFixture(): InteractiveFixture {
 			});
 			// session 没打开就失败时，报出来的是那个错误，不是等不到界面
 			await Promise.race([
-				run.terminal.waitFor("Osprey Code"),
+				run.terminal.waitFor(
+					// 从列表里选要恢复的 session 时，先出来的是列表，session 还没有打开
+					args.resume?.kind === "pick" ? "选择要恢复的 session" : "Osprey Code",
+				),
 				run.exit.then((code) => {
 					throw new Error(`界面还没出来交互模式就退出了，退出码 ${code}`);
 				}),

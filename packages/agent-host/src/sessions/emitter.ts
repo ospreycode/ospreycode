@@ -1,4 +1,8 @@
-import { contractsVersion, type RuntimeEvent } from "@ospreycode/agent-runtime";
+import {
+	type ContextCompacted,
+	contractsVersion,
+	type RuntimeEvent,
+} from "@ospreycode/agent-runtime";
 import type { RawPart } from "@ospreycode/api";
 import {
 	type ImageBlock,
@@ -6,13 +10,23 @@ import {
 	protocolVersion,
 } from "@ospreycode/api/protocol";
 import {
+	type EventRedaction,
+	eventRedactedType,
 	type Position,
+	type PositionMove,
+	positionMovedType,
 	type RunRecord,
 	runStartedType,
 	type StoredEvent,
 	storageVersion,
 } from "@ospreycode/session-store";
 import type { DiagnosticLog } from "../diagnostics/log.js";
+import type { ExtensionEvent } from "../extensions/events.js";
+import type {
+	MemoryExtractionEnded,
+	MemoryExtractionStarted,
+	MemoryUpdated,
+} from "../memory/events.js";
 import type { EventBase, HostEvent, Stored, TaskScope } from "../sdk/events.js";
 import {
 	type ApprovalPolicyChanged,
@@ -43,6 +57,7 @@ const versions: Record<TaskHostEvent["type"], number> = {
 	"run.started": storageVersion,
 	"task.ended": recordFormatVersion,
 	"message.completed": protocolVersion,
+	"context.compacted": contractsVersion,
 	"tool_call.started": contractsVersion,
 	"tool_call.completed": contractsVersion,
 	"approval.requested": recordFormatVersion,
@@ -57,6 +72,8 @@ const versions: Record<TaskHostEvent["type"], number> = {
 	"background.ended": recordFormatVersion,
 	"background.notification": recordFormatVersion,
 	"background.delivered": recordFormatVersion,
+	"memory.candidates": recordFormatVersion,
+	"memory.retrieved": recordFormatVersion,
 };
 
 /** `EventSink` 用到的依赖。 */
@@ -72,6 +89,8 @@ export interface EventSinkOptions {
 	scrub: (text: string) => string;
 	/** 错误和警告另写进诊断日志。 */
 	log: DiagnosticLog;
+	/** 恢复和分叉出的 session 开始时在会话树上的位置；新 session 不给。 */
+	position?: Position | null;
 }
 
 /**
@@ -87,6 +106,7 @@ export class EventSink {
 
 	constructor(options: EventSinkOptions) {
 		this.#options = options;
+		this.#position = options.position ?? null;
 	}
 
 	/** 会话树上的当前位置；还没有 task 时为空。重启 agent 进程时从这里重建发给模型的历史。 */
@@ -166,14 +186,15 @@ export class EventSink {
 		this.#options.listener({ ...stored, type: "run.started" });
 	}
 
-	/** 属于 run、会存储的事件。 */
+	/** 属于 run、会存储的事件。返回事件的编号：检查点按它引用用户输入的事件。 */
 	stored(
 		run: Run,
 		event: Without<
-			Exclude<TaskHostEvent, { type: "run.started" }>,
+			// `context.compacted` 存的内容比发给前端的多，走 `compacted`
+			Exclude<TaskHostEvent, { type: "run.started" | "context.compacted" }>,
 			keyof EventBase | keyof TaskScope | keyof Stored
 		>,
-	): void {
+	): string {
 		let data = event;
 		if (event.type === "task.ended" && event.error !== undefined) {
 			const error = this.#options.scrub(event.error);
@@ -203,11 +224,33 @@ export class EventSink {
 				: content,
 		);
 		this.#options.listener({ ...stored, ...data } as HostEvent);
+		return stored.event_id;
 	}
 
 	/** runtime 经通道上报的事件，Host 核实来源后写进 session 记录，不发给前端。 */
 	runtime(run: Run, event: RuntimeEvent): void {
 		this.#store(run, event.type, contractsVersion, event.data, "runtime");
+	}
+
+	/**
+	 * runtime 上报的上下文压缩：整条事件写进 session 记录，重建历史要用里面压缩后的整份上下文；
+	 * 发给前端的只带触发方式、压缩前的估算和摘要。
+	 */
+	compacted(run: Run, data: ContextCompacted): void {
+		const stored = this.#store(
+			run,
+			"context.compacted",
+			versions["context.compacted"],
+			data,
+			"runtime",
+		);
+		this.#options.listener({
+			...stored,
+			type: "context.compacted",
+			trigger: data.trigger,
+			tokens_before: data.tokens_before,
+			summary: data.summary,
+		});
 	}
 
 	/**
@@ -235,20 +278,70 @@ export class EventSink {
 	 * 会话树的路径，它的 `run.started` 只写进 session 记录。
 	 */
 	process(event: ProcessEvent): void {
-		if (this.#housekeeping === undefined) {
-			const runId = newId();
-			const run: RunRecord = {
-				run_id: runId,
-				task_id: null,
-				agent_id: null,
-				base: null,
-			};
-			this.#housekeeping = { runId, seq: 0 };
-			this.#storeHousekeeping(runStartedType, storageVersion, run);
-		}
+		this.#startHousekeeping();
 		const { type, ...data } = event;
 		const stored = this.#storeHousekeeping(type, recordFormatVersion, data);
 		this.#options.listener({ ...stored, ...event });
+	}
+
+	#startHousekeeping(): void {
+		if (this.#housekeeping !== undefined) return;
+		const runId = newId();
+		const run: RunRecord = {
+			run_id: runId,
+			task_id: null,
+			agent_id: null,
+			base: null,
+		};
+		this.#housekeeping = { runId, seq: 0 };
+		this.#storeHousekeeping(runStartedType, storageVersion, run);
+	}
+
+	/** session-store 定义的、属于 run 的事件（检查点和它的快照）：只写进 session 记录，不发给前端。 */
+	checkpoint(run: Run, type: string, data: unknown): void {
+		this.#store(run, type, storageVersion, data);
+	}
+
+	/**
+	 * 回退：把会话树上的当前位置移到 `to`，新的 run 接在它之后。和进程事件记在同一个 run 里，
+	 * 只写进 session 记录。
+	 */
+	moved(to: Position | null): void {
+		this.#startHousekeeping();
+		const move: PositionMove = { to };
+		this.#storeHousekeeping(positionMovedType, storageVersion, move);
+		this.#position = to;
+	}
+
+	/** session-store 定义的、不属于任何 task 的事件（分叉继承的检查点索引）：只写进 session 记录。 */
+	housekeeping(type: string, data: unknown): void {
+		this.#startHousekeeping();
+		this.#storeHousekeeping(type, storageVersion, data);
+	}
+
+	/**
+	 * 按事件脱敏的记录：和进程事件在同一个 run 里。这里只生成事件，不写入：它要和被覆盖的事件
+	 * 在同一个事务里写（`SessionWriter.redact`）。
+	 */
+	redaction(redaction: EventRedaction): StoredEvent {
+		this.#startHousekeeping();
+		const housekeeping = this.#housekeeping;
+		if (housekeeping === undefined) {
+			throw new Error("还没有开始记进程事件的 run");
+		}
+		housekeeping.seq += 1;
+		return {
+			...this.#base(),
+			run_id: housekeeping.runId,
+			event_id: newId(),
+			seq: housekeeping.seq,
+			source: "host",
+			task_id: null,
+			agent_id: null,
+			type: eventRedactedType,
+			version: storageVersion,
+			data: redaction,
+		};
 	}
 
 	/** 沙盒模式的切换：发生在两个 task 之间，和进程事件记在同一个 run 里。 */
@@ -279,17 +372,91 @@ export class EventSink {
 		});
 	}
 
+	/**
+	 * 扩展的事件（hooks 的运行、MCP server 的提问）：打开 session 时和两个 task 之间也会发生，
+	 * 和进程事件记在同一个 run 里。
+	 */
+	extension(event: ExtensionEvent): void {
+		this.#startHousekeeping();
+		const { type, ...data } = event;
+		const stored = this.#storeHousekeeping(type, recordFormatVersion, data);
+		this.#options.listener({ ...stored, ...event });
+	}
+
+	/** 用户改了一条记忆：可以发生在 task 进行中，和进程事件记在同一个 run 里。 */
+	memoryUpdated(change: MemoryUpdated): void {
+		const stored = this.#storeHousekeeping(
+			"memory.updated",
+			recordFormatVersion,
+			change,
+		);
+		this.#options.listener({ ...stored, type: "memory.updated", ...change });
+	}
+
+	/**
+	 * 开始一次后台的记忆提取：它自己一个不属于任何 task 的 run，不进入会话树的路径，`run.started`
+	 * 只写进 session 记录。返回的函数在提取结束时调用一次。
+	 */
+	extraction(
+		started: MemoryExtractionStarted,
+	): (ended: MemoryExtractionEnded) => void {
+		const run = { runId: newId(), seq: 0 };
+		const record: RunRecord = {
+			run_id: run.runId,
+			task_id: null,
+			agent_id: null,
+			base: null,
+		};
+		this.#storeDetached(run, runStartedType, storageVersion, record);
+		this.#options.listener({
+			...this.#storeDetached(
+				run,
+				"memory.extraction.started",
+				recordFormatVersion,
+				started,
+			),
+			type: "memory.extraction.started",
+			...started,
+		});
+		return (ended) => {
+			const data =
+				ended.error === undefined
+					? ended
+					: { ...ended, error: this.#options.scrub(ended.error) };
+			this.#options.listener({
+				...this.#storeDetached(
+					run,
+					"memory.extraction.ended",
+					recordFormatVersion,
+					data,
+				),
+				type: "memory.extraction.ended",
+				...data,
+			});
+		};
+	}
+
 	#storeHousekeeping(type: string, version: number, data: unknown) {
 		const housekeeping = this.#housekeeping;
 		if (housekeeping === undefined) {
 			throw new Error("还没有开始记进程事件的 run");
 		}
-		housekeeping.seq += 1;
+		return this.#storeDetached(housekeeping, type, version, data);
+	}
+
+	/** 在一个不属于任何 task 的 run 里记一个事件。 */
+	#storeDetached(
+		run: { runId: string; seq: number },
+		type: string,
+		version: number,
+		data: unknown,
+	) {
+		run.seq += 1;
 		const stored = {
 			...this.#base(),
-			run_id: housekeeping.runId,
+			run_id: run.runId,
 			event_id: newId(),
-			seq: housekeeping.seq,
+			seq: run.seq,
 		};
 		this.#options.record({
 			...stored,

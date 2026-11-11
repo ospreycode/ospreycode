@@ -15,11 +15,21 @@ import type { ModelInfo } from "../channel/protocol.js";
  */
 const bytesPerToken = 1.7;
 
+/**
+ * 判断是不是临界时用的乐观值：英文和代码通常在每 token 4 字节左右。按 1.7 要压缩、按它不用时，
+ * 才值得请 Host 用计数接口数一次。
+ */
+const optimisticBytesPerToken = 4;
+
 /** 会话里的图片长边不超过 2000 像素，读不出尺寸时按这个上限算。 */
 export const maxImageSide = 2000;
 
+function tokensOf(text: string, divisor: number): number {
+	return Math.ceil(Buffer.byteLength(text, "utf8") / divisor);
+}
+
 export function textTokens(text: string): number {
-	return Math.ceil(Buffer.byteLength(text, "utf8") / bytesPerToken);
+	return tokensOf(text, bytesPerToken);
 }
 
 interface Size {
@@ -120,12 +130,13 @@ function scale(size: Size, ratio: number): Size {
 function contentTokens(
 	protocol: ProtocolName,
 	content: readonly UserContent[],
+	divisor: number,
 ): number {
 	return content.reduce(
 		(total, block) =>
 			total +
 			(block.type === "text"
-				? textTokens(block.text)
+				? tokensOf(block.text, divisor)
 				: imageTokens(protocol, block)),
 		0,
 	);
@@ -135,40 +146,64 @@ function usageTokens(usage: Usage): number {
 	return usage.input + usage.output + usage.cache_read + usage.cache_write;
 }
 
-function blockTokens(block: AssistantContent): number {
+function blockTokens(block: AssistantContent, divisor: number): number {
 	switch (block.type) {
 		case "text":
 		case "reasoning":
-			return textTokens(block.text);
+			return tokensOf(block.text, divisor);
 		case "tool_call":
-			return textTokens(block.name + block.arguments);
+			return tokensOf(block.name + block.arguments, divisor);
 		case "fallback":
 			return 0;
 	}
 }
 
 /** 一条消息的估算；回复按它报告的输出 token 计（含推理），没有用量时按内容估算。 */
-function messageTokens(protocol: ProtocolName, message: Message): number {
+function messageTokens(
+	protocol: ProtocolName,
+	message: Message,
+	divisor: number,
+): number {
 	if (message.role !== "assistant") {
-		return contentTokens(protocol, message.content);
+		return contentTokens(protocol, message.content, divisor);
 	}
 	if (message.usage.output > 0) return message.usage.output;
 	return message.content.reduce(
-		(total, block) => total + blockTokens(block),
+		(total, block) => total + blockTokens(block, divisor),
 		0,
 	);
 }
 
+/** Host 用模型服务的计数接口数出来的上下文长度，之后的估算拿它当锚点。 */
+export interface CountedContext {
+	/** 数到哪条消息为止（含这一条，也含工具声明）。 */
+	message_id: string;
+	/** 是给哪个模型数的：换了模型就不能用。 */
+	model: string;
+	tokens: number;
+}
+
+/** 估算上下文时的选项。 */
+export interface EstimateOptions {
+	/** Host 数过的长度；它数到的消息比最后一条能当锚点的回复更靠后时用它。 */
+	counted?: CountedContext;
+	/** 锚点之后的文字按每 token 4 字节估算，不按 1.7：判断是不是临界时用。 */
+	optimistic?: boolean;
+}
+
 /**
  * 这次请求的上下文估算：以最后一条由当前模型正常结束的回复报告的用量为锚点，加上之后新增内容的估算；
- * 没有锚点时估算全部内容，工具声明也算进去。
+ * Host 数过更靠后的位置时以它为锚点。没有锚点时估算全部内容，工具声明也算进去。
  */
 export function estimateContext(
 	model: ModelInfo,
 	messages: readonly Message[],
 	tools: readonly ToolDeclaration[],
+	options: EstimateOptions = {},
 ): number {
-	const anchor = messages.findLastIndex(
+	const divisor = options.optimistic ? optimisticBytesPerToken : bytesPerToken;
+	const { counted } = options;
+	const reply = messages.findLastIndex(
 		(message) =>
 			message.role === "assistant" &&
 			message.requested_model === model.id &&
@@ -176,16 +211,27 @@ export function estimateContext(
 			message.stop_reason !== "cancelled" &&
 			usageTokens(message.usage) > 0,
 	);
+	const count =
+		counted?.model === model.id
+			? messages.findLastIndex(
+					(message) => message.message_id === counted.message_id,
+				)
+			: -1;
+	const anchor = Math.max(reply, count);
 	const after = messages
 		.slice(anchor + 1)
 		.reduce(
-			(total, message) => total + messageTokens(model.protocol, message),
+			(total, message) =>
+				total + messageTokens(model.protocol, message, divisor),
 			0,
 		);
+	if (counted !== undefined && count !== -1 && count === anchor) {
+		return counted.tokens + after;
+	}
 	const head = messages[anchor];
 	return head?.role === "assistant"
 		? usageTokens(head.usage) + after
-		: textTokens(JSON.stringify(tools)) + after;
+		: tokensOf(JSON.stringify(tools), divisor) + after;
 }
 
 /** 输入的容量：上下文长度，模型另有输入上限时取较小的那个。 */
@@ -196,7 +242,7 @@ export function inputCapacity(model: ModelInfo): number {
 	);
 }
 
-/** 估算超过容量的这个比例就要压缩（P1 报错停止）；`openai.chat` 的兼容服务没有计数接口，留得更多。 */
+/** 估算超过容量的这个比例就要压缩；`openai.chat` 的兼容服务没有计数接口，留得更多。 */
 export function contextThreshold(model: ModelInfo): number {
 	return model.protocol === "openai.chat" ? 0.85 : 0.9;
 }

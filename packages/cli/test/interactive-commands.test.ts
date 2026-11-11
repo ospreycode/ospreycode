@@ -4,7 +4,11 @@ import { createHost } from "@ospreycode/agent-host";
 import { describe, expect, test } from "vitest";
 import { cycle, usableModels } from "../src/interactive/models.js";
 import { shellCallReply, textReply } from "./harness.js";
-import { interactiveFixture, requestedModel } from "./interactive-fixture.js";
+import {
+	interactiveFixture,
+	lastUserMessage,
+	requestedModel,
+} from "./interactive-fixture.js";
 import { key } from "./interactive-terminal.js";
 
 const fixture = interactiveFixture();
@@ -22,7 +26,7 @@ describe("会话内命令", () => {
 		await fixture.useModel(() => textReply("好"));
 		const { terminal } = await fixture.start();
 		await terminal.type("/");
-		await terminal.waitForVisible("(1/8)");
+		await terminal.waitForVisible("(1/17)");
 		// 列表一次显示五条
 		for (const name of ["sandbox", "approval", "model", "effort", "bg"]) {
 			expect(terminal.visible()).toMatch(
@@ -274,6 +278,51 @@ max_output_tokens = 4000
 		await terminal.type("/cache-clear");
 		await terminal.press(key.enter);
 		await terminal.waitFor("已清空这个项目的构建缓存");
+	});
+
+	test("/compact 压缩上下文：对话区显示压缩完成，下一次模型请求从摘要接着做", async () => {
+		const server = await fixture.useModel((call, request) =>
+			textReply(
+				lastUserMessage(request).startsWith("<compaction_request>")
+					? "这是摘要"
+					: `第 ${call} 次回复`,
+			),
+		);
+		const { terminal } = await fixture.start();
+		await terminal.type("最初的问题");
+		await terminal.press(key.enter);
+		await terminal.waitFor("第 0 次回复");
+		await terminal.waitFor("完成");
+
+		await terminal.type("/compact");
+		await terminal.press(key.enter);
+		await terminal.waitFor("正在压缩上下文");
+		await terminal.waitFor(/上下文已压缩（压缩前约 \d+ token）/);
+
+		await terminal.type("继续");
+		await terminal.press(key.enter);
+		await terminal.waitFor("第 2 次回复");
+		const after = JSON.stringify(server.requests[2]);
+		expect(after).toContain("这是摘要");
+		expect(after).not.toContain("最初的问题");
+		expect(lastUserMessage(server.requests[2])).toContain("继续");
+	});
+
+	test("/compact 只在空闲时可用：任务运行时原因显示在对话区；还没有模型的回复时说明没有可压缩的内容", async () => {
+		const server = await fixture.useModel(() => "hang");
+		const { terminal } = await fixture.start();
+		await terminal.type("/compact");
+		await terminal.press(key.enter);
+		await terminal.waitFor("没有可压缩的内容");
+		expect(server.requests).toHaveLength(0);
+
+		await terminal.type("你好");
+		await terminal.press(key.enter);
+		await expect.poll(() => server.requests.length).toBe(1);
+		await terminal.type("/compact");
+		await terminal.press(key.enter);
+		await terminal.waitFor("只能在 session 空闲时压缩上下文");
+		expect(server.requests).toHaveLength(1);
 	});
 
 	test("命令失败时原因显示在对话区，session 继续", async () => {

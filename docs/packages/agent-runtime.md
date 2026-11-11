@@ -32,15 +32,15 @@ agent-runtime/
 |---|---|---|---|
 | `initialize` | runtime → Host，请求 | 带 `agent-runtime` 的包版本；响应是启动配置（见[从 Host 得到的配置](#从-host-得到的配置)） | P0 |
 | `config/update` | Host → runtime，通知 | 配置的变化：模型和推理强度、审批策略、工具的增减（含 MCP 工具）、启用的 skills、重新加载的规则文件 | P0 |
-| `task/start` | Host → runtime，通知 | 开始新的 task，带输入（`InputContent[]`：文字、`@` 提及的路径和附带图片的引用，提及和图片由 runtime 展开，见[上下文](#上下文)）；用户输入、follow-up 和后台通知开始的 task 都由 Host 发起。`kind: "compact"` 表示用户发起的压缩（P3） | P0 |
+| `task/start` | Host → runtime，通知 | 开始新的 task，带输入（`InputContent[]`：文字、`@` 提及的路径和附带图片的引用，提及和图片由 runtime 展开，见[上下文](#上下文)）；用户输入、follow-up 和后台通知开始的 task 都由 Host 发起。`message_id` 是 Host 给放这次输入的那条 user 消息分配的编号，runtime 照用：Host 把它记在 `task.started` 里，按事件脱敏靠它找到输入在消息里的那一份。`kind: "compact"` 表示用户发起的压缩，输入为空、不带 `message_id`：runtime 只压缩上下文，不请求模型做别的，压缩完报告 task 结束 | P0 |
 | `task/end` | runtime → Host，请求 | 报告 task 结束；Host 还有待插入的输入时回复继续，runtime 取出后接着请求模型 | P0 |
 | `run/cancel` | Host → runtime，请求 | 中断当前 run（见 agent-host 的 [task 的开始、结束和取消](agent-host.md#task-的开始结束和取消)） | P0 |
 | `status` | Host → runtime，请求 | 查询 runtime 当前在做什么：等待模型、执行哪些工具调用、空闲 | P0 |
 | `model/request` | runtime → Host，流式请求 | 内部协议的模型请求，消息里的图片只带引用（见[消息格式](#消息格式)）；流式事件以 `model/event` 通知返回，最终响应是这次回复，带停止原因和用量，模型出错时另带错误类别（见 api 的[在系统中的位置](api.md#在系统中的位置)） | P0 |
-| `model/count_tokens` | runtime → Host，请求 | token 计数（见 api 的 [token 计数](api.md#token-计数)） | P3 |
+| `model/count_tokens` | runtime → Host，请求 | token 计数（见 api 的 [token 计数](api.md#token-计数)）：`{request}` 和 `model/request` 的 `request` 相同，图片同样只带引用；响应是 `{input_tokens}`，计数接口出错时是 `{error}`（和模型请求相同的错误类别）。用 `openai.chat` 的模型没有计数接口，对它请求按协议错误处理 | P3 |
 | `tool_call/run` | runtime → Host，流式请求 | Host 代为执行的工具：shell（含后台命令的启动、查询、写入和停止）、MCP 工具、越界动作。编辑工具的目标在可写范围之外时带上 `file_edits`（runtime 组装好的文件改动申请）。第一条通知 `tool_call/started` 带 Host 分配的 `tool_call_id`，随后是输出通知 `tool_call/output`，最终响应是结果；Permission 的判断和询问都在其中完成 | P0 |
 | `tool_call/register` | runtime → Host，请求 | 登记 runtime 一侧执行的工具调用（文件工具、`skill_load`、`memory_*`），返回 `tool_call_id` 和决定；`skill_load`、`memory_*` 登记后再用下面的 `skill/load`、`memory/*` 取内容 | P0 |
-| `tool_call/complete` | runtime → Host，请求 | 提交用 `tool_call/register` 登记的调用的结果 | P0 |
+| `tool_call/complete` | runtime → Host，请求 | 提交用 `tool_call/register` 登记的调用的结果。工具调用前后的 hooks 补充了信息时，响应带 `result`，runtime 把它当作这次调用的结果交给模型；没有时用自己提交的那份 | P0 |
 | `input/available` | Host → runtime，通知 | 有 steering 或后台命令的通知等待插入 | P1 |
 | `input/take` | runtime → Host，请求 | 在插入时机取出待插入的 steering 和通知（见[运行中的用户输入](#运行中的用户输入)） | P1 |
 | `record/append` | runtime → Host，通知 | 上报 runtime 自己的事件（作废的块、已告诉模型的系统指令和规则文件、输入插入的位置、上下文压缩） | P0 |
@@ -48,9 +48,9 @@ agent-runtime/
 | `blob/read` | runtime → Host，请求 | 按引用读取大内容：`{sha256, offset}`，返回一页内容的 base64（一页 4 MiB，`next_offset` 是下一页的起点）；只能读这个 session 引用过的，别的按协议错误处理。用户附带的图片用它取原始字节 | P1 |
 | `image/put` | runtime → Host，请求 | 交一张 Host 还没收到过的图片（`{image}`，内部协议的图片块），之后的消息里按它的 SHA-256 引用（见[消息格式](#消息格式)）；不需要进行中的 task | P1 |
 | `image/read` | runtime → Host，请求 | 按 SHA-256 取一张 Host 收到过的图片（`{sha256}`），重建历史时用；没收到过的按协议错误处理 | P1 |
-| `hooks/run` | runtime → Host，请求 | 运行"上下文压缩前"和"任务结束时"的 hooks，等回复后再继续（见 agent-host 的 [Hooks](agent-host.md#hooks)） | P2 |
-| `skill/load` | runtime → Host，请求 | 读取 skill 的完整内容，Host 核对内容哈希后返回 | P2 |
-| `memory/search`、`memory/read`、`memory/propose` | runtime → Host，请求 | 检索、读取和提议记忆（见 [memory](memory.md)） | P3 |
+| `hooks/run` | runtime → Host，请求 | 运行"上下文压缩前"和"任务结束时"的 hooks，等回复后再继续（见 agent-host 的 [Hooks](agent-host.md#hooks)）。`Stop` 带模型最后一条回复的文字和这个 task 里已经接着做了几轮；两种都带 `message_id`：hooks 的原因（`Stop`）或补充的信息（`PreCompact`）交给模型时 runtime 放它的那条 user 消息的编号，Host 记进 `hooks.ran`，按事件脱敏靠它对上两份。响应是 `{blocked, reason, additional_context}`。`Stop` 被 block 时 runtime 把原因作为一条标明来源的 user 消息接在历史后面，再请求模型，一个 task 里最多 8 轮；run 已经取消时不再接着做 | P2 |
+| `skill/load` | runtime → Host，请求 | 读取 skill 的完整内容，Host 核对内容哈希后返回：`{loaded: true, content}`（正文已经包上名字和目录），没有这个 skill 或内容没有获准时是 `{loaded: false, reason}`，原因作为工具结果交给模型 | P2 |
+| `memory/search`、`memory/read`、`memory/propose` | runtime → Host，请求 | 检索、读取和提议记忆（见 [memory](memory.md)）。`memory_search` 和 `memory_read` 发出的 `memory/search`、`memory/read` 带着那次工具调用的 `tool_call_id`，Host 记进 `memory.retrieved`，按事件脱敏时查询随调用的参数一起覆盖；自动注入的检索没有工具调用，不带 | P3 |
 | `subagent/start`、`subagent/send`、`subagent/stop` | runtime → Host，请求 | 启动子 agent、发送输入、停止（见[子 agent](#子-agent)） | P5 |
 | `subagent/ended` | Host → runtime，通知 | 子 agent 结束 | P5 |
 | `cancel` | 双向，通知 | 取消对方的某个请求 | P0 |
@@ -88,6 +88,8 @@ runtime 在沙盒里读不到用户级配置，启用哪些扩展也由 Host 决
 - 当前日期和操作系统，放进会话开始的上下文消息。
 - 启用的 skills：名称和说明，以及附带的脚本和文件在沙盒里可以读取的位置。
 - 启用的 MCP 工具：名称带 Host 分配的标签前缀，声明由 Host 给出（见 agent-host 的[所有扩展共同遵守](agent-host.md#所有扩展共同遵守)）。
+- `stop_hooks`：这个 session 配了 `Stop` hooks 时为真，模型给出最终回复后才经 `hooks/run` 请求；没配时省一次往返。
+- `pre_compact_hooks`：这个 session 配了 `PreCompact` hooks 时为真，runtime 压缩上下文之前才经 `hooks/run` 请求；没配时省一次往返。
 - 生效记忆的索引（P3，不超过 2,500 token，见 memory 的[检索](memory.md#检索)）；评测用的记忆选项（写入策略、记忆注入方式），只能由 Host SDK 的调用方在创建 session 时传入，CLI 和配置文件都不能设置（见 memory 的[评测](memory.md#评测)）。
 
 每个 run 的费用、请求次数和时间上限不交给 runtime，只由 Host 执行（见 agent-host 的[预算](agent-host.md#预算)）。
@@ -149,7 +151,7 @@ runtime 在沙盒里读不到用户级配置，启用哪些扩展也由 Host 决
 重试只在 loop 里做，按 `api` 给出的错误类别决定：
 
 - 限流和服务过载最多重试 3 次：有 `retry-after` 时按它等待，否则依次等 1、2、4 秒，每次重试都计入请求次数。额度不足、无权限、请求格式错误不重试。
-- 上下文超长：P1 报错停止，P3 起先压缩再重试一次。
+- 上下文超长（错误类别 `context_overflow`，或停止原因 `context_window_exceeded`）：先压缩再重试一次，重试仍然超长就以 `failed` 结束（见 api 的[上下文压缩](api.md#上下文压缩)）。
 - 推理内容前缀不符：按 api 的作废流程重试一次（见 api 的[前缀校验失败](api.md#前缀校验失败)）。
 - 流中途出错：已收到的部分记入会话并作废，再按错误类别决定是否重发。
 - `api` 不重试。Host 的模型代理只有一个例外：凭据来自文件、服务返回 401 时重新读取文件，值变了重发一次，计入请求次数。
@@ -189,13 +191,20 @@ task 运行时，用户的输入分两种：steering 并入当前 task；follow-
 ## 上下文
 
 - 发给模型的历史只追加、不改写（见 api 的[转换规则](api.md#转换规则)）。系统指令、工具声明，以及放规则文件、skills 列表和记忆索引的上下文消息在会话开始时确定，放在最前面；之后的变化，包括检索到的记忆、hooks 补充的信息、后台通知、沙盒模式和审批策略的切换、工具集和系统指令的变更，都以追加的方式加入。工具声明也计入长度预算。
-- P1 上下文超长时明确报错停止。P3 起上下文接近上限时压缩（见 api 的[上下文压缩](api.md#上下文压缩)）：生成摘要并作为事件保存，原始记录保留，已加载的 skill 内容保留。压缩后系统指令、顶层的工具声明和会话开始的上下文消息都按当时的状态重新生成，中途追加的工具增减、规则文件的替换说明和记忆更新被摘要掉后不会丢失。压缩不了时明确报错停止，不悄悄截断。
-- 用户也可以在 session 空闲时用 `/compact` 压缩，这时 Host 开始一个 `kind: "compact"` 的 task（见 agent-host 的[会话内命令](agent-host.md#会话内命令)）。
+- 上下文接近上限时压缩（见 api 的[上下文压缩](api.md#上下文压缩)）：生成摘要并作为事件保存，原始记录保留，已加载的 skill 内容保留。压缩后系统指令、顶层的工具声明和会话开始的上下文消息都按当时的状态重新生成，中途追加的工具增减、规则文件的替换说明和记忆更新被摘要掉后不会丢失。压缩不了时明确报错停止，不悄悄截断。
+  - **时机**：每次模型请求之前、取走待插入的输入之后检查长度，这时上一轮的工具调用都已经有结果，不会压在一轮工具调用的中间。压缩完回到取输入那一步，压缩期间到的 steering 在这时插入，接在摘要后面。
+  - **`PreCompact` hooks**：配置里 `pre_compact_hooks` 为真时，压缩前经 `hooks/run` 运行（`trigger` 为 `auto` 或 `manual`）。被阻止时这次不压缩：自动压缩时 task 以 `failed` 结束并带上 hook 给的原因（上下文已经放不下，不压缩就没法继续），`/compact` 同样以 `failed` 结束。hooks 补充的信息作为摘要请求里单独的一块交给模型。
+  - **压缩事件** `context.compacted`（`contracts/events.ts`，经 `record/append` 上报）带 `trigger`、压缩前的估算 `tokens_before`、摘要 `summary`、压缩后的上下文 `messages`（重新生成的系统指令和上下文消息、摘要消息，有已加载的 skill 时再加一条，都带消息编号）、已加载的 skill `loaded_skills`（名字和 `skill_load` 当时返回的内容，再次压缩时还要用）和已告诉模型的内容 `instructions`（和 `instructions.recorded` 的格式相同；压缩后的第一次模型请求之前照常再记一条 `instructions.recorded`）。不再启用的 skill 不带过去：skills 列表里已经没有它。压缩后的上下文整份写进事件：系统指令和上下文消息是按压缩时的配置、规则文件和记忆索引渲染的，重启后重新渲染得不到逐字节相同的内容；写进同一个事件，压缩完还没发出下一次模型请求就退出的进程也能从它重建。
+  - 取下的新输入不写进事件：它们随压缩后的第一次模型请求由 Host 记成 `message.sent`。压缩之后、这次请求之前进程退出时，这个 task 的输入不在重建出的历史里；task 这时以 `failed` 结束，用户重新发送。
+  - 压缩之后计数的锚点作废，作废的块清空（它们都在被摘要掉的历史里）。
+- 用户也可以在 session 空闲时用 `/compact` 压缩，这时 Host 开始一个 `kind: "compact"` 的 task（见 agent-host 的[会话内命令](agent-host.md#会话内命令)）；上下文里还没有模型的回复时以 `failed` 结束，说明没有可压缩的内容。
 - 重启和恢复时除了 session 记录里的事件还需要哪些执行状态、怎样重建，由 runtime 定义，起点是配置里的 `resume`；session-store 负责存取。
-- **重建历史**（`context/resume.ts`）：握手拿到 `resume` 后、接收 task 之前，用 `record/read` 读出路径上的 `message.sent`、`message.completed`、`blocks.invalidated`、`tool_call.started`、`tool_call.completed` 和 `instructions.recorded`，按路径上的先后放回历史，消息编号不变。
-  - Host 记下的 `message.sent`（发给过模型的 system、user 和工具结果消息，见 agent-host 的 [agent 进程的重启](agent-host.md#agent-进程的重启)）原样放回。模型的回复里，被取消的和出错时什么都没收到的不放回，流中途出错的放回并整条作废，和 loop 运行时的处理相同。
-  - 最后一条回复的工具调用还没有把结果发给模型时（上一个进程在这之前结束了）补上结果：登记过的调用取 Host 记下的结果，没来得及登记的记成取消，作废的调用不补。Host 结束 run 时已经给登记过的调用补了结果，所以登记过却没有结果说明记录有缺陷，报错停止。
+- **重建历史**（`context/resume.ts`）：握手拿到 `resume` 后、接收 task 之前，用 `record/read` 读出路径上的 `message.sent`、`message.completed`、`blocks.invalidated`、`tool_call.started`、`tool_call.completed`、`instructions.recorded` 和 `context.compacted`，按路径上的先后放回历史，消息编号不变。
+  - 路径上有 `context.compacted` 时从最近的一条开始：历史换成事件里的 `messages`，作废的块清空，已告诉模型的内容取事件里的 `instructions`，只放回它之后的事件。事件里的消息之后随模型请求再记成 `message.sent`，编号相同的不重复放回。已加载的 skill 取事件里的 `loaded_skills`，加上它之后成功的 `skill_load` 调用。
+  - Host 记下的 `message.sent`（发给过模型的 system、user 和工具结果消息，见 agent-host 的 [agent 进程的重启](agent-host.md#agent-进程的重启)）原样放回。模型的回复里，被取消的、出错时什么都没收到的和撞上上下文窗口被截断的（`context_window_exceeded`）不放回，流中途出错的放回并整条作废，和 loop 运行时的处理相同。
+  - 最后一条回复的工具调用还没有把结果发给模型时（上一个进程在这之前结束了），作废的调用不管，其余的分两种情况。登记过的调用都有结果：是 agent 进程被结束，Host 结束 run 时已经给登记过的调用补了结果，这里取 Host 记下的结果，没来得及登记的记成取消。有登记过却没有结果的调用：是 Host 被中断、恢复时留下来要重新执行的，这一轮在下一个 task 开始时做完（见 agent-host 的[中断后的恢复](agent-host.md#中断后的恢复)）。
   - 已经告诉模型的系统指令段落和规则文件取最后一条 `instructions.recorded`，loop 拿当前的和它比较，只追加变化（见下文的系统指令）。路径上没有发给过模型的消息时按新会话开始。读取记录不重建，重启后清空（见[工具执行](#工具执行)）。
+  - 路径上有被脱敏覆盖的事件时（带 Host 定义的可选标记 `redacted: true`，结构不变、内容是占位，见 agent-host 的[按事件脱敏](agent-host.md#按事件脱敏)；runtime 信任 Host 给的事件，只读这个标记）：从它起，回复里的推理块都作废，它们是对着原来的历史生成的，模型服务核对不上。被覆盖的 `context.compacted` 是一次作废的压缩，摘要是照着被覆盖的内容写的：历史不换成它的 `messages`，接着用压缩之前累积的历史，要摘要的那条消息和摘要的回复去掉，它的 `messages` 之后随请求记的副本照样不放回；它的 `instructions` 和 `loaded_skills` 不取，之后到下一次有效的压缩为止的 `instructions.recorded` 也不取（都建立在它那一份上，恢复后变化的补丁可能再追加一次，但不会漏）；它之后的回复不当估算上下文的锚点（用量是对着压缩后的上下文数的），历史超过阈值时 loop 在下一次请求前照常重新压缩。被覆盖的 `skill_load` 调用不算已加载。
 - **展开提及**（`context/mentions.ts`）：`task/start` 和 `input/take` 给的输入里 `@` 提及的路径，在这条输入作为 user 消息进入历史时读取，这时 task 已经可以取消。读取用 `read` 工具的同一实现和同一份读取记录，格式见 agent-host 的[提及文件和附件](agent-host.md#提及文件和附件)。
 - **附带的图片**在同一时机展开：输入里是 `{type: "image_ref", sha256, bytes}`，runtime 用 `blob/read` 取来原始字节，交给 `context/image.ts` 的 `scaleImage` 变成图片块；`read` 读到的图片也用它。在上限内的图片原样使用、不重新编码，只解码一次确认没有坏（文件头对、内容坏掉的图片发给模型后，带着它的每次请求都会被拒绝）；超过的解码后缩小，JPEG 先按 EXIF 方向转正（重新编码会丢掉方向），先编码成 PNG，放不进字节上限再用 JPEG（质量 85、70、55、40）并逐级缩小，照 pi 的 image-resize。不是 PNG、JPEG、GIF、WebP，解不开，或像素数超过 1.28 亿（解码后每像素 4 字节，WASM 的内存只有 4 GB）时，在原位置用一行文字写明原因。上限的取值见 agent-host 的[提及文件和附件](agent-host.md#提及文件和附件)。
 - 项目规则文件和各类扩展按 agent-host 的[扩展的管理和信任](agent-host.md#扩展的管理和信任)接入，不能扩大权限。

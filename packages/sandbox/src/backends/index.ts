@@ -11,6 +11,7 @@ export {
 export {
 	type FilesystemRules,
 	type HelperScope,
+	type MaskedEnv,
 	runtimeConfig,
 	type SandboxFilesystem,
 	type SandboxPolicy,

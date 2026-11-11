@@ -126,7 +126,7 @@ const report = benchmarkReport(
 		approvalPolicy: "never",
 		rules: readFileSync(codingRulesFile, "utf8"),
 		limits,
-		memory: "没有启用",
+		memory: "每道题从空的记忆库开始",
 		os: "任务镜像（linux/amd64）",
 	},
 	manifest.tasks.filter((task) => task.split === split),
@@ -134,6 +134,75 @@ const report = benchmarkReport(
 	trials,
 );
 console.log(formatBenchmarkReport(report));
+```
+
+## Memory 对比实验
+
+比较五个组：无记忆、直接提供历史、只检索、完整 memory、等长无关记忆。各组的做法和统计方法见设计文档的"Memory 评测"。代码和脚本模型的测试已经有了，完整的运行（每组至少 3 次、完整的场景集）还没有做过。
+
+- 一道题是一个 `MemoryTask`：准备工作区的 `setup`，几个学习会话的输入 `learn`，可选的 `change`（学习之后改动工作区，比如让学到的做法过期），检验会话的输入 `probe` 和隐藏检查 `check`，以及把失败归类用的 `evidence`（这段文字里有没有解题要用的信息）和 `staleUses`（误用过期记忆的次数）。每个会话是一个新的 session，同一道题的会话共用一个临时 HOME 和工作区。
+- `runMemoryExperiment(tasks, environment, { runs, timeoutMs })` 把每道题在五个组里各运行 `runs` 次，一个接一个地运行，返回每次运行的 `MemoryTrial`。`environment` 和 `runScenario` 的相同；权限固定为 `danger-full-access`、`never` 和 `benchmarks/coding-rules.toml`。
+- `memoryReport(conditions, trials)`、`formatMemoryReport` 汇总成报告：成功率、和无记忆组配对比较的差和 bootstrap 置信区间、按无记忆时的通过次数分层、检验会话里的重复劳动、两种状态分开的开销、完整 memory 组的提取和索引开销以及失败归类。每个模型一份报告；每组不足 3 次时报告里注明不能下结论。
+- `memorySmokeTasks` 是试跑用的两道题，只用来确认流程走得通。
+
+下面的脚本用真实模型把试跑的两道题各运行 3 次并打印报告（约 70 个 session）。模型的密钥放在只对当前用户可读写的文件里，路径经 `EVAL_KEY_FILE` 给出。
+
+```ts
+import { readFileSync } from "node:fs";
+import { release } from "node:os";
+import { builtinModels, type ModelEntry } from "@ospreycode/api";
+import {
+	codingRulesFile,
+	formatMemoryReport,
+	memoryReport,
+	memorySmokeTasks,
+	runMemoryExperiment,
+} from "@ospreycode/evaluation";
+
+const keyFile = process.env.EVAL_KEY_FILE;
+if (keyFile === undefined) throw new Error("要给出 EVAL_KEY_FILE");
+const model = builtinModels.find(
+	(entry) => entry.id === "claude-haiku-5-5",
+) as ModelEntry;
+const budget = { maxCostUsd: 0.5, maxRequests: 40, maxDurationMs: null };
+const timeoutMs = 300_000;
+
+const trials = await runMemoryExperiment(
+	memorySmokeTasks,
+	{
+		model,
+		reasoningEffort: "off",
+		credential: { file: keyFile },
+		budget,
+		denyRead: [],
+		env: { PATH: process.env.PATH },
+	},
+	{ runs: 3, timeoutMs },
+);
+console.log(
+	formatMemoryReport(
+		memoryReport(
+			{
+				model: model.id,
+				protocol: model.protocol,
+				reasoningEffort: "off",
+				commit: "被测的 commit",
+				version: "0.1.0",
+				os: `${process.platform} ${release()}`,
+				rules: readFileSync(codingRulesFile, "utf8"),
+				budget,
+				timeoutMs,
+			},
+			trials,
+		),
+	),
+);
+```
+
+脚本模型的测试覆盖五个组的流程、统计和报告；带 `model` 标签的 `test/memory-experiment.model.test.ts` 用真实模型把一道题在五个组里各运行一次：
+
+```sh
+npx vitest run packages/evaluation/test/memory-experiment.test.ts packages/evaluation/test/memory-report.test.ts
 ```
 
 ## 运行环境

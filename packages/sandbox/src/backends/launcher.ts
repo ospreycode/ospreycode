@@ -86,6 +86,8 @@ export interface SandboxHelperOptions {
 	env: Record<string, string>;
 	/** 这个辅助进程生成的沙盒共用、只能按进程设置的部分。 */
 	scope: HelperScope;
+	/** `scope.maskedEnv` 里各个环境变量的真实值：只交给辅助进程的代理，不进沙盒，也不能出现在 `env` 里。 */
+	secrets?: Record<string, string>;
 	/**
 	 * 沙盒里的程序连接名单之外的域名时调用，连接挂起到它返回为止。只在 `scope.network` 给出时有用；
 	 * 不给时名单之外的域名全部拒绝。
@@ -225,6 +227,7 @@ export async function startSandboxHelper(
 			params: {
 				config: runtimeConfig(options.scope),
 				ask: options.scope.network !== undefined && options.ask !== undefined,
+				...(options.secrets === undefined ? {} : { secrets: options.secrets }),
 			},
 		});
 		children = result.children ?? [];
