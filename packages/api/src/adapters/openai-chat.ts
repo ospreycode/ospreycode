@@ -592,13 +592,13 @@ export function streamOpenAIChat(
 	options: StreamOptions,
 ): AsyncGenerator<StreamEvent> {
 	return runStream(
+		entry,
 		options,
 		{
 			url: `${entry.base_url}/chat/completions`,
 			headers: {
 				"content-type": "application/json",
 				accept: "text/event-stream",
-				authorization: `Bearer ${options.apiKey}`,
 			},
 			body: openaiChatRequestBody(entry, request, options),
 		},

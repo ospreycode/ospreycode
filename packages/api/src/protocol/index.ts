@@ -2,9 +2,11 @@ export type { ErrorCategory, ModelErrorInfo } from "./errors.js";
 export type {
 	AssistantContent,
 	AssistantMessage,
+	Citations,
 	FallbackBlock,
 	ImageBlock,
 	Message,
+	OpaqueBlock,
 	Origin,
 	ProtocolName,
 	ReasoningBlock,

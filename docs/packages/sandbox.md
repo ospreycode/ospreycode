@@ -421,7 +421,16 @@ sandbox-runtime 的 `credentials` 设置有一种 mask 模式：沙盒里只看�
 ### 备选和更强的隔离
 
 - sandbox-runtime 满足不了需求时，备选是 nono（`nolabs-ai/nono`，Rust，Apache-2.0）和 fence（`fencesandbox/fence`，Go，Apache-2.0），从 TypeScript 只能调用它们的命令行。
-- P5 增加一个可选的 microVM 后端，用来运行不可信的代码，首选 microsandbox（0.7.13，beta，Apache-2.0），其次 BoxLite（0.11.0）。接入前必须满足下面的标准，满足不了就不提供：网络出口全部交给 Host 的代理并逐个连接询问，DNS 查询受控；工作区能按路径设置只读和可写；凭据不进入 VM；不支持的平台明确报错；运行时下载的内核和镜像固定版本并校验；许可证和安装方式符合 [SDK 标准](../overview.md#sdk-标准)；启动时间和资源开销在评测里可以接受。
+- P5 增加一个可选的 microVM 后端，用来运行不可信的代码，首选 microsandbox（0.7.14，beta，Apache-2.0），其次 BoxLite（0.12.0）。接入前必须满足下面的标准，满足不了就不提供：网络出口全部交给 Host 的代理并逐个连接询问，DNS 查询受控；工作区能按路径设置只读和可写；凭据不进入 VM；不支持的平台明确报错；运行时下载的内核和镜像固定版本并校验；许可证和安装方式符合 [SDK 标准](../overview.md#sdk-标准)；启动时间和资源开销在评测里可以接受。
+- 2026-11-12 核对，标准没有全部满足，没有接入：许可证一条不满足，启动时间和资源开销没有评测结论，不支持的平台在本机核对不了。microsandbox 0.7.14 在 Apple M4、16 GB、macOS 26.7.1、Node 26.13.0 上实测（1 vCPU、512 MiB 的 `alpine:3.22`），BoxLite 0.12.0 只按它的文档判断：
+  - **网络**：microsandbox 满足，但只有一种写法行得通：网络策略默认拒绝，只放行宿主网关上 Host 代理的那一个 TCP 端口，VM 里设 `http_proxy` 和 `https_proxy`。这样代理收到的是域名，能逐个连接询问；VM 里解析域名得到 NXDOMAIN，直连、宿主回环上的其他端口、ICMP 和发往外部解析器的 UDP 53 都不通。不用它自带的 `outboundProxy`：代理只收到目的 IP，DNS 查询也不经过代理。BoxLite 不满足：`allowNet` 是静态名单（域名、通配域名、IPv4 和 CIDR，不分端口，没有询问的回调，留空即完全放行），要连 Host 的代理就得放行 `host.boxlite.internal` 的地址，宿主回环上的其他服务也一起放开（[networking](https://github.com/boxlite-ai/boxlite/blob/main/docs/guides/networking.md)）。
+  - **工作区的只读和可写**：microsandbox 有条件地满足。宿主只按挂载（目录或单个文件）区分只读和可写，可写的工作区里受保护的路径要另加嵌套的只读挂载，由 VM 里的内核执行：默认配置下 VM 里的 root 能把工作区再挂载一次绕过去（实测改掉了宿主上的 `.envrc`）。`security('restricted')` 下重新挂载和卸载被拒绝，但 root 还留着 `CAP_SYS_MODULE`、`CAP_SYS_RAWIO` 等能力，所以命令还要以非 root 用户运行（实测这时能力集为空），VM 里也就不能用 root 装软件。只读挂载点的上级目录仍能改名、再在原位置重建一份，所以挂载点要取整个受保护的目录（如 `.git`），不能只取其中的子目录；还不存在的受保护名字要在宿主上放占位；实测 128 个嵌套挂载可以，256 个时 VM 启动失败。
+  - **凭据**：满足。宿主的环境变量和主目录不进 VM，VM 里只有显式挂载的目录和显式传入的环境变量。
+  - **不支持的平台明确报错**：本机只有 macOS arm64，核对不了。预编译包只有 macOS arm64、Linux x64 和 arm64（glibc）和预览的 Windows，[不支持 Intel Mac](https://docs.microsandbox.dev/troubleshooting/macos.md)。
+  - **内核和镜像固定版本并校验**：满足。`msb` 和 `libkrunfw` 现在随 npm 的平台包安装（约 94 MB），由 lockfile 的 integrity 固定，不用再调 `ensureRuntime()` 下载；镜像按摘要引用，摘要不对时拉取失败。接入时显式传入平台包里这两个文件的路径：`~/.microsandbox` 里有完整的运行时时它优先，而那是用户可写的位置。
+  - **许可证和安装方式**：不满足。平台包里的 `libkrunfw` 是 LGPL-2.1-only 的库加 GPL-2.0-only 的 Linux 内核，[上游写明](https://github.com/superradcompany/libkrunfw#license)以二进制分发要附上两者的源码；npm 包里没有许可证文本和源码出处，`license` 字段只写 Apache-2.0，`npm sbom` 的白名单检查看不出来，GPL-2.0 也不在[白名单](../overview.md#许可证)里。安装不需要生命周期脚本。
+  - **启动时间和资源开销**：没有评测结论（长时间的评测搁置）。本机的数字：创建 VM 约 0.24 秒（第一次拉镜像 9 秒），VM 里每条命令约 1 毫秒，停止约 55 毫秒，空闲时 `msb` 进程占约 118 MB。结束一条命令结束不了它脱离出去的后代进程，要像现在这样保证全部进程结束，只能每条命令一个 VM，每条命令约多 0.3 到 0.4 秒（现在 macOS 上约多 55 毫秒，见[命令的执行](#命令的执行)）。
+  - 标准之外，后端接口也要改：命令由 VM 里的 guest agent 启动，不是 Host 自己启动的进程，标准流、fd 3 的通道和收尾进程都要换做法；macOS 上 VM 里是 Linux，工作区里为 macOS 安装的工具链在里面用不了。
 
 ## 实施时核对
 
@@ -442,8 +451,10 @@ P2：
 - 用评测统计按参数识别 skill 脚本的误判率。
 - Linux 上实测[凭据的 mask](#凭据的-mask)：`sandbox/test/masked-env.test.ts` 在 Linux 上运行一遍（macOS 上已验收）。
 
-P5：
+P5（microVM 后端，已经核对的各条见[备选和更强的隔离](#备选和更强的隔离)）：
 
-- 调整后端接口，接入 microVM 后端。
-- microsandbox：它的 SDK 要先调用 `ensureRuntime()` 把 `msb` 和 `libkrunfw` 下载到 `~/.microsandbox`，核实下载怎样校验，以及随产品分发其中的 Linux 内核（GPL-2.0）有什么义务。
-- BoxLite：把网络出口改到 Host 的代理，它默认 `allow_net` 留空即完全放行、DNS 不受限、经 `host.boxlite.internal` 还能连到本机回环端口上的服务。
+- 许可证：microsandbox 的平台包带着 GPL-2.0-only 的内核和 LGPL-2.1-only 的 `libkrunfw`，没有许可证文本和源码出处。接入前定下这样的依赖要不要、由谁安装（写进依赖，还是由用户自己安装），随 `cli` 发布时要附哪些文本和源码。
+- 评测：sandbox 专项评测和开关沙盒的对比实验加上 microVM 一组，给出启动时间和资源开销能否接受的结论。
+- 在 Linux（x64、arm64）上重复 macOS 上做过的网络、挂载和进程清理的实测；在不支持的平台上（Intel Mac、没有 KVM 的 Linux）确认明确报错。
+- 调整后端接口：命令由 VM 里的 guest agent 启动，标准流、fd 3 的通道、收尾进程和后台命令的归属怎样对应。
+- BoxLite 能按端口放行或把出口交给上游代理之前不再评估。

@@ -25,11 +25,41 @@ export interface ModelPricePeriod {
 	factor: number;
 }
 
-/** 一个模型的价格：基础价格，加上按提示长度的分档和分时段的倍数。 */
+/** 已经公布的调价：从这一天（UTC）起价格乘以 `factor`（如 Gemini 的优惠期结束后翻倍）。 */
+export interface ModelPriceChange {
+	/** UTC 日期 `YYYY-MM-DD`，含这一天。 */
+	from: string;
+	factor: number;
+}
+
+/** 模型服务自带、由它执行的工具：联网搜索和网页读取。 */
+export type ServerToolName = "web_search" | "web_fetch";
+
+/** 一个模型的价格：基础价格，加上按提示长度的分档、分时段的倍数和已经公布的调价。 */
 export interface ModelPrice extends ModelPriceRates {
 	tiers?: ModelPriceTier[];
 	periods?: ModelPricePeriod[];
+	changes?: ModelPriceChange[];
+	/** 服务端工具每一千次计费调用的价格（美元），键是工具名；不分档、不分时段，也不随调价变。 */
+	server_tools?: Partial<Record<ServerToolName, number>>;
 }
+
+/**
+ * 凭据怎样放进请求。前四种把凭据原样放进一个请求头（`bearer` 是 `Authorization: Bearer`）；
+ * `aws-sigv4` 的凭据是 AWS `credential_process` 格式的 JSON，用它给请求签名。
+ */
+export type ModelAuth =
+	| "x-api-key"
+	| "api-key"
+	| "bearer"
+	| "x-goog-api-key"
+	| {
+			scheme: "aws-sigv4";
+			/** 签名的区域，如 `us-east-1`。 */
+			region: string;
+			/** 签名的服务名，如 `bedrock-mantle`。 */
+			service: string;
+	  };
 
 /**
  * 推理强度的各级别在这个模型上实际发出的取值（照 pi 的 `thinkingLevelMap`）。没写的级别不支持，请求它时
@@ -79,6 +109,15 @@ export interface ModelEntry {
 	service: string;
 	/** 服务的接口地址，如 `https://api.anthropic.com/v1`。 */
 	base_url: string;
+	/** 凭据怎样放进请求；没写时按协议取默认值（见 `entryAuth`）。 */
+	auth?: ModelAuth;
+	/** 每次请求附加的固定请求头（如 Claude Platform on AWS 的 `anthropic-workspace-id`），名字小写。 */
+	headers?: Record<string, string>;
+	/**
+	 * `anthropic.messages` 发往 Vertex AI：模型写在地址里（`{base_url}/{model}:streamRawPredict`），
+	 * 版本写在请求体的 `anthropic_version` 里。
+	 */
+	vertex?: boolean;
 	/** 发给服务的模型名。 */
 	model: string;
 	context_window: number;
@@ -106,6 +145,8 @@ export interface ModelEntry {
 	allowed_fallback_models?: FallbackModel[];
 	/** `openai.chat` 的兼容差异。 */
 	compat?: ChatCompat;
+	/** 这个服务上能用的服务端工具；启用哪些由调用方决定。条目有价格时每个都要在 `price.server_tools` 里有价格。 */
+	server_tools?: ServerToolName[];
 }
 
 const levels: readonly ReasoningEffort[] = [

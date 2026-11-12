@@ -1,5 +1,5 @@
 import type { ModelFields } from "../src/models/config.ts";
-import type { ChatCompat } from "../src/models/entry.ts";
+import type { ChatCompat, ServerToolName } from "../src/models/entry.ts";
 import type { ProtocolName } from "../src/protocol/index.ts";
 
 /**
@@ -16,19 +16,27 @@ export interface ServiceSpec {
 	base_url: string;
 	/** `openai.chat` 服务的兼容差异，models.dev 没有的部分。 */
 	compat?: ChatCompat;
+	/**
+	 * 这个服务上能用的服务端工具和每一千次调用的价格。价格写 `"models.dev"` 的取模型的 `cost.web_search`，
+	 * 模型没有这一项时这个工具不收进它的条目；models.dev 没有的价格在这里写数。
+	 */
+	server_tools?: Partial<Record<ServerToolName, number | "models.dev">>;
 	models: string[];
 }
 
 /**
  * 协议按"服务加模型"决定：OpenAI 自己的服务用 Responses，Anthropic 用 Messages，DeepSeek 用 Chat
- * Completions。只收录能调用工具、用 effort 控制推理（或不推理）的对话模型；按 token 预算控制推理的
- * 旧模型（如 Haiku 4.5）不收录。
+ * Completions，Gemini API 用 generateContent。只收录能调用工具、用 effort 控制推理（或不推理）的对话模型；
+ * 按 token 预算控制推理的旧模型（如 Haiku 4.5、Gemini 2.5）不收录。云平台（Azure、Foundry、AWS、
+ * Vertex）的地址里有用户自己的资源名，不收录，条目由用户写。
  */
 export const services: Record<string, ServiceSpec> = {
 	anthropic: {
 		provider: "anthropic",
 		protocol: "anthropic.messages",
 		base_url: "https://api.anthropic.com/v1",
+		// 网页读取不另收费，只按读到的内容算 token
+		server_tools: { web_search: "models.dev", web_fetch: 0 },
 		models: [
 			"claude-fable-5-1",
 			"claude-fable-5",
@@ -44,6 +52,7 @@ export const services: Record<string, ServiceSpec> = {
 		provider: "openai",
 		protocol: "openai.responses",
 		base_url: "https://api.openai.com/v1",
+		server_tools: { web_search: "models.dev" },
 		models: [
 			"gpt-6.1-sol",
 			"gpt-6.1-terra",
@@ -65,6 +74,17 @@ export const services: Record<string, ServiceSpec> = {
 		// DeepSeek 不认识 developer 角色和 store；strict 工具还在 beta，不发
 		compat: { developer_role: false, store: false, strict_tools: false },
 		models: ["deepseek-v4-pro", "deepseek-flash"],
+	},
+	google: {
+		provider: "google",
+		protocol: "google.generate-content",
+		base_url: "https://generativelanguage.googleapis.com/v1",
+		models: [
+			"gemini-4-argon",
+			"gemini-3.8-flash",
+			"gemini-3.6-flash",
+			"gemini-3.5-flash-lite",
+		],
 	},
 };
 

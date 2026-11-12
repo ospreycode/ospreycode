@@ -1,0 +1,26 @@
+# 开关沙盒的对比实验用的权限规则，经 --rules 传入，两组都用它，和 never 一起用。
+# rm 的规则同 coding-rules.toml。包仓库的域名预先放行：审批策略是 never 时，没有放行的域名
+# 在沙盒里直接拒绝，依赖就装不了。任务容器放行的是同一批域名（packageRegistryHosts）。
+[[rules]]
+pattern = ["rm"]
+decision = "allow"
+
+[[network_rules]]
+host = "registry.npmjs.org"
+decision = "allow"
+
+[[network_rules]]
+host = "pypi.org"
+decision = "allow"
+
+[[network_rules]]
+host = "files.pythonhosted.org"
+decision = "allow"
+
+[[network_rules]]
+host = "proxy.golang.org"
+decision = "allow"
+
+[[network_rules]]
+host = "sum.golang.org"
+decision = "allow"

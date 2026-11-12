@@ -123,3 +123,137 @@ test("回退的模型写成表的数组；模型有价格时回退的模型也�
 		),
 	).toBe("models.m.allowed_fallback_models[0].price");
 });
+
+test("认证方式、固定请求头和 Vertex 的写法", () => {
+	expect(
+		parseModelFields(
+			{
+				auth: {
+					scheme: "aws-sigv4",
+					region: "us-east-1",
+					service: "bedrock-mantle",
+				},
+				headers: { "Anthropic-Workspace-Id": "wrkspc_1" },
+				vertex: true,
+			},
+			"models.m",
+		),
+	).toEqual({
+		auth: {
+			scheme: "aws-sigv4",
+			region: "us-east-1",
+			service: "bedrock-mantle",
+		},
+		headers: { "anthropic-workspace-id": "wrkspc_1" },
+		vertex: true,
+	});
+	expect(parseModelFields({ auth: "api-key" }, "models.m")).toEqual({
+		auth: "api-key",
+	});
+	expect(keyOf(() => parseModelFields({ auth: "basic" }, "models.m"))).toBe(
+		"models.m.auth",
+	);
+	expect(
+		keyOf(() =>
+			parseModelFields({ auth: { scheme: "aws-sigv4" } }, "models.m"),
+		),
+	).toBe("models.m.auth.region");
+	// 认证和协议自己的请求头不能写进 headers：会绕过凭据的管理，或者和转换模块发出的冲突
+	for (const name of [
+		"Authorization",
+		"x-api-key",
+		"api-key",
+		"x-goog-api-key",
+		"anthropic-version",
+		"X-Amz-Security-Token",
+		"content-type",
+	]) {
+		expect(
+			keyOf(() => parseModelFields({ headers: { [name]: "x" } }, "models.m")),
+		).toBe(`models.m.headers.${name}`);
+	}
+	// 值里的换行能夹带出另一个请求头
+	expect(
+		keyOf(() =>
+			parseModelFields(
+				{ headers: { "x-team": "a\r\nx-api-key: b" } },
+				"models.m",
+			),
+		),
+	).toBe("models.m.headers.x-team");
+	const base = {
+		protocol: "openai.responses",
+		service: "azure",
+		base_url: "https://example.openai.azure.com/openai/v1",
+		model: "my-deployment",
+		context_window: 1_000_000,
+		max_output_tokens: 100_000,
+	};
+	expect(
+		keyOf(() =>
+			completeModel(
+				"m",
+				parseModelFields({ ...base, vertex: true }, "models.m"),
+				"models.m",
+			),
+		),
+	).toBe("models.m.vertex");
+});
+
+test("服务端工具只能写协议有的；条目有价格时每个工具都要有价格", () => {
+	const base = {
+		protocol: "openai.responses",
+		service: "azure",
+		base_url: "https://example.openai.azure.com/openai/v1",
+		model: "my-deployment",
+		context_window: 1_000_000,
+		max_output_tokens: 100_000,
+	};
+	const price = { input: 4, output: 20, cache_read: 0.4, cache_write: 0 };
+	const complete = (fields: Record<string, unknown>) =>
+		completeModel(
+			"m",
+			parseModelFields({ ...base, ...fields }, "models.m"),
+			"models.m",
+		);
+	expect(complete({ server_tools: ["web_search"] }).server_tools).toEqual([
+		"web_search",
+	]);
+	expect(
+		complete({
+			server_tools: ["web_search"],
+			price: { ...price, server_tools: { web_search: 10 } },
+		}).price?.server_tools,
+	).toEqual({ web_search: 10 });
+	expect(keyOf(() => complete({ server_tools: ["web_search"], price }))).toBe(
+		"models.m.price.server_tools.web_search",
+	);
+	expect(keyOf(() => complete({ server_tools: ["web_fetch"] }))).toBe(
+		"models.m.server_tools",
+	);
+	expect(keyOf(() => complete({ server_tools: ["code_execution"] }))).toBe(
+		"models.m.server_tools[0]",
+	);
+	expect(
+		keyOf(() =>
+			complete({ protocol: "openai.chat", server_tools: ["web_search"] }),
+		),
+	).toBe("models.m.server_tools");
+});
+
+test("调价写成日期和倍数", () => {
+	expect(
+		parseModelFields(
+			{ price: { changes: [{ from: "2026-12-01", factor: 2 }] } },
+			"models.m",
+		),
+	).toEqual({ price: { changes: [{ from: "2026-12-01", factor: 2 }] } });
+	expect(
+		keyOf(() =>
+			parseModelFields(
+				{ price: { changes: [{ from: "12/01/2026", factor: 2 }] } },
+				"models.m",
+			),
+		),
+	).toBe("models.m.price.changes[0].from");
+});

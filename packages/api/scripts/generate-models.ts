@@ -12,8 +12,10 @@ import type {
 	ChatCompat,
 	ModelEntry,
 	ModelPrice,
+	ModelPriceChange,
 	ModelPricePeriod,
 	ModelPriceTier,
+	ServerToolName,
 	ThinkingLevelMap,
 } from "../src/models/entry.ts";
 import type { ProtocolName, ReasoningEffort } from "../src/protocol/index.ts";
@@ -35,6 +37,7 @@ const apiNames: Record<ProtocolName, string> = {
 	"anthropic.messages": "messages",
 	"openai.responses": "responses",
 	"openai.chat": "chat-completions",
+	"google.generate-content": "generate-content",
 };
 
 const levels: ReasoningEffort[] = [
@@ -158,7 +161,7 @@ async function loadModel(provider: string, id: string): Promise<Table> {
 
 /**
  * 推理强度的映射：models.dev 列出的 effort 取值按同名级别发出；关闭推理在 Anthropic 是 `disabled`
- * （有 `toggle` 的模型才能关），在 OpenAI 和兼容服务是 `none`。
+ * （有 `toggle` 的模型才能关），在 OpenAI 和兼容服务是 `none`，Gemini 3 起的模型关不掉。
  */
 function thinkingLevelMap(
 	reasoning: Table,
@@ -182,6 +185,10 @@ function thinkingLevelMap(
 	const map: ThinkingLevelMap = {};
 	if (protocol === "anthropic.messages") {
 		if (reasoning.toggle === true) map.off = "disabled";
+	} else if (protocol === "google.generate-content") {
+		if (effort.includes("none") || reasoning.toggle === true) {
+			throw new SourceError(where, "generateContent 没有关闭推理的写法");
+		}
 	} else if (effort.includes("none") || reasoning.toggle === true) {
 		map.off = "none";
 	}
@@ -251,6 +258,44 @@ function periodsOf(
 	});
 }
 
+/** 已经公布的调价：`when = { date = { gte = "YYYY-MM-DD" } }`，从那一天起乘以倍数。 */
+function changeOf(
+	when: Table,
+	factor: number,
+	where: string,
+): ModelPriceChange {
+	if (Object.keys(when).length !== 1) {
+		throw new SourceError(where, "日期条件不能和别的条件一起用");
+	}
+	const date = table(when.date, `${where}.date`);
+	if (Object.keys(date).length !== 1 || typeof date.gte !== "string") {
+		throw new SourceError(where, "日期条件只认 gte");
+	}
+	return { from: date.gte, factor };
+}
+
+/** 服务端工具的价格：按服务的说明取 models.dev 的 `cost.web_search` 或修正层写的数。 */
+function serverToolsOf(
+	spec: ServiceSpec,
+	cost: unknown,
+	where: string,
+): Partial<Record<ServerToolName, number>> {
+	const result: Partial<Record<ServerToolName, number>> = {};
+	for (const [name, source] of Object.entries(spec.server_tools ?? {})) {
+		if (source !== "models.dev") {
+			result[name as ServerToolName] = source;
+			continue;
+		}
+		const listed = optionalTable(cost, where)[name];
+		if (listed === undefined) continue;
+		result[name as ServerToolName] = number(
+			table(listed, `${where}.${name}`).price,
+			`${where}.${name}.price`,
+		);
+	}
+	return result;
+}
+
 function priceOf(cost: unknown, where: string): ModelPrice | undefined {
 	if (cost === undefined) return undefined;
 	const text = table(table(cost, where).text, `${where}.text`);
@@ -292,6 +337,7 @@ function priceOf(cost: unknown, where: string): ModelPrice | undefined {
 		},
 	);
 	const periods: ModelPricePeriod[] = [];
+	const changes: ModelPriceChange[] = [];
 	for (const [i, multiplier] of (
 		((table(cost, where).multipliers as unknown[]) ?? []) as unknown[]
 	).entries()) {
@@ -303,12 +349,17 @@ function priceOf(cost: unknown, where: string): ModelPrice | undefined {
 		const factor = isTable(item.factor)
 			? number(item.factor.text, `${itemWhere}.factor.text`)
 			: number(item.factor, `${itemWhere}.factor`);
+		if (when.date !== undefined) {
+			changes.push(changeOf(when, factor, `${itemWhere}.when`));
+			continue;
+		}
 		periods.push(...periodsOf(when, factor, `${itemWhere}.when`));
 	}
 	return {
 		...base,
 		...(tiers.length === 0 ? {} : { tiers }),
 		...(periods.length === 0 ? {} : { periods }),
+		...(changes.length === 0 ? {} : { changes }),
 	};
 }
 
@@ -369,7 +420,13 @@ function toEntry(
 	);
 	if (map !== undefined) fields.thinking_level_map = map;
 	const price = priceOf(model.cost, `${where}.cost`);
-	if (price !== undefined) fields.price = price;
+	const serverTools = serverToolsOf(spec, model.cost, `${where}.cost`);
+	const toolNames = Object.keys(serverTools) as ServerToolName[];
+	if (toolNames.length > 0) fields.server_tools = toolNames;
+	if (price !== undefined) {
+		fields.price =
+			toolNames.length === 0 ? price : { ...price, server_tools: serverTools };
+	}
 	if (spec.protocol === "openai.chat") {
 		const compatibility = optionalTable(
 			api.compatibility,

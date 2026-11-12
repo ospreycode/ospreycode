@@ -1,4 +1,4 @@
-import { mkdirSync, statSync } from "node:fs";
+import { mkdirSync, rmSync, statSync } from "node:fs";
 import { arch, release } from "node:os";
 import {
 	type AgentConfig,
@@ -36,6 +36,13 @@ import {
 	version as runtimeVersion,
 	type SkillLoadParams,
 	type SkillLoadResult,
+	type SubagentSendParams,
+	type SubagentSendResult,
+	type SubagentStartParams,
+	type SubagentStartResult,
+	type SubagentStopParams,
+	type SubagentStopResult,
+	subagentToolRegistry,
 	type TaskEndParams,
 	type TaskEndResult,
 	type ToolCallCompleteParams,
@@ -77,9 +84,11 @@ import { ConfigError } from "../config/errors.js";
 import { profileDomainRules } from "../config/sandbox-mode.js";
 import type { SessionConfig } from "../config/session-config.js";
 import { readUserInstructions } from "../config/user-instructions.js";
+import { currentCredential } from "../credentials/command.js";
 import type { LoadedCredential } from "../credentials/sources.js";
 import type { DiagnosticLog } from "../diagnostics/log.js";
 import type { ExtensionInfo, LoadedExtensions } from "../extensions/catalog.js";
+import type { GitResult } from "../extensions/plugins.js";
 import {
 	type ExtensionServices,
 	type HookScope,
@@ -114,6 +123,7 @@ import type {
 import type { WorkspaceLock } from "../project/locks.js";
 import {
 	createSessionDirectories,
+	ensureWorkersDirectory,
 	type SessionDirectories,
 	snapshotDirectory,
 } from "../project/workspace.js";
@@ -166,6 +176,7 @@ import type { ResumeState, UncertainCall } from "./resume.js";
 import { addUsage, emptyUsage, Run } from "./run.js";
 import { runtimeEventWarnings } from "./runtime-events.js";
 import { coversPrevious } from "./sandbox-change.js";
+import { type AgentScope, type PreparedAgent, Subagents } from "./subagents.js";
 import { inputText, type UserInput, userInput } from "./user-input.js";
 
 /** 等 agent 进程发来 `initialize` 的时间。 */
@@ -226,8 +237,26 @@ export interface HostSessionOptions {
 	streamModel: StreamModel;
 	/** 调模型服务的 token 计数接口：runtime 在上下文长度临界时经 `model/count_tokens` 请求。 */
 	countTokens: CountTokens;
-	/** 按沙盒模式准备 agent 进程的启动命令和命令沙盒：打开 session、切换沙盒模式和重新加载配置时各调用一次。 */
+	/**
+	 * 按沙盒模式准备 agent 进程的启动命令和命令沙盒：打开 session、切换沙盒模式和重新加载配置时各调用
+	 * 一次，每启动一个子 agent 再调用一次。
+	 */
 	createSandbox: (context: SandboxContext) => Promise<SessionSandbox>;
+	/**
+	 * 一份配置选用的模型的凭据，来自文件时带上文件的真实路径：子 agent 的定义指定了别的模型服务时，
+	 * 启动它之前取。没有凭据时抛出 `CredentialError`。
+	 */
+	credentialFor: (
+		config: SessionConfig,
+	) => Promise<{ credential: LoadedCredential; file?: string }>;
+	/**
+	 * 给 worker 建工作区：在沙盒里把项目仓库克隆（`git clone --shared`）到 `directory` 下的 `repo/`。
+	 * 沙盒无网络，只能写 `directory`。
+	 */
+	cloneRepository: (
+		projectRoot: string,
+		directory: string,
+	) => Promise<GitResult>;
 	/** 这个 session 启动的进程记进进程登记表。 */
 	tracker: ProcessTracker;
 	/** 扩展的信任记录、插件目录和 MCP 的凭据，以及在哪里找这个 session 的扩展。 */
@@ -279,6 +308,8 @@ export interface SandboxContext {
 	tracker: ProcessTracker;
 	/** 启用的插件的版本目录：agent 沙盒和命令沙盒只读。 */
 	pluginDirectories: readonly string[];
+	/** 这是子 agent 的沙盒：主 agent 的沙盒还在运行，和它共用工作区时不能清理工作区里的占位。 */
+	subagent: boolean;
 	/**
 	 * 沙盒里的程序连接名单之外的域名时由它回答，连接挂起到它返回。连接来自某条命令自己的代理时
 	 * 带上 `toolCallId`。
@@ -311,16 +342,11 @@ interface RunningAgent {
 }
 
 /** 按一份配置准备好的沙盒和工具调用的处理。 */
-interface Prepared {
-	sandbox: SessionSandbox;
+interface Prepared extends PreparedAgent {
 	/** 这个沙盒模式下运行影子仓库的 git 的沙盒。 */
 	snapshotSandbox: SnapshotSandbox;
 	/** Linux 上工作区可写时：准备沙盒那时工作区里受保护的路径。 */
 	watch: ProtectedWatch | undefined;
-	toolCalls: ToolCalls;
-	writableRoots: readonly string[];
-	env: Record<string, string>;
-	policy: PolicyContext;
 	rules: SessionRules;
 	/** 这份配置下找到的扩展；换上它们用 `#applyExtensions`。 */
 	extensions: LoadedExtensions;
@@ -343,6 +369,13 @@ function modelInfo(config: SessionConfig): ModelInfo {
 			: { max_input_tokens: model.max_input_tokens }),
 		max_output_tokens: model.max_output_tokens,
 	};
+}
+
+/** 配置里有子 agent 的定义时启用的三个工具；一个定义也没有时不启用。 */
+function subagentTools(config: SessionConfig): string[] {
+	return Object.keys(config.agents).length === 0
+		? []
+		: [...subagentToolRegistry.keys()];
 }
 
 function localDate(): string {
@@ -463,6 +496,8 @@ export class HostSession implements ChannelHandlers {
 	#memorySent: string | undefined;
 	/** 这个 session 的扩展：skills、MCP server 和 hooks。 */
 	#extensions: SessionExtensions;
+	/** 这个 session 的子 agent。 */
+	#subagents: Subagents;
 	/** `session.started` 发出之前扩展产生的事件和警告：它发出之后再发；没能打开的 session 不发。 */
 	#earlyExtensions: (() => void)[] | undefined = [];
 	/**
@@ -546,6 +581,43 @@ export class HostSession implements ChannelHandlers {
 			onSecret: options.onSecret,
 			admit: (run) => this.#admit(run),
 			...(options.recorded === undefined ? {} : { recorded: options.recorded }),
+			serverTools: options.config.serverTools,
+		});
+		this.#subagents = new Subagents({
+			events: this.#events,
+			approvals: this.#approvals,
+			background: this.#background,
+			extensions: this.#extensions,
+			tracker: options.tracker,
+			fetch: options.fetch,
+			streamModel: options.streamModel,
+			countTokens: options.countTokens,
+			scrub: options.scrub,
+			onSecret: options.onSecret,
+			settings: () => ({
+				config: this.#options.config,
+				denied: this.#options.denied,
+				rules: this.#options.rules,
+				credential: this.#options.credential,
+				directories: this.#directories,
+			}),
+			credentialFor: options.credentialFor,
+			cloneRepository: options.cloneRepository,
+			prepare: (settings, scope) => this.#prepareAgent(settings, scope),
+			agentConfig: (config, writableRoots) =>
+				this.#agentConfig(config, writableRoots),
+			admit: (run) => this.#admit(run),
+			snapshots: this.#toolSnapshots,
+			onEnded: (parent, agentId, text, quoted) => {
+				// 结果和后台命令的通知走同一个队列：父 agent 的 runtime 在下一次模型请求之前取走
+				this.#notice({ background_id: null, text, wake: false }, quoted);
+				if (this.#run !== parent) return;
+				this.#agent?.process.channel
+					.notify("subagent/ended", { agent_id: agentId })
+					.catch((error: unknown) => {
+						if (!(error instanceof ChannelClosedError)) throw error;
+					});
+			},
 		});
 		this.ended = new Promise((resolve) => {
 			this.#resolveEnded = resolve;
@@ -572,7 +644,7 @@ export class HostSession implements ChannelHandlers {
 				model: () => ({
 					entry: this.#options.config.model,
 					reasoningEffort: this.#options.config.reasoningEffort,
-					apiKey: () => this.#options.credential.value,
+					apiKey: () => currentCredential(this.#options.credential),
 				}),
 				fetch: options.fetch,
 				streamModel: options.streamModel,
@@ -805,6 +877,42 @@ export class HostSession implements ChannelHandlers {
 					duration_ms: 0,
 				});
 			}
+			// 子 agent 不恢复：没有结果的子 agent 工具调用不会再有结果，也不重新执行
+			for (const toolCallId of interrupted?.subagentCalls ?? []) {
+				this.#events.stored(run, {
+					type: "tool_call.completed",
+					tool_call_id: toolCallId,
+					result: {
+						status: "interrupted",
+						content: [
+							{
+								type: "text",
+								text: "The session was interrupted while this tool call was running. Subagents do not survive an interruption: none of the subagents started before it is running any more.",
+							},
+						],
+					},
+					duration_ms: 0,
+				});
+			}
+			// 它们的进程已经不在了，各自的 run 记下结束，再留一条通知给模型
+			for (const lost of interrupted?.subagents ?? []) {
+				const child = new Run(
+					this.#options.config.budget,
+					{ taskId: run.taskId, runId: lost.runId, seq: lost.seq },
+					{ agentId: lost.agentId, parent: run, toolCallId: lost.toolCallId },
+				);
+				this.#events.stored(child, {
+					type: "subagent.ended",
+					outcome: "failed",
+					usage: lost.usage,
+					error: "上次运行时 session 没有正常关闭，这个子 agent 中断了",
+				});
+				this.#notice({
+					background_id: null,
+					text: `Subagent ${lost.name} (${lost.agentId}) was still running when the session was interrupted. It is no longer running, and whatever it had not finished is lost.`,
+					wake: false,
+				});
+			}
 		}
 		return run;
 	}
@@ -892,6 +1000,47 @@ export class HostSession implements ChannelHandlers {
 	async #prepare(
 		settings: Pick<HostSessionOptions, "config" | "denied" | "rules">,
 	): Promise<Prepared> {
+		const { config, rules } = settings;
+		// Linux 上沙盒的保护停在包装的时刻。在准备沙盒之前记下：两者之间出现的仓库多重启一次，不会漏掉
+		const watch =
+			process.platform === "linux" &&
+			config.baseSandboxMode === "workspace-write"
+				? await ProtectedWatch.start(config.workspace)
+				: undefined;
+		const extensions = this.#extensions.load();
+		const prepared = await this.#prepareAgent(settings, {
+			network: this.#network,
+			tools: [
+				...config.tools,
+				...memoryTools(config.memory),
+				...(extensions.skills.length === 0 ? [] : ["skill_load"]),
+				...subagentTools(config),
+			],
+			mcp: true,
+			pluginDirectories: extensions.pluginDirectories,
+			snapshots: this.#toolSnapshots,
+			subagent: false,
+		});
+		let snapshotSandbox: SnapshotSandbox;
+		try {
+			snapshotSandbox = await prepared.sandbox.snapshots(
+				this.#snapshotDirectory,
+			);
+		} catch (error) {
+			await prepared.sandbox.stop();
+			throw error;
+		}
+		return { ...prepared, snapshotSandbox, watch, rules, extensions };
+	}
+
+	/**
+	 * 一个 agent 的沙盒和工具调用的处理：主 agent 的按 session 的配置，子 agent 的按它的定义收紧过的
+	 * 配置。`scope` 是两者不同的部分。
+	 */
+	async #prepareAgent(
+		settings: Pick<HostSessionOptions, "config" | "denied" | "rules">,
+		scope: AgentScope,
+	): Promise<PreparedAgent> {
 		const { hostEnv, tracker, root } = this.#options;
 		const { config, denied, rules } = settings;
 		const { workspace } = config;
@@ -919,13 +1068,11 @@ export class HostSession implements ChannelHandlers {
 				"Host 的环境变量里没有 HOME：权限规则和要保护的密钥位置都相对它",
 			);
 		}
-		// Linux 上沙盒的保护停在包装的时刻。在准备沙盒之前记下：两者之间出现的仓库多重启一次，不会漏掉
-		const watch =
-			process.platform === "linux" &&
-			config.baseSandboxMode === "workspace-write"
-				? await ProtectedWatch.start(workspace)
-				: undefined;
-		const extensions = this.#extensions.load();
+		// 有 worker 的定义时，这个 session 的沙盒都能读 worker 目录：要在准备沙盒之前建好
+		const workers = Object.values(config.agents).some(
+			({ isolated }) => isolated,
+		);
+		if (workers) ensureWorkersDirectory(root, directories);
 		const sandbox = await this.#options.createSandbox({
 			config,
 			denied,
@@ -934,12 +1081,15 @@ export class HostSession implements ChannelHandlers {
 			env,
 			directories,
 			tracker,
-			pluginDirectories: extensions.pluginDirectories,
+			pluginDirectories: scope.pluginDirectories,
+			subagent: scope.subagent,
 			askNetwork: (request, toolCallId) =>
-				this.#network.ask(request, toolCallId),
+				scope.network.ask(request, toolCallId),
 			onWarning: (message) =>
 				this.#events.session({ type: "warning", message }),
 			onProcess: (event) => {
+				// 子 agent 的起止由 `subagent.started`、`subagent.ended` 记录，它的沙盒的辅助进程不另记
+				if (scope.subagent) return;
 				if (this.#earlyProcesses === undefined) this.#events.process(event);
 				else this.#earlyProcesses.push(event);
 			},
@@ -959,7 +1109,12 @@ export class HostSession implements ChannelHandlers {
 			locations: {
 				home,
 				hostRoot: root,
-				hostAllowed: [directories.tmp, directories.cache, directories.output],
+				hostAllowed: [
+					directories.tmp,
+					directories.cache,
+					directories.output,
+					...(workers ? [directories.workers] : []),
+				],
 				// Host 根目录另按子目录判断，不算在凭据位置里；`~/.ssh` 这些常见密钥位置可以经批准读取，由沙盒拦
 				credentialPaths: denied.read.filter((path) => path !== root),
 				agentWritable: [
@@ -969,7 +1124,7 @@ export class HostSession implements ChannelHandlers {
 					...(profile?.write ?? []),
 				],
 			},
-			network: this.#network,
+			network: scope.network,
 			background: this.#background,
 			denied,
 			...(profile === undefined ? {} : { profile }),
@@ -977,33 +1132,13 @@ export class HostSession implements ChannelHandlers {
 			writableRoots,
 			outputDir: directories.output,
 			env,
-			tools: [
-				...config.tools,
-				...memoryTools(config.memory),
-				...(extensions.skills.length === 0 ? [] : ["skill_load"]),
-			],
+			tools: scope.tools,
+			mcp: scope.mcp,
 			tracker,
 			extensions: this.#extensions,
-			snapshots: this.#toolSnapshots,
+			snapshots: scope.snapshots,
 		});
-		let snapshotSandbox: SnapshotSandbox;
-		try {
-			snapshotSandbox = await sandbox.snapshots(this.#snapshotDirectory);
-		} catch (error) {
-			await sandbox.stop();
-			throw error;
-		}
-		return {
-			sandbox,
-			snapshotSandbox,
-			watch,
-			toolCalls,
-			writableRoots,
-			env,
-			policy,
-			rules,
-			extensions,
-		};
+		return { sandbox, toolCalls, writableRoots, env, policy };
 	}
 
 	/** `session.started` 发出之后再做：扩展在它之前产生的事件和警告先留着。 */
@@ -1070,6 +1205,7 @@ export class HostSession implements ChannelHandlers {
 
 	/** MCP 工具集变了（server 的 `list_changed`、退出、询问之后才启动完）：把完整的列表交给 runtime。 */
 	#mcpToolsChanged(): void {
+		this.#subagents.mcpToolsChanged();
 		const agent = this.#agent;
 		// 还没握手的进程在 `initialize` 的响应里拿到
 		if (agent?.greeted !== true) return;
@@ -1341,7 +1477,15 @@ export class HostSession implements ChannelHandlers {
 				const old = this.#sandbox;
 				// 换到更窄的设置：撤销的权限不能在已经运行的后台命令身上继续生效
 				if (!covers) await this.#background.stopAll("sandbox_mode");
-				this.#options = { ...this.#options, ...settings };
+				this.#options = {
+					...this.#options,
+					...settings,
+					// 服务端工具的开关在打开 session 时定下：中途换了，提示缓存和之前的推理块都失效
+					config: {
+						...settings.config,
+						serverTools: this.#options.config.serverTools,
+					},
+				};
 				this.#use(prepared);
 				this.#modelProxy.setModel(settings.config.model, settings.credential);
 				await this.#applyExtensions(prepared, true);
@@ -1476,6 +1620,7 @@ export class HostSession implements ChannelHandlers {
 			policy: this.#policy,
 			rules: this.#options.rules,
 		});
+		this.#subagents.setApprovalPolicy(this.#policy, this.#options.rules);
 		this.#approvals.reevaluate(this.#policy);
 		this.#extensions.reevaluate(this.#policy);
 		this.#events.approvalPolicyChanged({
@@ -2049,14 +2194,15 @@ export class HostSession implements ChannelHandlers {
 
 	/**
 	 * 一条后台通知：排进队列并记下来。task 正在运行时告诉 runtime 来取，session 空闲时按唤醒的规则
-	 * 开始一个 task。
+	 * 开始一个 task。`quoted` 是文字里引用了原文的那条回复的编号（子 agent 的结果）。
 	 */
-	#notice(notice: Notice): void {
+	#notice(notice: Notice, quoted?: string): void {
 		const notificationId = this.#inputs.notify(notice);
 		this.#events.stored(this.#recordRun(), {
 			type: "background.notification",
 			notification_id: notificationId,
 			background_id: notice.background_id,
+			...(quoted === undefined ? {} : { message_id: quoted }),
 			text: [notice.text, ...(notice.monitor?.lines ?? [])].join("\n"),
 		});
 		if (this.#state !== "open") return;
@@ -2151,8 +2297,9 @@ export class HostSession implements ChannelHandlers {
 	}
 
 	/**
-	 * 取消当前的 run：Host 先结束自己这边进行中的模型请求、命令和询问，再通知 runtime。
-	 * runtime 5 秒内没有报告 task 结束时，run 记 `cancelled`，重启 agent 进程。
+	 * 取消当前的 run：Host 先结束自己这边进行中的模型请求、命令和询问，再通知 runtime；它启动的
+	 * 子 agent 同时取消，等它们都结束才返回。runtime 5 秒内没有报告 task 结束时，run 记 `cancelled`，
+	 * 重启 agent 进程。
 	 */
 	async cancel(): Promise<void> {
 		const run = this.#run;
@@ -2166,12 +2313,14 @@ export class HostSession implements ChannelHandlers {
 			() => void this.#onCancelTimeout(run),
 			cancelGraceMs,
 		);
+		const stopped = this.#subagents.stopAll(run);
 		try {
 			await agent.process.channel.request("run/cancel", {});
 		} catch (error) {
 			// agent 进程已经退出，退出的处理会结束这个 task
 			if (!(error instanceof ChannelClosedError)) throw error;
 		}
+		await stopped;
 	}
 
 	/** 关闭 session：结束进行中的 task 和 agent 进程，最后发出 `session.ended`。 */
@@ -2190,6 +2339,8 @@ export class HostSession implements ChannelHandlers {
 		this.#resuming?.controller.abort();
 		// 后台命令属于 session：关闭时结束它们和它们的子孙进程
 		await this.#background.stopAll("session_closed");
+		// 父 run 已经带着它的子 agent 结束了；这里等它们的沙盒也停掉
+		await this.#subagents.close();
 		// 进行中的重启先做完：它启动的进程在下面一起结束
 		await this.#restarting;
 		await this.#stopAgent();
@@ -2203,6 +2354,8 @@ export class HostSession implements ChannelHandlers {
 		await this.#extensions.close();
 		await this.#sandbox.stop();
 		await Promise.all(this.#retired);
+		// worker 的工作区只保留到 session 关闭：没有合并的改动随之丢弃
+		rmSync(this.#directories.workers, { recursive: true, force: true });
 		this.#state = "closed";
 		this.#options.writer.close();
 		this.#options.store.close();
@@ -2230,6 +2383,8 @@ export class HostSession implements ChannelHandlers {
 	async #endRun(run: Run, outcome: TaskOutcome, error?: string): Promise<void> {
 		run.controller.abort();
 		await Promise.allSettled([...run.inFlight]);
+		// `task.ended` 记在它启动的子 agent 都结束之后
+		await this.#subagents.stopAll(run);
 		// 等待期间 runtime 可能已经自己报告了结束
 		if (this.#run !== run) return;
 		this.#finishTask(run, outcome, error);
@@ -2253,21 +2408,36 @@ export class HostSession implements ChannelHandlers {
 		const resume = this.#events.position;
 		const memory = this.memory?.config();
 		this.#memorySent = JSON.stringify(memory);
+		const subagents = Object.entries(config.agents).map(
+			([name, { description, isolated }]) => ({ name, description, isolated }),
+		);
 		return {
-			workspace: config.workspace,
-			writable_roots: [...this.#writableRoots],
+			...this.#agentConfig(config, this.#writableRoots),
 			...(resume === null ? {} : { resume }),
-			model: modelInfo(config),
-			sandbox_mode: config.sandboxMode,
-			approval_policy: config.approvalPolicy,
 			tools: [
 				...config.tools,
 				...memoryTools(config.memory),
 				...this.#extensions.builtinTools(),
+				...subagentTools(config),
 			],
-			user_instructions: readUserInstructions(this.#options.root),
 			...(memory === undefined ? {} : { memory }),
 			...this.#extensions.agentConfig(),
+			...(subagents.length === 0 ? {} : { subagents }),
+		};
+	}
+
+	/** 交给 agent 进程的配置里主 agent 和子 agent 相同的部分。 */
+	#agentConfig(
+		config: SessionConfig,
+		writableRoots: readonly string[],
+	): Omit<AgentConfig, "tools"> {
+		return {
+			workspace: config.workspace,
+			writable_roots: [...writableRoots],
+			model: modelInfo(config),
+			sandbox_mode: config.sandboxMode,
+			approval_policy: config.approvalPolicy,
+			user_instructions: readUserInstructions(this.#options.root),
 			date: localDate(),
 			os: `${process.platform} ${release()} (${arch()})`,
 		};
@@ -2302,6 +2472,13 @@ export class HostSession implements ChannelHandlers {
 			clearTimeout(this.#cancelTimer);
 			run.renew();
 			return { continue: true };
+		}
+		// runtime 已经报告了结束，不再按取消超时处理；还没结束的子 agent 先停掉，`task.ended` 记在
+		// 它们都结束之后
+		clearTimeout(this.#cancelTimer);
+		await this.#subagents.stopAll(run);
+		if (this.#run !== run) {
+			throw new ChannelRequestError("no_active_task", "没有进行中的 task");
 		}
 		this.#finishTask(run, outcome, params.error);
 		const agent = this.#agent;
@@ -2466,6 +2643,43 @@ export class HostSession implements ChannelHandlers {
 		return { image: this.#images.image(params.sha256) };
 	}
 
+	/**
+	 * 子 agent 的三个工具各自经通道请求 Host。编号是 runtime 给的：核对它是这个 run 里登记过、还在
+	 * 等结果的那种调用，不是这样说明 runtime 有缺陷或被攻破。
+	 */
+	#subagentCall(
+		run: Run,
+		toolCallId: string,
+		tool: "spawn_agent" | "send_message" | "interrupt_agent",
+	): void {
+		if (this.#toolCalls.pendingTool(toolCallId, run) !== tool) {
+			throw new ProtocolError(
+				`子 agent 的请求带的 tool_call_id 不是这个 run 里等待结果的 ${tool} 调用`,
+			);
+		}
+	}
+
+	async subagentStart(
+		params: SubagentStartParams,
+	): Promise<SubagentStartResult> {
+		const run = this.#activeRun();
+		this.#subagentCall(run, params.tool_call_id, "spawn_agent");
+		// 启动要一会儿：Host 自己结束 run 时等它有了结果，再停掉启动好的子 agent
+		return this.#track(run, this.#subagents.start(run, params));
+	}
+
+	async subagentSend(params: SubagentSendParams): Promise<SubagentSendResult> {
+		const run = this.#activeRun();
+		this.#subagentCall(run, params.tool_call_id, "send_message");
+		return this.#subagents.send(run, params.agent_id, params.input);
+	}
+
+	async subagentStop(params: SubagentStopParams): Promise<SubagentStopResult> {
+		const run = this.#activeRun();
+		this.#subagentCall(run, params.tool_call_id, "interrupt_agent");
+		return this.#track(run, this.#subagents.stop(run, params.agent_id));
+	}
+
 	/** 记忆库在 Host 一侧：没有启用长期记忆的 session 里 runtime 不该发来这些请求。 */
 	#requireMemory(): SessionMemory {
 		if (this.memory === undefined) {
@@ -2578,20 +2792,26 @@ export class HostSession implements ChannelHandlers {
 	 * 模式，就停止 run，task 以 `budget_exceeded` 结束。返回能不能发出这次请求。
 	 */
 	async #admit(run: Run): Promise<boolean> {
+		// 子 agent 的请求计入启动它的 run：上限按整个 task 的用量检查，询问和停止也都落在父 run 上
+		const owner = run.subagent?.parent ?? run;
+		// 父 run 已经在停止（超出上限或被取消），子 agent 还没停下来：它的请求不发，也不再问一遍
+		if (run.subagent !== undefined && owner.cancelled) return false;
 		for (;;) {
-			const exceeded = run.budget.exceeded(run.usage);
+			const exceeded = owner.budget.exceeded(owner.usage);
 			if (exceeded === undefined) return true;
 			if (this.#options.config.approvalPolicy !== "never") {
-				const answer = await this.#approvals.ask(run, {
-					kind: "budget",
-					...exceeded,
-				});
-				if (answer?.decision === "approve") {
-					run.budget.extend();
-					continue;
-				}
+				// 父 run 和它的子 agent 同时超出时只问一次，追加的额度共用
+				owner.extending ??= this.#approvals
+					.ask(owner, { kind: "budget", ...exceeded })
+					.then((answer) => {
+						owner.extending = undefined;
+						if (answer?.decision !== "approve") return false;
+						owner.budget.extend();
+						return true;
+					});
+				if (await owner.extending) continue;
 			}
-			this.#stopForBudget(run, exceeded.limit);
+			this.#stopForBudget(owner, exceeded.limit);
 			return false;
 		}
 	}

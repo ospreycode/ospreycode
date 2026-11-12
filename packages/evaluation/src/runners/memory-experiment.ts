@@ -15,14 +15,24 @@ import type { ModelRequest, Usage } from "@ospreycode/api/protocol";
 import { codingRulesFile } from "../benchmarks/pier.js";
 import {
 	classifyFailure,
+	externalMemoryBlock,
+	factsBlock,
 	historyBlock,
 	type MemoryFailure,
 	type MemorySnapshot,
 	type RepeatCounters,
 	repeatCounters,
 	retrievedBlock,
+	retrievedEntries,
 	transcriptEntries,
 } from "../traces/memory-trials.js";
+import {
+	type Mem0Options,
+	type Mem0Session,
+	type Mem0Usage,
+	mem0Batches,
+	startMem0,
+} from "./mem0.js";
 import type { EvaluationEnvironment } from "./scenario.js";
 
 /**
@@ -39,6 +49,15 @@ export const memoryGroups = [
 
 /** 对比组。 */
 export type MemoryGroup = (typeof memoryGroups)[number];
+
+/**
+ * 另外单独报告的两组，不参加五组之间的比较：由 evaluation 直接给出正确证据的诊断组，和 Mem0 外部
+ * 系统对照组。
+ */
+export const extraMemoryGroups = ["diagnostic", "mem0"] as const;
+
+/** 单独报告的组。 */
+export type ExtraMemoryGroup = (typeof extraMemoryGroups)[number];
 
 /** 各组共用的权限配置，同编码能力评测。 */
 export const memoryExperimentPermissions = {
@@ -70,7 +89,7 @@ export interface MemorySession extends MaintenanceSession {
 
 /**
  * 一道依赖记忆的题：前面几个学习会话，最后一个检验会话，只有检验会话用隐藏检查判定。各个会话
- * 共用一个工作区。
+ * 共用一个临时 HOME；工作区也共用，除非题目让检验会话换到另一个项目。
  */
 export interface MemoryTask {
 	name: string;
@@ -80,12 +99,19 @@ export interface MemoryTask {
 	learn: readonly string[];
 	/** 学习会话之后、检验会话之前对工作区的改动，比如让学到的做法过期。 */
 	change?(workspace: string): void;
+	/**
+	 * 检验会话换到另一个项目时写：准备那个项目的工作区。写了以后检验会话在它里面进行，`check` 和
+	 * `staleUses` 拿到的也是它。
+	 */
+	probeProject?(workspace: string): void;
 	/** 检验会话的输入。 */
 	probe: string;
 	/** 隐藏检查：返回不满足的地方，空数组表示通过。只看结构化的结果和工作区，不看模型写的原文。 */
 	check(probe: MemorySession, workspace: string): string[];
 	/** 这段文字里有没有解题要用的信息：用来把完整 memory 组的失败归类。 */
 	evidence(text: string): boolean;
+	/** 诊断组放在检验会话输入前面的正确证据：解题要用的那一两句事实。 */
+	facts: string;
 	/** 检验会话里误用过期记忆的次数（比如执行了已经作废的命令）；题目不涉及过期记忆时不写。 */
 	staleUses?(probe: MemorySession, workspace: string): number;
 }
@@ -99,7 +125,7 @@ export interface ProbeCounters extends RepeatCounters {
 /** 一道题在一个组里的一次运行。 */
 export interface MemoryTrial {
 	task: string;
-	group: MemoryGroup;
+	group: MemoryGroup | ExtraMemoryGroup;
 	/** 第几次运行，从 1 开始。 */
 	run: number;
 	passed: boolean;
@@ -115,6 +141,8 @@ export interface MemoryTrial {
 	memories: MemorySnapshot[];
 	/** 完整 memory 组没通过的运行归到的类。 */
 	failure?: MemoryFailure;
+	/** Mem0 对照组：Mem0 自己的模型和嵌入请求的用量，不在各个会话的用量里。 */
+	external?: Mem0Usage;
 }
 
 /** 运行对比实验的选项。 */
@@ -123,6 +151,10 @@ export interface MemoryExperimentOptions {
 	runs: number;
 	/** 每个会话的时间上限，到时取消。 */
 	timeoutMs: number;
+	/** 要不要另外运行诊断组。 */
+	diagnostic: boolean;
+	/** 给出时另外运行 Mem0 对照组。 */
+	mem0?: Mem0Options;
 }
 
 /**
@@ -341,23 +373,39 @@ async function runSession(
 
 /**
  * 一道题在一个组里运行一次：从干净的临时 HOME 和工作区开始，依次做学习会话和检验会话。
- * `filler` 只给等长无关记忆组：检验会话之前添加的记忆。
+ * `filler` 只给等长无关记忆组：检验会话之前添加的记忆。`mem0` 只给 Mem0 对照组。
  */
 async function runTrial(
 	task: MemoryTask,
-	group: MemoryGroup,
+	group: MemoryGroup | ExtraMemoryGroup,
 	run: number,
 	environment: EvaluationEnvironment,
 	timeoutMs: number,
 	filler: readonly AddedMemory[],
+	mem0: Mem0Options | undefined,
 ): Promise<MemoryTrial> {
 	// 放在 /tmp：沙盒后端的 socket 建在 session 的临时目录里，路径有长度上限
 	const base = realpathSync(mkdtempSync("/tmp/osp-eval-"));
 	const dirs = { workspace: join(base, "workspace"), home: join(base, "home") };
+	// 检验会话所在的项目：题目让它换到另一个项目时是同一个 HOME 下的另一个目录
+	const probeDirs =
+		task.probeProject === undefined
+			? dirs
+			: { ...dirs, workspace: join(base, "other-project") };
 	mkdirSync(dirs.workspace);
 	mkdirSync(dirs.home);
+	let external: Mem0Session | undefined;
 	try {
 		task.setup(dirs.workspace);
+		if (task.probeProject !== undefined) {
+			mkdirSync(probeDirs.workspace);
+			task.probeProject(probeDirs.workspace);
+		}
+		if (group === "mem0") {
+			if (mem0 === undefined)
+				throw new Error("Mem0 对照组没有给出 Mem0 的选项");
+			external = await startMem0(mem0, join(base, "mem0"), `run-${run}`);
+		}
 		const full = group === "memory";
 		const memory: MemoryOptions = full ? {} : { enabled: false };
 		const learn: MemorySession[] = [];
@@ -388,6 +436,11 @@ async function runTrial(
 				timeoutMs,
 			);
 			learn.push(session);
+			if (external !== undefined) {
+				for (const batch of mem0Batches(transcriptEntries([session.events]))) {
+					await external.add(batch);
+				}
+			}
 		}
 		task.change?.(dirs.workspace);
 		await extract();
@@ -397,7 +450,7 @@ async function runTrial(
 					async (_session, manager) => {
 						for (const added of filler) manager.add(added);
 					},
-					dirs,
+					probeDirs,
 					environment,
 				),
 			);
@@ -409,24 +462,32 @@ async function runTrial(
 				? historyBlock(transcriptEntries(learned))
 				: group === "retrieval"
 					? retrievedBlock(transcriptEntries(learned), task.probe)
-					: undefined;
+					: group === "diagnostic"
+						? factsBlock(task.facts)
+						: external !== undefined
+							? externalMemoryBlock(
+									await external.search(task.probe, retrievedEntries),
+								)
+							: undefined;
 		const { session: probe, memories } = await runSession(
 			context === undefined ? task.probe : `${context}\n\n${task.probe}`,
 			full || group === "irrelevant" ? {} : { enabled: false },
 			false,
-			dirs,
+			probeDirs,
 			environment,
 			timeoutMs,
 		);
+		const externalUsage = await external?.close();
+		external = undefined;
 
 		const problems = [
 			...(probe.outcome === undefined
 				? [`超过时间上限 ${timeoutMs} 毫秒`]
 				: []),
-			...task.check(probe, dirs.workspace),
+			...task.check(probe, probeDirs.workspace),
 		];
 		const passed = problems.length === 0;
-		const staleUses = task.staleUses?.(probe, dirs.workspace) ?? 0;
+		const staleUses = task.staleUses?.(probe, probeDirs.workspace) ?? 0;
 		return {
 			task: task.name,
 			group,
@@ -437,10 +498,16 @@ async function runTrial(
 			probe,
 			maintenance,
 			counters: {
-				...repeatCounters(learned, probe.events, dirs.workspace),
+				// 换了项目：同样的调用在另一个项目里不是重复劳动
+				...repeatCounters(
+					task.probeProject === undefined ? learned : [],
+					probe.events,
+					probeDirs.workspace,
+				),
 				staleUses,
 			},
 			memories,
+			...(externalUsage === undefined ? {} : { external: externalUsage }),
 			...(full && !passed
 				? {
 						failure: classifyFailure({
@@ -455,12 +522,15 @@ async function runTrial(
 				: {}),
 		};
 	} finally {
+		// 走到这里还开着，说明这次运行中途失败了
+		await external?.abort();
 		rmSync(base, { recursive: true, force: true });
 	}
 }
 
 /**
- * 运行 memory 对比实验：每道题在五个组里各运行 `runs` 次，各组用同一个模型、同样的权限和上限。
+ * 运行 memory 对比实验：每道题在五个组里各运行 `runs` 次，各组用同一个模型、同样的权限和上限；
+ * 选了诊断组、给了 Mem0 的选项时，这两组排在五组之后各运行同样的次数。
  * 一个接一个地运行；同一道题同一次运行里，完整 memory 组排在等长无关记忆组之前，后者照前者生效
  * 记忆的条数和长度添加无关记忆。结果交给 `memoryReport` 汇总。
  */
@@ -469,11 +539,16 @@ export async function runMemoryExperiment(
 	environment: EvaluationEnvironment,
 	options: MemoryExperimentOptions,
 ): Promise<MemoryTrial[]> {
+	const groups = [
+		...memoryGroups,
+		...(options.diagnostic ? (["diagnostic"] as const) : []),
+		...(options.mem0 === undefined ? [] : (["mem0"] as const)),
+	];
 	const trials: MemoryTrial[] = [];
 	for (const task of tasks) {
 		for (let run = 1; run <= options.runs; run += 1) {
 			let filler: AddedMemory[] = [];
-			for (const group of memoryGroups) {
+			for (const group of groups) {
 				const trial = await runTrial(
 					task,
 					group,
@@ -481,6 +556,7 @@ export async function runMemoryExperiment(
 					environment,
 					options.timeoutMs,
 					filler,
+					options.mem0,
 				);
 				if (group === "memory") {
 					filler = unrelatedMemories(

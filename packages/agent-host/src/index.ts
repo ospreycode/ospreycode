@@ -33,6 +33,7 @@ export type {
 } from "@ospreycode/sandbox";
 export { SandboxUnavailableError } from "@ospreycode/sandbox/backends";
 export {
+	type AgentDefinition,
 	type BudgetOptions,
 	ConfigError,
 	type RunLimits,
@@ -41,6 +42,7 @@ export {
 	type UiSettings,
 } from "./config/session-config.js";
 export {
+	type CommandSource,
 	type CredentialContext,
 	CredentialError,
 	type CredentialSource,
@@ -150,6 +152,8 @@ export type {
 	SessionStartedEvent,
 	StartupErrorEvent,
 	Stored,
+	SubagentEndedEvent,
+	SubagentStartedEvent,
 	TaskEndedEvent,
 	TaskScope,
 	TaskStartedEvent,
@@ -202,6 +206,9 @@ export type {
 	ProcessStarted,
 	ProtocolRaw,
 	ReasoningEffortChanged,
+	SubagentEnded,
+	SubagentOutcome,
+	SubagentStarted,
 	TaskEnded,
 	TaskOutcome,
 	TaskSource,

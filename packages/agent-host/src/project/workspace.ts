@@ -111,18 +111,27 @@ export interface SessionDirectories {
 	output: string;
 	/** 这个项目的构建缓存，命令沙盒可读写。 */
 	cache: string;
+	/**
+	 * worker（在自己的工作区里运行的子 agent）的工作区所在的目录：每个 worker 一个子目录，只有它自己的
+	 * 沙盒可写，这个 session 的其他沙盒只读。配置里有这样的定义时才创建（`ensureWorkersDirectory`）。
+	 */
+	workers: string;
 }
 
 /**
- * 一个 session 自己的临时目录和输出目录的位置。目录名取 session 标识的前 12 个字符：Unix socket 的
- * 路径有长度上限，沙盒后端的 socket 建在临时目录里。
+ * 一个 session 自己的临时目录、输出目录和 worker 目录的位置。目录名取 session 标识的前 12 个字符：
+ * Unix socket 的路径有长度上限，沙盒后端的 socket 建在临时目录里。
  */
 export function sessionPaths(
 	root: string,
 	sessionId: string,
-): Pick<SessionDirectories, "tmp" | "output"> {
+): Pick<SessionDirectories, "tmp" | "output" | "workers"> {
 	const name = sessionId.slice(0, 12);
-	return { tmp: join(root, "tmp", name), output: join(root, "output", name) };
+	return {
+		tmp: join(root, "tmp", name),
+		output: join(root, "output", name),
+		workers: join(root, "workers", name),
+	};
 }
 
 /**
@@ -138,7 +147,7 @@ export function snapshotDirectory(
 	return join(root, "snapshots", projectId, digest.slice(0, 16));
 }
 
-/** 创建 session 的临时目录、输出目录和它所属项目的缓存目录。 */
+/** 创建 session 的临时目录、输出目录和它所属项目的缓存目录。worker 目录用到时才创建。 */
 export function createSessionDirectories(
 	root: string,
 	sessionId: string,
@@ -151,6 +160,17 @@ export function createSessionDirectories(
 	for (const parent of ["tmp", "output", "cache"]) {
 		ensureDirectory(join(root, parent));
 	}
-	for (const dir of Object.values(directories)) ensureDirectory(dir);
+	for (const dir of [directories.tmp, directories.output, directories.cache]) {
+		ensureDirectory(dir);
+	}
 	return directories;
+}
+
+/** 创建这个 session 的 worker 目录：沙盒按路径放开它，要在准备沙盒之前建好。 */
+export function ensureWorkersDirectory(
+	root: string,
+	directories: SessionDirectories,
+): void {
+	ensureDirectory(join(root, "workers"));
+	ensureDirectory(directories.workers);
 }

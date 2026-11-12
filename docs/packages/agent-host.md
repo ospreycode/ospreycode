@@ -11,7 +11,7 @@ agent-host/
   credentials/  凭据的来源和保存：系统凭据库、显式指定的文件或环境变量、MCP 的令牌
   redaction/    密钥检测和脱敏，交给 session-store 和 memory 使用，也用于日志和错误信息
   project/      工作区和项目身份的判断，工作区锁
-  sessions/     session、task、run 的生命周期和标识；steering、follow-up 和后台通知的队列；恢复
+  sessions/     session、task、run 的生命周期和标识；steering、follow-up 和后台通知的队列；恢复；子 agent
   channel/      通道的服务端：实现 agent-runtime 定义的通道接口，检查沙盒内发来的每个请求
   actions/      工具调用的登记，交给 Permission 判断，经 sdk 询问用户，执行批准的越界动作
   model-proxy/  模型请求的检查、协议转换和附加凭据，用量和预算
@@ -31,7 +31,7 @@ agent-host/
 - 持有凭据、配置和权限策略（见[配置的分层](#配置的分层)和[凭据和登录](#凭据和登录)）。凭据都不进入沙盒。
 - 通过 `sandbox` 启动 agent 进程、命令沙盒、越界进程、hooks 和本地 MCP server，按白名单构造它们的环境变量，session 结束时确认这个 session 的进程全部退出（见 [session 的打开和关闭](#session-的打开和关闭)）。
 - 决定 task 的开始、结束和取消（见 [task 的开始、结束和取消](#task-的开始结束和取消)），处理每一次工具调用（见[工具调用的处理](#工具调用的处理)）。
-- 代理模型请求：只允许使用配置中的模型，检查启用的服务端工具和预算，用 `api` 转换协议、附加凭据后发出，把流式响应转换回内部事件交给 runtime，并统计用量（见 api 的[在系统中的位置](api.md#在系统中的位置)和下文[预算](#预算)）。预算只由 Host 执行。
+- 代理模型请求：只允许使用配置中的模型，检查预算，用 `api` 转换协议、按配置加上启用的服务端工具、附加凭据后发出，把流式响应转换回内部事件交给 runtime，并统计用量（见 api 的[在系统中的位置](api.md#在系统中的位置)和下文[预算](#预算)）。预算只由 Host 执行。
 - 通过 session-store 保存事件和检查点，通过 memory 管理长期记忆。删除 session 或忘记某条内容时，由 Host 协调两者一起删除。
 - 管理扩展：插件的安装、更新和启用，信任确认，作为 MCP 客户端连接 server（见[扩展的管理和信任](#扩展的管理和信任)）。
 - 快照和撤销（见[快照和撤销](#快照和撤销)）。
@@ -93,7 +93,7 @@ agent-host/
 | `session_id` | 一段可以包含多个 task 的会话 | Host |
 | `task_id` | 用户要完成的一件事。session 空闲时的用户输入、follow-up 和后台通知都会开始新的 task（见 [task 的开始、结束和取消](#task-的开始结束和取消)） | Host |
 | `run_id` | task 的一次执行；恢复、回退和分叉时注明接在哪个 run 的哪个位置之后（见 session-store 的[会话的分支和回退](session-store.md#会话的分支和回退)） | Host |
-| `agent_id` | 执行 run 的 agent，主 agent 也有；agent 进程重启后不变。run 记录和对外事件都带它；子 agent（P5）另带 `parent_agent_id` 和启动它的 `parent_tool_call_id` | Host |
+| `agent_id` | 执行 run 的 agent，主 agent 也有；agent 进程重启后不变。run 记录和对外事件都带它；子 agent 每启动一次是一个新的 `agent_id`，它的 `run.started` 另带 `parent_agent_id` 和启动它的 `parent_tool_call_id`（见[子 agent 和多 worker](#子-agent-和多-worker)） | Host |
 | 后台命令编号 | 一条后台命令或监视，关联启动它的 session、run 和 tool call | Host |
 | `tool_call_id` | 一次工具调用，关联它的权限决定、hooks 结果、输出和最终结果。模型返回的调用编号另外保存，用来和模型消息对应 | Host，在登记时分配 |
 | `event_id` | 事件去重 | 产生事件的一方；Host 只在所属 run 内判断重复，填错也影响不到别的 run |
@@ -130,6 +130,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 | `cache/<项目>/` | 构建缓存（见 sandbox 的[构建工具的缓存](sandbox.md#构建工具的缓存)） | 这个项目的命令沙盒可读写 |
 | `tmp/<session>/` | 作为 `TMPDIR` 的临时目录 | 这个 session 的沙盒可读写 |
 | `output/<session>/` | 前台和后台命令的输出文件，由 Host 写入 | 这个 session 的沙盒只能读；分叉的沙盒还能读父 session 链上的 |
+| `workers/<session>/<agent>/` | worker 自己的工作区：项目仓库的一份克隆（见[子 agent 和多 worker](#子-agent-和多-worker)）。配置里有 `workspace = "isolated"` 的定义时才创建 | 这个 worker 的沙盒按它的沙盒模式读写；这个 session 其余的沙盒只能读 |
 
 `data/` 的子结构：
 
@@ -155,7 +156,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 - 不提供改位置的环境变量：SDK 由调用方传入根目录，测试用临时的 HOME。
 - 根目录和工作区互相包含时（包括在主目录里启动）报错停止，按真实路径比较：根目录在工作区内时，快照和搜索都会碰到 Host 数据；工作区在根目录内时，agent 读不到自己的工作区。
 - 根目录在网络文件系统上时报错：SQLite 的 WAL 不可用。Linux 上按 `statfs` 的文件系统类型判断（NFS、SMB、CIFS、9P 等）；macOS 的 `statfs` 里文件系统的编号是内核动态分配的，改看 `mount` 输出里这个挂载点有没有 `local` 标志。
-- Unix socket 的路径有长度上限（macOS 104 字节），所以 `tmp/` 和 `output/` 下的目录用 session 编号的前 12 个字符命名；Host 启动时检查最长的 socket 路径，超出就报错。
+- Unix socket 的路径有长度上限（macOS 104 字节），所以 `tmp/` 和 `output/` 下的目录用 session 编号的前 12 个字符命名（`workers/` 下的两级目录同样各取 session 和 agent 编号的前 12 个字符：项目里的工具会在工作区里建 socket）；Host 启动时检查最长的 socket 路径，超出就报错。
 
 ## 配置的分层
 
@@ -167,6 +168,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
   - **只认用户级配置和启动参数**：模型和模型服务的定义与选用、凭据来源、代理、放行的路径和域名、额外的可读写目录、命名的权限配置、环境变量。session 的保存期限只认用户级配置，启动参数也不能改。这些键出现在仓库配置里时忽略、不检查它们的值，并在启动时列出。选用哪个模型也在这一类：仓库一旦选了云端服务，代码就发到了别处。
   - **只能收紧**：沙盒模式（只能改成 `read-only`）、审批策略（`on-request` 最松，`granular` 按关闭的类别逐项收紧，`never` 最严）、权限规则（只能有 `prompt` 和 `forbidden`）、禁止的路径和域名、费用和次数上限（只能调低）、服务端工具（只能关闭）。更松的值忽略并提示。审批策略和用户级配置比较时，`on-request` 相当于七个类别都询问、`never` 相当于都不询问，仓库配置的 `[approval_granular]` 只能把类别设为 `false`；仓库从 `on-request` 收紧到 `granular` 时，没写的类别照常询问。
   - **普通键**（推理强度、可选工具、显示设置等）可以覆盖用户级配置。
+  - 子 agent 的定义（`[agents.<名字>]`）单独处理：仓库配置可以新增定义，不能改用户级配置里同名的定义（忽略并提示），定义里的 `model` 只认用户级配置。定义本身只能在 session 的权限之内收紧（见[子 agent 和多 worker](#子-agent-和多-worker)）。
 - 仓库配置里的路径相对项目根目录，只能指向仓库之内；用户级配置的路径写绝对路径或以 `~/` 开头。
 - 配置文件或权限规则文件加载出错（不认识的键、类型不对、仓库里写了 `allow`）：Host 拒绝打开 session，退出码 2，输出文件路径和出错的键或规则序号，不提供跳过选项，否则仓库作者想加的限制可能被悄悄丢掉。用户级和仓库的文件都这样处理。TOML 语法错误只报行号和列号：smol-toml 的错误信息带着出错位置附近的原文。
 - 仓库配置不能放宽权限，所以加载它不需要"信任项目"这一步；仓库自带的 MCP server、skills 和 hooks 按扩展的信任确认处理。
@@ -196,7 +198,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 | `[budget]` | `max_cost_usd`、`max_requests`、`max_duration`（写成 `"30m"` 这样的时长，单位 `s`、`m`、`h`），写 `"none"` 表示不设（见[预算](#预算)）；启动参数 `--max-cost`、`--max-requests` 覆盖前两项 | 只能调低 |
 | `deny_read`、`deny_write` | 额外禁止读、写的路径，各层取并集 | 可以设，路径只能在仓库之内 |
 | `[models.<ID>]` | 新增模型或按字段覆盖内置清单（见 api 的[模型清单](api.md#模型清单)） | 忽略 |
-| `[credentials]` | 凭据的文件或环境变量来源，写成 `"<ID>" = { file = "<路径>" }` 或 `{ env = "<变量名>" }`（见[凭据和登录](#凭据和登录)） | 忽略 |
+| `[credentials]` | 凭据的来源，写成 `"<ID>" = { file = "<路径>" }`、`{ env = "<变量名>" }` 或 `{ command = "<程序>", args = ["<参数>", …] }`（见[凭据和登录](#凭据和登录)） | 忽略 |
 | `[mcp_clients.<标签>]` | 预先注册的 MCP OAuth 客户端：`client_id`，可选的 `callback_port`（P2，见 mcp 的[授权](mcp.md#授权)） | 忽略 |
 | `[mcp_secrets.<标签>]` | 本地 MCP server 的密钥：写成 `<环境变量名> = ["<域名>", …]`，真实值只发往列出的域名（P2，见[插件之外的 `mcp.json`](#插件之外的-mcpjson)） | 忽略 |
 | `mcp_startup_timeout_sec` | 打开 session 时等每个 MCP server 就绪的秒数，正整数，默认 30（P2，见 mcp 的[本地 server 进程的生命周期](mcp.md#本地-server-进程的生命周期)） | 忽略 |
@@ -204,21 +206,26 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 | `session_retention_days` | session 记录的保存天数，默认 30，最小 1（P3，见 session-store 的[保存期限](session-store.md#保存期限)）；启动参数也不能改 | 忽略 |
 | `[tools]` | 可选工具的开关，写成 `<工具名> = true` 或 `false`。可选工具是 runtime 提供、默认不启用的工具（如 `grep`、`ls`）；写了默认启用的工具或不存在的工具名时报错：默认工具关掉后 agent 没法工作。打开的可选工具排在默认工具之后。`memory_*` 不在这里开关，随长期记忆启用，排在可选工具之后：长期记忆只有评测能关（见 memory 的[评测](memory.md#评测)） | 可以覆盖 |
 | `[ui]` | 显示设置：`show_reasoning` 是否显示模型的推理内容，默认 `true`。Host 只读取和合并，交给前端使用 | 可以覆盖 |
-| `[server_tools]` | 模型服务自带的服务端工具（P5，见 api 的[在系统中的位置](api.md#在系统中的位置)） | 只能关闭 |
+| `[agents.<名字>]` | 子 agent 的定义（P5，见[子 agent 和多 worker](#子-agent-和多-worker)）：`description`（必填）、`instructions`、`model`、`reasoning_effort`、`sandbox_mode`（只能写 `read-only`）、`tools`、`workspace`（`shared` 或 `isolated`）。一个定义也没有时不启用子 agent 的工具 | 可以新增定义；和用户级同名的忽略，`model` 忽略 |
+| `[server_tools.<服务名>]` | 模型服务自带的服务端工具（P5，见 api 的[服务端工具](api.md#服务端工具)）：写成 `web_search = true`、`web_fetch = true`，默认都是 `false`，按模型条目的 `service` 分别打开。只对模型条目的 `server_tools` 里列出的工具起作用。没有对应的启动参数：评测和脚本里保持关闭。开关在打开 session 时定下，`/reload` 不改它，子 agent 的模型请求用同一份 | 只能写 `false` |
 
 ## 凭据和登录
 
-模型服务只用 API key 登录。
+模型服务用 API key 登录；只发短期凭据的云厂商由用户配置的命令输出凭据。
 
 - **来源**：macOS 上交互使用时放在登录钥匙串里（`ospreycode login` 隐藏输入后写入，或用 `--with-api-key` 从标准输入读入）。没有系统凭据库的环境（Linux、CI 和测试）由启动参数 `--credential-file <ID>=<路径>`、`--credential-env <ID>=<变量名>` 或用户级配置的 `[credentials]` 显式指定来源，不自动查找。macOS 上不接受环境变量来源：沙盒内能读到 Host 进程启动时的环境变量（见 sandbox 的[沙盒后端](sandbox.md#沙盒后端)）。
 - **凭据的 ID**：模型服务的凭据用服务名，远程 MCP server 的静态令牌用 `mcp:<标签>`，本地 MCP server 的密钥用 `mcp:<标签>:<环境变量名>`。同一个 ID 按启动参数、用户级配置、钥匙串的顺序取第一个找到的来源。
 - macOS 上用 `@napi-rs/keyring`（2.1.2，MIT，没有依赖和生命周期脚本，只装当前平台的预编译包）读写登录钥匙串，条目的服务名是 `ospreycode`、账户名是凭据的 ID。它用基于文件的旧式钥匙串接口（实测条目在 `login.keychain-db` 里），正是 sandbox 文档要求的存放位置；原生模块只在 macOS 上用到时加载。不调用 `security` 命令：写入时要把密钥放在命令行参数里，长度超限时还会截断或误解析。SDK 的调用方可以经 `createHost` 的 `credentialStore` 换成别的实现或不用系统凭据库。
 - 适配层对所有沙盒禁止读取 `~/Library/Keychains`。旧式钥匙串按创建条目的程序授权，同一用户在沙盒外运行的 node 进程（例如 npm 包的 install 脚本）仍能不经提示读取，文档要写明。
 - 钥匙串锁定或不可用时报错停止，不退回明文文件。
-- Linux 不接系统凭据库，所以 Linux 上不提供 `login`，也不支持需要保存令牌的 MCP OAuth；P1 的 Linux 只用于评测容器和 CI。
+- Linux 不接系统凭据库，所以 Linux 上不提供 `login`，也不支持需要保存令牌的 MCP OAuth；P1 的 Linux 只用于评测容器和 CI。2026-11-12 核对，仍没有接入：`@napi-rs/keyring` 2.1.2 能把条目固定到 Secret Service（`{ linux: { store: 'secret-service' } }`，它不可用时报错，不退到 keyutils），接入的办法已有；但 Linux 桌面还没有列入支持（见 overview 的[支持的平台](../overview.md#支持的平台)），开发机和现有的 CI 里也没有带 Secret Service 的 Linux 桌面可以验证。
 - 文件来源要求只对当前用户可读、不在工作区内，并加进所有沙盒的读取禁止名单。凭据只保存在 Host 内存里；凭据来自文件时，模型服务返回 401 就重新读取一次，值变了才重发。
-- 不提供输出凭据的命令（Claude Code 的 `apiKeyHelper` 一类）：它要在沙盒外以用户的全部权限运行程序。密钥管理服务的输出可以经标准输入一次写进钥匙串。
-- 不提供 Claude 订阅登录：Anthropic 的条款不允许第三方应用用订阅的凭据替用户发请求（[legal-and-compliance](https://code.claude.com/docs/en/legal-and-compliance)）。用 ChatGPT 账号登录在 P5 加入（条件见[实施计划](../roadmap.md#不做的功能)），接入时照 OpenAI 的文档：动态注册，`agent_name_hint` 用 `Osprey Code`，`ext_agent_host_id` 用 JWK 指纹 URN、存在 `data/` 里；回调只监听 `127.0.0.1` 的 `/auth/callback`，端口由系统分配；用 PKCE S256、state 和 nonce，按 JWKS 验证 ID token；令牌组整体存进钥匙串，refresh token 每次刷新都会轮换，多个 Host 进程刷新同一账号时加锁；令牌只在 `model-proxy/` 里使用。
+- **输出凭据的命令**（P5）：云厂商只发短期凭据（Google Cloud 和 Entra ID 的访问令牌约一小时过期，AWS 的临时凭据同样会过期），存进钥匙串很快就失效，所以照 Codex 的 `model_providers.<id>.auth` 加一种来源：`"<ID>" = { command = "<程序>", args = ["<参数>", …], timeout_ms = 5000, refresh_interval_ms = 300000 }`，后两项可以不写，上面是默认值。
+  - Host 不经 shell 直接运行这个程序：标准输入关闭，环境变量是 Host 启动时的，当前目录是 Host 根目录而不是工作区（有的程序会读当前目录下的配置，不让仓库影响它）。程序名不带路径分隔符时按 `PATH` 查找，带的要写绝对路径（相对路径会按 Host 根目录解析，和用户在 shell 里看到的不一样），否则加载配置时报错。标准输出去掉首尾空白就是凭据；退出码不是 0、超过 `timeout_ms` 或输出为空时报错，错误信息只有程序名和退出码，不含它的输出。
+  - 结果只保存在 Host 内存里。距上次运行超过 `refresh_interval_ms` 后，下一次模型请求之前重新运行；模型服务返回 401 时也重新运行一次，值变了才重发。`refresh_interval_ms = 0` 表示只在 401 之后重新运行。会话中程序运行不了时，这次模型请求不发出、以"认证失败"结束，不占请求次数；记忆提取用的凭据同样先刷新。远程 MCP server 和本地 MCP server 的凭据不能用命令。
+  - 它在沙盒外以用户的全部权限运行程序，所以只认用户级配置和启动参数（SDK 的 `credentials` 选项；CLI 没有对应的参数，参数数组在命令行上写不清楚），仓库配置的 `[credentials]` 照常忽略。`login status` 只列出程序名，不列参数。
+  - 凭据的内容怎样附在请求上由模型条目的 `auth` 决定（见 api 的[认证](api.md#认证)）：令牌类的服务让命令输出令牌本身（如 `gcloud auth print-access-token`、`az account get-access-token --resource https://ai.azure.com --query accessToken --output tsv`），`aws-sigv4` 让命令输出 AWS `credential_process` 格式的 JSON（如 `aws configure export-credentials --format process`）。这个格式的凭据也可以放在文件或钥匙串里。
+- 不提供 Claude 订阅登录：Anthropic 的条款不允许第三方应用用订阅的凭据替用户发请求（[legal-and-compliance](https://code.claude.com/docs/en/legal-and-compliance)）。用 ChatGPT 账号登录在 P5 加入（条件见[实施计划](../roadmap.md#不做的功能)）。2026-11-12 核对，条件还不满足，没有接入：P2 的 MCP OAuth 一侧已经具备，但 OpenAI 的文档仍给这项服务列着[预览期的限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)（请求不能带 `max_output_tokens`、`temperature` 等字段，函数工具要放进 namespace），按文档刷新令牌被 `invalid_grant` 拒绝的问题（[sign-in-with-chatgpt-devkit#5](https://github.com/openai/sign-in-with-chatgpt-devkit/issues/5)）也还开着、OpenAI 没有答复。接入时照 [OpenAI 的文档](https://developers.openai.com/siwc/token-sharing-open-source)：动态注册，`agent_name_hint` 用 `Osprey Code`，`ext_agent_host_id` 用 JWK 指纹 URN、存在 `data/` 里；回调只监听 `127.0.0.1` 的 `/auth/callback`，端口由系统分配；用 PKCE S256、state 和 nonce，按 JWKS 验证 ID token；令牌组整体存进钥匙串，refresh token 每次刷新都会轮换，多个 Host 进程刷新同一账号时加锁；令牌只在 `model-proxy/` 里使用。
 
 ## session 的打开和关闭
 
@@ -240,7 +247,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 - **指名的事件**：用 `event_id`（`session export` 每一行都带）。能指名的是存着内容的那几类：用户输入（`task.started`、`input.queued`）、消息（`message.sent`、`message.completed`）、工具调用（`tool_call.started` 是参数，`tool_call.completed` 是结果）、压缩（`context.compacted`）和 hooks 的运行（`hooks.ran`）。压缩也能指名：手动压缩是最后一个动作时，摘要还没有随请求记成消息，只有这个事件可指。事件不在这个 session 读得到的记录里（它自己的事件和分叉沿用的那段路径上的）、类型不在上面这些里，或者已经没有可覆盖的内容时报错。
 - **指名的记忆**：也可以给记忆的编号（`memoryIds`，CLI 的 `--memory`），和事件一起给或者单独给：覆盖这条记忆的标题和正文在这个 session 读得到的记录里的副本（见下面"记忆的内容"）。记忆已经删除也照样能给，副本靠记录里的编号找，不查记忆库。
 - **副本只按编号找，不按内容猜**：猜错会覆盖用户没让忘的内容。从指名的事件出发一直找到没有新的为止：
-  - 消息：同一个 `message_id` 的 `message.sent`、`message.completed` 和目标协议的原文（`protocol.raw`，分叉和恢复后的 run 里可能各有一份）。assistant 消息发起的每次调用登记的参数是它的副本，调用的结果不是。工具结果消息的内容就是那次调用的结果。
+  - 消息：同一个 `message_id` 的 `message.sent`、`message.completed` 和目标协议的原文（`protocol.raw`，分叉和恢复后的 run 里可能各有一份）。assistant 消息发起的每次调用登记的参数是它的副本，调用的结果不是。工具结果消息的内容就是那次调用的结果。子 agent 最后一条回复另有一份在父 run 里它的结果通知里（`background.notification`，按通知带的 `message_id`，见[子 agent 和多 worker](#子-agent-和多-worker)）。
   - 工具调用的参数：同一个 `message_id` 加 `call_id` 的 `tool_call.started`（恢复时重新登记的也算），发起它的回复里那一个 `tool_call` 块（回复的原文分不开，整个覆盖），同一个 `tool_call_id` 的 `approval.requested`（连同只批准一部分权限时回答里列的路径和域名）、`background.started` 的命令行（连同之后向它的 stdin 写入时询问里带的命令行）和 `hooks.ran`。
   - 工具调用的结果：`tool_call.completed`，把结果交给模型的那条消息和它的原文，`output/` 下这次调用的输出文件，这次调用启动的后台命令的通知（`background.notification`，按 `background_id`），拒绝时用户写给模型的话（`approval.decided`），同一个 `tool_call_id` 的 `hooks.ran`（hooks 补充的信息接在结果后面）。
   - 排队的输入：同一个 `input_id` 在各个队列事件的快照里的副本，同一个 `input_id` 的 `hooks.ran`；steering 插进 task 时放它的那条 user 消息（`input.inserted` 记着两边的编号）；follow-up 作为新 task 开始时的 `task.started`（同一个 task 里的 `input.dequeued` 记着它的编号）。这两条反过来也找。
@@ -253,7 +260,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 - **引用同一份大内容的事件**：session-store 覆盖事件时把它引用的大内容一起覆盖，引用同一份的别的事件读到的也成了占位，所以一起覆盖并继续找它们的副本。覆盖哪些大内容问 session-store（`redactionScope`），它和实际覆盖用同一套判断；别的事件引用了哪份，看事件里图片的引用。
 - **压缩**：路径上在被覆盖的事件之后的 `context.compacted` 一起覆盖，连同模型写摘要的那条回复和压缩后的上下文随下一次请求记成的消息：摘要是照着被覆盖的内容写的。只看这一次会改动的事件之后的压缩：以前覆盖过的事件之后的压缩，要么当时已经覆盖，要么是照着占位写的。被覆盖的压缩作废，恢复后的历史怎样重建见 agent-runtime 的[上下文](agent-runtime.md#上下文)。压缩之后又做了很多的 session，重建出的历史可能超过模型的输入容量：请求被模型服务拒绝后 runtime 再压缩一次，摘要请求同样发不出去，task 以 `failed` 结束（原因是压缩上下文失败）；这时回退或分叉到历史还放得下的位置再继续。离线脱敏时没有模型可以重写摘要，所以不在这里处理。
 - **占位内容**：`[REDACTED]`，和 `redaction/` 换掉密钥用的一样。被覆盖的事件保留原来的结构（编号、角色、类型、状态、用量），内容换成占位，并带上 `redacted: true`：读回时照样通过事件格式的检查，恢复、撤销和会话树都不受影响，前端可以显示"已脱敏"。`redacted` 是事件上的一个可选字段，事件的格式版本不变。
-  - `message.sent`：内容换成一个文字块；只覆盖其中几块时（记忆的内容），这几块各换成一个占位的文字块，块的个数和顺序不变。`message.completed`：文字块换成占位，`tool_call` 块留着 `call_id` 和名字、参数换成 `{}`，拒绝的说明去掉；推理块留在原位、文字换成占位、给模型服务核对的密文去掉。推理块不删：`blocks.invalidated` 按下标指块，删了会错位，而它们在重建历史时本来就作废。
+  - `message.sent`：内容换成一个文字块；只覆盖其中几块时（记忆的内容），这几块各换成一个占位的文字块，块的个数和顺序不变。`message.completed`：文字块换成占位、引用去掉，`tool_call` 块留着 `call_id` 和名字、参数换成 `{}`，拒绝的说明去掉；推理块留在原位、文字换成占位、给模型服务核对的密文去掉；服务端工具的不透明块留在原位，原文换成 `{}`、说明去掉。推理块和不透明块不删：`blocks.invalidated` 按下标指块，删了会错位，而它们在重建历史时本来就作废。
   - `tool_call.started`：参数换成 `{}`，`edits` 留着：撤销和恢复要用其中的路径和哈希。`tool_call.completed`：结果换成一个文字块，状态不变。
   - `protocol.raw`：片段换成一个占位，内容的摘要也换掉：摘要是从原文算的。没有代码把它读回来解析。
   - `context.compacted`：摘要换成占位，带的消息留着编号和角色、内容换成占位，已加载的 skill 去掉。
@@ -317,6 +324,7 @@ P3 交付。恢复由 Host 发起、runtime 执行，入口和 [agent 进程的�
 - **结果不确定的工具调用**：只有"开始执行"（`tool_call.started`）、没有结果的调用，由 Host 在启动 agent 进程之前处理：
   - 文件改动按哈希核对后自动写结果：`tool_call.started` 的 `edits` 记着每个文件改动前后的哈希（编辑工具登记的，和 apply-edits 的清单），全是新内容记成功，全是旧内容记失败，其余记 `interrupted`。
   - 有 `approval.requested` 而没有 `approval.decided` 的调用视为从未执行；声明为可以安全重复的工具（`idempotent`）不用问。这两种都不写结果，留给恢复后的 runtime 重新执行，需要批准的也就重新询问。
+  - 子 agent 的三个工具（`spawn_agent`、`send_message`、`interrupt_agent`）直接写一条 `status: interrupted` 的结果，不用问：子 agent 不恢复，重新执行与否由模型看到结果后决定。
   - 其余的（命令、MCP 调用）一律询问用户：`approval.requested` 的 `kind` 为 `resume_uncertain`，带 `tool_call_id`、工具名、参数和原因（`reasons`，和别的询问一样）。批准是重新执行（不写结果），拒绝是跳过（写一条 `status: interrupted` 的结果）。审批策略是 `never`（非交互模式）时不询问，恢复直接失败，session 记录不动。
   - 有询问时 `resumeSession` 发出询问后就返回：前端要用返回的 session 回答。agent 进程等全部回答完才启动，这期间的输入排队。没有回答完就关闭 session 时 task 不结束，下次恢复再问。
 - **重新执行**：runtime 重建历史时，最后一条回复里登记过、没有结果的调用就是要重新执行的；同一个调用登记过几次的看最后一次。它们在下一个 task 开始时、新的输入进入上下文之前执行（中断的 task 已经结束，事件和用量要记在一个 run 里）：用相同参数重新登记（新的 `tool_call_id`），权限检查照常做；同一条回复里已有结果的调用沿用原结果，还没登记过的一起执行。
@@ -364,6 +372,57 @@ P3 交付。快照和撤销由 Host 的 `workspace/` 负责：撤销所需的数
 - 打开 session 时（已持有工作区锁）删除影子仓库里残留的 `index.lock`。
 - 快照的引用是 `refs/ospreycode/<session_id>/<输入事件的 event_id>`，同一个检查点的快照是这个引用下的一串提交。
 - 清理：打开 session 时和检查点超过保留数之后，Host 列出影子仓库里的引用交给 session-store，它返回不再被引用的（见 session-store 的[检查点的保留](session-store.md#检查点的保留)），`workspace/` 在快照沙盒里删掉这些引用并运行 `git prune`。影子仓库从不打包，对象都是松散的，`prune` 就能回收；`gc` 每次重写整个包，实测慢 4 倍以上。回收要遍历所有对象（1 万个文件的仓库约 1 秒，10 万个约 15 秒），这期间工具调用等着快照，所以 session 运行中攒够 20 个已清理的检查点才清理一次，剩下的留到下次打开 session 时。一个工作区的 session 都删除之后，删掉它的整个影子仓库目录；删之前取得工作区锁，取不到（这个工作区或和它互相包含的工作区正有 session 打开着）就不删，留给之后打开的 session 照上面的办法清理。
+
+## 子 agent 和多 worker
+
+主 agent 用 `spawn_agent`、`send_message`、`interrupt_agent` 三个工具启动和管理子 agent（通道操作见 agent-runtime 的[子 agent](agent-runtime.md#子-agent)）。在自己的工作区里运行的子 agent 就是 worker，其余完全相同。
+
+**定义**。子 agent 只能按 `config.toml` 里 `[agents.<名字>]` 的定义启动，模型不能临时指定权限或模型：
+
+- `description`（必填）是给主 agent 看的用途；`instructions` 是给子 agent 自己的补充说明。名字用小写字母、数字、`_` 和 `-`，以字母开头。
+- `model` 取模型清单里的 ID，没写时用 session 当前的模型；`reasoning_effort` 没写时用 session 的。仓库配置里的 `model` 忽略并在启动时列出：选用哪个模型只认用户级配置（见[配置的分层](#配置的分层)）。启用了费用上限时，定义用的模型也要有价格。
+- `sandbox_mode` 只能写 `read-only`，不写时和 session 当前的沙盒模式相同：定义只能收紧。
+- `tools` 列出启用的内置工具；写了就只有这些，没有 `skill_load` 和 MCP 工具。不写时和主 agent 的工具相同。两种情况都没有 `memory_*` 和子 agent 的三个工具：记忆只给主 agent，嵌套只有一层。
+- `workspace` 是 `shared`（默认，和主 agent 共用工作区）或 `isolated`（worker，见下文）。
+- 一个定义也没有时不启用这三个工具：没有配置的 session，工具集和行为同加入子 agent 之前完全一样。不内置默认的定义。
+
+**进程和权限**
+
+- 每个子 agent 是 Host 另起的一个 agent 进程，有自己的通道、自己的一组沙盒（agent 沙盒和两个辅助进程）和自己的模型代理；Host 按通道确定请求来自哪个 agent。一个子 agent 只做一个 run，run 结束进程和沙盒就停掉；它启动的后台命令属于 session，沙盒等这些命令结束后再停。
+- 子 agent 的进程不记 `process.started`、`process.exited`：它的起止由 `subagent.started`、`subagent.ended` 记录。进程照常登记在进程登记表里，Host 被强制结束后按登记表清理。
+- 沙盒模式取 session 当前模式和定义里较严的一个。session 选用了命名权限配置而定义写了 `read-only` 时，保留这份配置禁止读写的路径和域名，只去掉它放开写入的路径：直接换成内置的 `read-only` 会放开它禁止读的路径。这时 `subagent.started` 的 `sandbox_mode` 记 `read-only`。
+- 定义用的模型和 session 的模型不是同一个服务时，Host 在启动子 agent 时另取那个服务的凭据，取不到就启动失败。凭据来自文件的，这个文件从打开 session 起就对 session 的所有沙盒禁止读取：定义随时可能被用到。
+- 和主 agent 共用工作区的子 agent 改文件、运行命令前后照常做快照，和主 agent 的改动记在同一个 task 的检查点里。
+- Linux 上和主 agent 共用工作区的子 agent 的沙盒停掉时不清理受保护路径的占位（见 sandbox 的[受保护的路径](sandbox.md#受保护的路径)）：主 agent 的沙盒还靠它们挡住这些路径，留到主 agent 的沙盒停掉时一起清。
+- 审批策略和权限规则用 session 当前的；`/approval` 切换时运行中的子 agent 一起换。本任务内的批准（"本任务内允许"、`request_permissions` 批下的路径和域名）不在父子之间、子 agent 之间共用：批准是对发起它的那个 agent 的那类动作给的。
+- 询问照常经 `approval.requested` 发给前端，事件的 `agent_id` 是发起的子 agent；非交互模式下和主 agent 一样自动拒绝。
+- 子 agent 的工具调用照常运行 `PreToolUse`、`PostToolUse` hooks；`Stop`、`PreCompact` hooks 不对子 agent 运行：它们是用户对整个任务设的检查，由主 agent 的 run 触发一次。
+- 子 agent 的通道上只接受它用得到的操作：`subagent/*`、`memory/*`、`record/read`、`blob/read`、`image/read`、`hooks/run` 按协议错误处理。
+- 子 agent 进程握手之前没能启动（沙盒建不起来、没有它用的模型的凭据、进程启动失败）时什么也不记，原因作为 `spawn_agent` 的结果交给模型。握手之后异常退出的子 agent 以 `failed` 结束，不重启，也不计入 session 连续异常退出的次数：它没有可以接着做的记录位置，主 agent 可以重新启动一个。
+
+**worker 的工作区**
+
+- 定义写了 `workspace = "isolated"` 时，Host 在 `workers/<session>/<agent>/` 下为它建一份项目仓库的克隆，worker 的工作区是克隆里和 session 工作区相同的相对路径。克隆在沙盒里用 `git clone --shared` 做：沙盒无网络，只能写这个目录，不读用户和系统的 git 配置，对象经 alternates 共用、不复制。
+- 不用 `git worktree`：它要写用户仓库的 `.git`，还会运行仓库里的 hooks，违反[不在沙盒外对用户的仓库运行 git](#host-负责) 的约束；克隆对用户的仓库只读。
+- 克隆出来的是 `HEAD` 的提交，没有提交的改动不在里面；项目不是 git 仓库或还没有提交时启动失败，原因交给模型。
+- 主 agent 的沙盒对 `workers/<session>/` 只读，worker 之间互相也只读。合并由主 agent 在自己的工作区里做，Host 不自动合并。
+- worker 的工作区不做快照：撤销还原的是用户的工作区，worker 的改动要等主 agent 合并进来才成为对用户工作区的改动，那时照常有快照。构建缓存仍按项目共用。
+- worker 的工作区保留到 session 关闭时删除，没有合并的改动随之丢弃；上次没有正常关闭留下的，在恢复和删除 session 时清掉。
+
+**预算和取消**
+
+- 子 agent 的模型请求计入父 run 的请求次数，用量和费用同时加进父 run 的合计：`task.ended` 的用量包含它启动的全部子 agent。超出上限时只问用户一次（记在父 run 上），追加的额度父子共用；拒绝追加就停止整个 task，这之后还没停下来的子 agent 再发模型请求直接拒绝，不再问一遍。
+- 每个父 run 同时最多 6 个子 agent，超出时 `spawn_agent` 失败并说明原因。
+- 取消父 run（用户取消、超出上限、关闭 session）时先取消它的全部子 run：中止 Host 一侧进行中的请求，通知子 agent 的 runtime，5 秒内没有结束就结束进程。父 run 以其他结果结束时（失败、拒绝）同样先停掉剩下的子 agent。`task.ended` 记在所有子 run 结束之后。
+- 子 agent 自己结束（完成、失败、异常退出）时，Host 把结果（它最后一条回复的文字，失败时是原因）排进后台通知的队列并发 `subagent/ended`；被 `interrupt_agent` 停止的和随父 run 取消的不发通知。
+
+**记录和事件**
+
+- 子 agent 的 run 和父 run 属于同一个 task：`run.started` 带子 agent 的 `agent_id`、`parent_agent_id` 和 `parent_tool_call_id`，`base` 为空。它的事件不移动 session 的当前位置，不在会话树的路径上（见 session-store 的[事件格式](session-store.md#事件格式)）：重建主 agent 的历史、`history()`、分叉和记忆提取都只沿路径读，不会混进子 agent 的对话。
+- 子 run 里多两种事件：`subagent.started`（定义的名字、模型、沙盒模式、工作区）和 `subagent.ended`（结果、这个子 agent 的用量、失败原因），其余和主 agent 的 run 相同（`message.completed`、`tool_call.*`、`approval.*` 等），前端按 `agent_id` 区分。交给子 agent 的任务不另记：它就在父 run 那次 `spawn_agent` 调用的参数里，也在子 run 的 `message.sent` 里。
+- 子 agent 的结果在父 run 里记成 `background.notification`（`background_id` 为空），交给模型时记 `background.delivered`。
+- 子 agent 做完时的结果通知另带 `message_id`：它最后一条回复的编号。按事件脱敏时指定这条回复，父 run 里的结果通知一起覆盖：通知里是这条回复的原文，而通知本身不能指定。其余不跨 run 找副本：把通知交给主 agent 的模型的那条 `message.sent`、父 run 里 `spawn_agent` 调用的参数（交给子 agent 的任务）和子 run 里别的事件要分别指定。
+- 中断后的恢复不恢复子 agent：记录里有 `subagent.started`、没有 `subagent.ended` 的子 run 在恢复时补记 `subagent.ended`（`failed`），并给模型排一条不唤醒 session 的通知，和丢失的后台命令同样处理；主 agent 没有结果的子 agent 工具调用记成 `interrupted`（见[中断后的恢复](#中断后的恢复)）。
 
 ## 扩展的管理和信任
 
@@ -488,7 +547,7 @@ CLI 是单独的 `cli` 包，只依赖 `agent-host` 的 `sdk/` 入口和终端�
 - **退出码**：0 完成、1 失败、2 参数或配置错误、3 超出预算、130/143 被信号取消。
 - **命令行的解析**：子命令写在命令行的最前面，其余的参数都归它；开头的词不是子命令的名字时是根命令，这个词就是 `PROMPT`，这样任务里出现 `doctor` 这样的词不会被当成命令。二级子命令照同一条规则：`exec` 之后紧跟的词是 `resume` 才是 `exec resume`，否则这个词是 `PROMPT`。`--last` 占 `SESSION_ID` 的位置，写了它时位置参数里只有 `PROMPT`，个数由 `resume` 和 `exec resume` 自己检查：命令表里一条命令的参数个数是固定的。解析、`--help` 和补全脚本都从同一张命令表生成，用 Node 自带的 `parseArgs`，不加解析参数的依赖。命令行写错（未知的选项、缺少或多余的参数）时把原因和查看帮助的办法写到 stderr，退出码 2。
 - **恢复会话**：`resume` 和 `exec resume` 只恢复在当前工作区创建的 session（见 [session 的打开和关闭](#session-的打开和关闭)的"工作区固定"），`--last` 和选择器也只看这个工作区的：同一个项目里别的工作区的 session 选了也恢复不了。选择器每项是最后写入的时间和标题，最近写过的在前，取消时退出码 0；工作区里没有 session 时按工作区的错误报告，退出码 2。交互模式按 `session.history()` 重画之前的对话，再说明中断前的批准都已失效。恢复时 Host 新记下的事件（中断的 task 的收尾、丢失的后台命令、要回答的询问）既在 `history()` 里，也已经发给 `onEvent`：前端按 `event_id` 把它们从 `history()` 里去掉，当作实时事件处理，每个事件只处理一次。`exec resume` 遇到要询问的调用时恢复失败，退出码 1：这不是参数或配置的错误，换成交互模式就能恢复。
-- **非交互模式的文本输出**：不带 `--json` 时 stdout 只有主任务最后一条回复的文本，过程（每次工具调用、没有成功的工具结果、等待和结束的后台命令、警告和错误、没有完成时的原因）每条一行写到 stderr：管道的下游拿到的就是答案。主任务因 agent 进程异常退出而失败时，原因只在"没有完成"那一行写一次，随后那条错误只写原因之后的内容，没有就不写。
+- **非交互模式的文本输出**：不带 `--json` 时 stdout 只有主任务最后一条回复的文本，过程（每次工具调用、没有成功的工具结果、等待和结束的后台命令、警告和错误、没有完成时的原因）每条一行写到 stderr：管道的下游拿到的就是答案。主任务因 agent 进程异常退出而失败时，原因只在"没有完成"那一行写一次，随后那条错误只写原因之后的内容，没有就不写。子 agent 的开始和结束各写一行，它的工具调用那几行前面写明是哪个子 agent 的；它的回复不进 stdout：答案是主 agent 的最后一条回复。
 - **非交互模式下的扩展**：审批策略是 `never`，所以只有权限规则放行的 MCP 工具能调用，Host 不向 MCP server 声明能回答提问，server 的联网申请直接拒绝。没确认的仓库扩展和别的提示各在 stderr 写一行。`UserPromptSubmit` 的 hooks 拦下输入时 task 不开始，原因写到 stderr、不带调用栈，退出码 1：这不是参数或配置的错误。hooks 的 `system_message` 和阻止的原因各在 stderr 写一行。
 - **路径参数**：`-o` 和 `--credential-file` 的相对路径相对运行命令时的当前目录，`--rules` 的相对路径相对 `-C` 之后的工作区：前两个是调用方自己的文件，权限规则文件通常跟着项目。`-o` 的文件在打开 session 之前先清空，路径写错时在任务开始之前就报出来；主任务结束时写入，没有回复时是空文件。
 - **代理**：配置的 `proxy` 顶替启动环境里的 `HTTPS_PROXY`，`NO_PROXY` 照启动环境；只代理 https，本机上用 http 的模型服务不经代理。
@@ -546,7 +605,7 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 
 - CLI 每行写一个 JSON 对象到 stdout，日志只写 stderr，U+2028、U+2029 转义输出，退出前等 stdout 写完。
 - 第一条事件是 `session.started`，带整数 `format_version`、Host 版本、`user_id` 和 `project_id`。每个事件带 `type`、`session_id` 和 `time`；属于某个 task 的事件另带 `task_id`、`run_id`、`agent_id`，不属于任何 task 的工作（如后台的记忆提取）只另带 `run_id`；会存储的事件另带 `event_id` 和 run 内的 `seq`，便于和 session 记录对照。新增事件类型或字段不改 `format_version`，消费方忽略不认识的部分；删除、改名或改变含义时加一，并在 CHANGELOG 写明迁移方法。
-- 事件类型：`session.started`、`session.ended`；`task.started`、`task.ended`；`run.started`（子 agent 带父字段）；`message.completed`；`context.compacted`（上下文压缩成了摘要，带 `trigger`（`auto`、`manual`）、压缩前的估算 `tokens_before` 和摘要 `summary`；session 记录里的同一条事件另带压缩后的整份上下文，重建历史用，不发给前端，见 agent-runtime 的[上下文](agent-runtime.md#上下文)）；`tool_call.started`、`tool_call.completed`（结果的状态见[工具调用的处理](#工具调用的处理)）；`approval.requested`、`approval.decided`（被策略拒绝时 `decision` 为 `denied_by_policy`）；`elicitation.requested`、`elicitation.answered`；`memory.candidates`（task 结束时列出候选）、`memory.updated`、`memory.retrieved`（检索返回了哪些记忆）、`memory.extraction.started`、`memory.extraction.ended`（后台提取，带用量和候选数）；后台命令、hooks、进程和输入插入的事件；`warning`、`error`。
+- 事件类型：`session.started`、`session.ended`；`task.started`、`task.ended`；`run.started`（子 agent 带父字段）；`subagent.started`、`subagent.ended`（见[子 agent 和多 worker](#子-agent-和多-worker)）；`message.completed`；`context.compacted`（上下文压缩成了摘要，带 `trigger`（`auto`、`manual`）、压缩前的估算 `tokens_before` 和摘要 `summary`；session 记录里的同一条事件另带压缩后的整份上下文，重建历史用，不发给前端，见 agent-runtime 的[上下文](agent-runtime.md#上下文)）；`tool_call.started`、`tool_call.completed`（结果的状态见[工具调用的处理](#工具调用的处理)）；`approval.requested`、`approval.decided`（被策略拒绝时 `decision` 为 `denied_by_policy`）；`elicitation.requested`、`elicitation.answered`；`memory.candidates`（task 结束时列出候选）、`memory.updated`、`memory.retrieved`（检索返回了哪些记忆）、`memory.extraction.started`、`memory.extraction.ended`（后台提取，带用量和候选数）；后台命令、hooks、进程和输入插入的事件；`warning`、`error`。
 - 需要前端回答的请求都作为 `approval.requested` 发出，用 `kind` 区分：`tool_call`（工具调用和权限申请）、`network`（未放行的域名）、`budget`（超出预算后是否追加，见[预算](#预算)）、`resume_uncertain`（恢复时结果不确定的调用跳过还是重新执行，见[中断后的恢复](#中断后的恢复)）、`extension_changed`（扩展内容变了要重新确认）。本地 MCP server 连接没放行的域名时发 `server_approval.requested`（结果是 `server_approval.decided`），不并进 `approval.requested`：它不属于 task，回答的 `task` 范围是在这个 session 里放行这个 server 访问这个域名。`session.respond` 接受这些请求的决定和 elicitation 的表单答复；回答 `request_permissions` 的询问时可以带 `granted`，只批准申请里的一部分，超出申请的范围时 `respond` 抛出错误。
 - `message.completed` 带这条回复的用量和费用，`task.ended` 和 `session.ended` 带合计，脚本和评测不用读存储文件。
 - 流式增量（文本、工具参数和输出）是 `model.delta`（带 api 的流式事件，`end` 除外）和 `tool_call.output`，只发给 `sdk/` 的订阅方，不存储，也不写进 CLI 的 JSON 输出。
@@ -564,7 +623,8 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 - 没选 Ink：它的依赖写的是 `^` 范围，发布后无法固定间接依赖，也没有多行输入和 Markdown。
 - pi-tui 在 1.x 的次版本里也有破坏性改动，所以固定版本，升级时逐版核对它的 CHANGELOG；随包预编译的 `.node` 文件，引入时核对来源和许可证。
 - **布局**：从上到下是对话区、排队的输入、一行按键提示、输入框和状态行（模型、推理强度、沙盒模式、审批策略、工作区）。有询问时输入框的位置换成询问的面板，打开模型、后台命令或排队输入的列表时换成列表：同一时刻只有一处接收按键。状态行取 SDK 的 `session.config()`，不由 CLI 重新解析配置：配置文件改了而还没有 `/reload` 时，重新解析会把没生效的沙盒模式和审批策略显示出来。`/model`、`/effort` 成功后状态行马上变，`model.changed` 等事件到了（用到新设置的第一次模型请求之前）再在对话区记一行。
-- **显示**：对话区显示用户输入、流式的 Markdown 回复、推理内容（按 `[ui] show_reasoning`）、工具调用（名字、参数的要点、输出的最后 8 行、结果和耗时）、警告和错误、每个 task 的结果、用量和费用。对话区只留看得出进展的几行，完整的结果在 session 记录里。同一个原因只显示一行：agent 进程在 task 中途异常退出时，原因显示在这个 task 结束的那一行，随后那条错误只显示原因之后的内容（agent 进程输出的末尾），没有就不显示；session 被 Host 关闭时显示 Host 的那条错误，不另加一行。`edit`、`write` 的改动按工具参数画成增删行：事件只在越界的询问里带 diff。只用终端的 16 色，跟着终端的主题走，不探测终端的能力。
+- **显示**：对话区显示用户输入、流式的 Markdown 回复、推理内容（按 `[ui] show_reasoning`）、工具调用（名字、参数的要点、输出的最后 8 行、结果和耗时）、模型服务一侧执行的工具（回复结束后各一行，如 `web_search: <关键词>`：它们没有流式事件，见 api 的[服务端工具](api.md#服务端工具)）、警告和错误、每个 task 的结果、用量和费用。对话区只留看得出进展的几行，完整的结果在 session 记录里。同一个原因只显示一行：agent 进程在 task 中途异常退出时，原因显示在这个 task 结束的那一行，随后那条错误只显示原因之后的内容（agent 进程输出的末尾），没有就不显示；session 被 Host 关闭时显示 Host 的那条错误，不另加一行。`edit`、`write` 的改动按工具参数画成增删行：事件只在越界的询问里带 diff。只用终端的 16 色，跟着终端的主题走，不探测终端的能力。
+- **子 agent**：每个子 agent 在对话区占一条，随进展原地更新：定义的名字、模型、工具调用的次数和最近一次调用的要点，结束后换成结果、用量和费用；worker 另写它自己的工作区。它的回复和工具调用不逐条显示：几个子 agent 同时运行时会和主 agent 的输出混在一起，交回的结果照常作为给模型的通知显示。子 agent 发起的询问在面板标题和对话区里写明是哪个子 agent 的。
 - **启动和退出**：标准输入或标准输出不是终端时报用法错误（退出码 2），提示改用 `exec`。先打开 session 再接管终端：打不开时错误照常写到 stderr，终端没有动过。`/quit`、空输入框上的 Ctrl+D 和连按两次 Ctrl+C 关闭 session 后以 0 退出；session 因 agent 进程反复退出或出错而关闭时是 1；收到 SIGINT、SIGTERM 时关闭 session 后以 130、143 退出，关闭期间再来一个信号就不等了。
 - **Ctrl+C** 每按一次只做一件事，按这个顺序取第一件能做的：关掉打开的列表，取消运行中的 task（它挂起的询问由 Host 答为拒绝），拒绝没有 task 时的询问（来自后台命令），清空输入框，提示再按一次，退出。
 - **输入框的按键**：Enter 发送（task 运行时是 steering），Alt+Enter 排进 follow-up 列表（session 空闲、列表也没有暂停时和 Enter 一样开始 task：这时没有可排的列表），Shift+Enter 或 Ctrl+J 换行；Ctrl+P、Shift+Ctrl+P 换模型，Shift+Tab 换推理强度，Ctrl+V 粘贴剪贴板里的图片，Alt+↑ 打开排队的输入。输入排在上一个还没做完的 session 操作之后，轮到它时再按当时有没有 task 决定是开始 task 还是插入：agent 进程重启期间打的字不会发错地方。以 `/` 加小写字母开头的输入才当作会话内命令，`/usr/bin/x` 这样的路径照常发给模型；命令没做成的原因显示在对话区，session 继续。
@@ -608,3 +668,5 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 - P2：用常见的本地 MCP server 实测密钥的 mask。
 - P2：实测 Linux 上每个 hook 单独进沙盒的延迟。
 - P3：实测 Linux 上快照沙盒（工作区和 `.git` 只读、只放开影子仓库）能否正常运行 git。
+- P5：在 Linux 上运行 `agent-host/test/subagents.test.ts` 的"沙盒和工作区"和 `cli/test/interactive-subagents.test.ts` 的"子 agent 的询问"（现在只在 macOS 上运行）：没验证的是 bubblewrap 下只读定义的子 agent 写不了工作区，worker 在 Host 根目录里的克隆只有它自己的沙盒可写、这个 session 别的沙盒只读，克隆沙盒里 `git clone --shared` 能正常运行。
+- P5：在 Linux 上实测和主 agent 共用工作区的子 agent 的沙盒停掉之后，受保护路径的占位还在，主 agent 的沙盒停掉时才清掉。

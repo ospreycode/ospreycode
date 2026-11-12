@@ -1,6 +1,9 @@
 import type { HostEvent, RunLimits } from "@ospreycode/agent-host";
 import type { Usage } from "@ospreycode/api/protocol";
+import type { Mem0Usage } from "../runners/mem0.js";
 import {
+	type ExtraMemoryGroup,
+	extraMemoryGroups,
 	type MaintenanceSession,
 	type MemoryGroup,
 	type MemorySession,
@@ -26,6 +29,8 @@ export const minimumRuns = 3;
 
 /** 实验条件：写进报告，结果只在这些条件下成立。每个模型一份报告。 */
 export interface MemoryConditions {
+	/** 用的是哪些题：场景集的开发题还是保留题，或者冒烟题。 */
+	suite: string;
 	model: string;
 	/** 所用的模型协议。 */
 	protocol: string;
@@ -79,7 +84,7 @@ export interface PhaseCost extends SessionCost {
 
 /** 一个组的结果。 */
 export interface GroupResult {
-	group: MemoryGroup;
+	group: MemoryGroup | ExtraMemoryGroup;
 	passed: number;
 	trials: number;
 	/** 和无记忆组的配对差；无记忆组自己没有。 */
@@ -92,6 +97,17 @@ export interface GroupResult {
 	warm: PhaseCost;
 	/** 会话之间整理记忆的 session：提取记忆的开销在这里。 */
 	maintenance: SessionCost;
+	/** Mem0 对照组：Mem0 自己的模型和嵌入请求的用量合计，不在上面三项里。 */
+	external?: Mem0Usage;
+}
+
+/**
+ * 完整 memory 组没通过的运行，按同一道题同一次运行的诊断组分开：诊断组通过，问题出在写入或检索；
+ * 诊断组也没通过，问题出在使用，或者题目对这个模型太难。
+ */
+export interface Diagnosis {
+	writeOrRetrieve: number;
+	use: number;
 }
 
 /** 按无记忆时的通过次数分出的一层。 */
@@ -135,9 +151,17 @@ export interface MemoryReport {
 	/** 每道题在每个组里运行的次数。 */
 	runs: number;
 	groups: GroupResult[];
+	/** 单独报告的组（诊断组、Mem0 对照组）里运行过的，不参加五组之间的比较和分层。 */
+	extra: GroupResult[];
+	/** 运行了诊断组时才有。 */
+	diagnosis?: Diagnosis;
 	strata: Stratum[];
-	/** 每道题各组通过的次数，按题目名字排序。 */
-	perTask: { task: string; passed: Record<MemoryGroup, number> }[];
+	/** 每道题各组通过的次数，按题目名字排序；单独报告的组只有运行过的才在里面。 */
+	perTask: {
+		task: string;
+		passed: Record<MemoryGroup, number> &
+			Partial<Record<ExtraMemoryGroup, number>>;
+	}[];
 	memory: MemoryGroupDetail;
 }
 
@@ -236,10 +260,13 @@ export function memoryReport(
 ): MemoryReport {
 	const tasks = [...new Set(trials.map((trial) => trial.task))].sort();
 	const runs = Math.max(...trials.map((trial) => trial.run));
-	const of = (task: string, group: MemoryGroup) =>
+	const of = (task: string, group: MemoryTrial["group"]) =>
 		trials.filter((trial) => trial.task === task && trial.group === group);
+	const extraGroups = extraMemoryGroups.filter((group) =>
+		trials.some((trial) => trial.group === group),
+	);
 	for (const task of tasks) {
-		for (const group of memoryGroups) {
+		for (const group of [...memoryGroups, ...extraGroups]) {
 			const count = of(task, group).length;
 			if (count !== runs) {
 				throw new Error(
@@ -248,18 +275,21 @@ export function memoryReport(
 			}
 		}
 	}
-	const rate = (task: string, group: MemoryGroup) =>
+	const rate = (task: string, group: MemoryTrial["group"]) =>
 		of(task, group).filter((trial) => trial.passed).length / runs;
-	const difference = (group: MemoryGroup, among: readonly string[]) =>
+	const difference = (group: MemoryTrial["group"], among: readonly string[]) =>
 		pairedDifference(
 			among.map((task) => rate(task, group) - rate(task, "none")),
 		);
 	const compared = memoryGroups.filter((group) => group !== "none");
 
-	const groups = memoryGroups.map((group): GroupResult => {
+	const result = (group: MemoryTrial["group"]): GroupResult => {
 		const own = trials.filter((trial) => trial.group === group);
 		const counter = (key: keyof ProbeCounters) =>
 			sum(own.map((trial) => trial.counters[key]));
+		const external = own.flatMap((trial) =>
+			trial.external === undefined ? [] : [trial.external],
+		);
 		return {
 			group,
 			passed: own.filter((trial) => trial.passed).length,
@@ -274,8 +304,25 @@ export function memoryReport(
 			cold: phaseCost(own.flatMap((trial) => trial.learn)),
 			warm: phaseCost(own.map((trial) => trial.probe)),
 			maintenance: sessionCost(own.flatMap((trial) => trial.maintenance)),
+			...(external.length === 0
+				? {}
+				: {
+						external: {
+							llmRequests: sum(external.map((usage) => usage.llmRequests)),
+							embeddingRequests: sum(
+								external.map((usage) => usage.embeddingRequests),
+							),
+							tokens: {
+								input: sum(external.map((usage) => usage.tokens.input)),
+								output: sum(external.map((usage) => usage.tokens.output)),
+								embedding: sum(external.map((usage) => usage.tokens.embedding)),
+							},
+							costUsd: sum(external.map((usage) => usage.costUsd)),
+						},
+					}),
 		};
-	});
+	};
+	const groups = memoryGroups.map(result);
 
 	const stratumOf = (task: string): Stratum["name"] => {
 		const passed = of(task, "none").filter((trial) => trial.passed).length;
@@ -299,6 +346,13 @@ export function memoryReport(
 	);
 
 	const full = trials.filter((trial) => trial.group === "memory");
+	const diagnosed = full
+		.filter((trial) => !trial.passed)
+		.map((trial) =>
+			of(trial.task, "diagnostic").some(
+				(other) => other.run === trial.run && other.passed,
+			),
+		);
 	const sessions = full.flatMap((trial) => [...trial.learn, trial.probe]);
 	const all = [...sessions, ...full.flatMap((trial) => trial.maintenance)];
 	const extractions = eventsOf(all, "memory.extraction.ended");
@@ -307,11 +361,20 @@ export function memoryReport(
 		tasks: tasks.length,
 		runs,
 		groups,
+		extra: extraGroups.map(result),
+		...(extraGroups.includes("diagnostic")
+			? {
+					diagnosis: {
+						writeOrRetrieve: diagnosed.filter((passed) => passed).length,
+						use: diagnosed.filter((passed) => !passed).length,
+					},
+				}
+			: {}),
 		strata,
 		perTask: tasks.map((task) => ({
 			task,
 			passed: Object.fromEntries(
-				memoryGroups.map((group) => [
+				[...memoryGroups, ...extraGroups].map((group) => [
 					group,
 					of(task, group).filter((trial) => trial.passed).length,
 				]),
@@ -349,12 +412,14 @@ export function memoryReport(
 	};
 }
 
-const groupNames: Record<MemoryGroup, string> = {
+const groupNames: Record<MemoryGroup | ExtraMemoryGroup, string> = {
 	none: "无记忆",
 	history: "直接提供历史",
 	retrieval: "只检索",
 	memory: "完整 memory",
 	irrelevant: "等长无关记忆",
+	diagnostic: "诊断组（直接给出正确证据）",
+	mem0: "Mem0 对照组",
 };
 
 const failureNames: Record<MemoryFailure, string> = {
@@ -379,7 +444,8 @@ function points(value: number): string {
 	return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}`;
 }
 
-function formatDifference(difference: PairedDifference): string {
+/** 配对差写成一句话：平均值、置信区间和参加配对的题数。 */
+export function formatDifference(difference: PairedDifference): string {
 	return `${points(difference.mean)} 个百分点，95% 置信区间 ${points(difference.low)} 到 ${points(difference.high)}（${difference.tasks} 道题）`;
 }
 
@@ -416,6 +482,7 @@ export function formatMemoryReport(report: MemoryReport): string {
 		"",
 		`- 模型：${conditions.model}（${conditions.protocol}），推理强度 ${conditions.reasoningEffort}`,
 		`- 被测的 commit：${conditions.commit}，版本 ${conditions.version}；操作系统：${conditions.os}`,
+		`- 题目：${conditions.suite}`,
 		`- 沙盒模式：${memoryExperimentPermissions.sandboxMode}；审批策略：${memoryExperimentPermissions.approvalPolicy}`,
 		`- 每个 run 的上限：费用 ${limit(budget.maxCostUsd, "美元")}，模型请求 ${limit(budget.maxRequests, "次")}，时间 ${limit(budget.maxDurationMs, "毫秒")}；每个会话最多 ${conditions.timeoutMs} 毫秒`,
 		`- ${report.tasks} 道题，每道题在每个组里运行 ${report.runs} 次`,
@@ -469,12 +536,35 @@ export function formatMemoryReport(report: MemoryReport): string {
 		`- 模型提议的候选 ${memory.proposed} 条，平均每个 task ${perSession(memory.proposed + extraction.candidates)} 条候选（含提取的）；确认 ${memory.confirmations} 次`,
 		`- 索引平均每个会话 ${perSession(memory.indexTokens)} token`,
 		`- 没通过的运行：${memoryFailures.map((failure) => `${failureNames[failure]} ${memory.failures[failure]} 次`).join("，")}`,
+		...(report.extra.length === 0
+			? []
+			: [
+					"",
+					"## 单独报告的组",
+					"",
+					...report.extra.flatMap((group) => [
+						`${groupNames[group.group]}：`,
+						`- 成功率：${percent(group.passed, group.trials)}；和无记忆组的配对差 ${formatDifference(group.difference as PairedDifference)}`,
+						`- 没有记忆的状态（学习会话）：${formatPhase(group.cold)}`,
+						`- 已有记忆的状态（检验会话）：${formatPhase(group.warm)}`,
+						...(group.external === undefined
+							? []
+							: [
+									`- Mem0 自己的用量（不在上面两项里）：模型请求 ${group.external.llmRequests} 次，token 输入 ${group.external.tokens.input}、输出 ${group.external.tokens.output}；嵌入请求 ${group.external.embeddingRequests} 次，${group.external.tokens.embedding} token；${group.external.costUsd.toFixed(4)} 美元`,
+								]),
+					]),
+					...(report.diagnosis === undefined
+						? []
+						: [
+								`- 完整 memory 组没通过的运行里，诊断组通过的 ${report.diagnosis.writeOrRetrieve} 次（问题在写入或检索），诊断组也没通过的 ${report.diagnosis.use} 次（问题在使用，或者题目太难）`,
+							]),
+				]),
 		"",
 		"## 每道题通过的次数",
 		"",
 		...report.perTask.map(
 			({ task, passed }) =>
-				`- ${task}：${memoryGroups.map((group) => `${groupNames[group]} ${passed[group]}/${report.runs}`).join("，")}`,
+				`- ${task}：${[...memoryGroups, ...report.extra.map((group) => group.group)].map((group) => `${groupNames[group]} ${passed[group]}/${report.runs}`).join("，")}`,
 		),
 	].join("\n");
 }

@@ -18,6 +18,12 @@ import {
 	type RuntimeRequests,
 	runAgent,
 	type SkillLoadResult,
+	type SubagentSendParams,
+	type SubagentSendResult,
+	type SubagentStartParams,
+	type SubagentStartResult,
+	type SubagentStopParams,
+	type SubagentStopResult,
 	type TaskEndParams,
 	type ToolCallRunParams,
 	type ToolResult,
@@ -75,6 +81,14 @@ export interface FakeHostOptions {
 	amendResult?: (result: ToolResult) => ToolResult | undefined;
 	/** 一次登记的回复发出之后做的事：这时 runtime 开始执行这次调用。 */
 	afterRegister?: () => void;
+	/** 假 Host 管理的子 agent：`subagent/start`、`subagent/send` 和 `subagent/stop` 的回复。 */
+	subagents?: {
+		start?: (
+			params: SubagentStartParams,
+		) => SubagentStartResult | Promise<SubagentStartResult>;
+		send?: (params: SubagentSendParams) => SubagentSendResult;
+		stop?: (params: SubagentStopParams) => SubagentStopResult;
+	};
 	/** 假 Host 的记忆库：`memory/search`、`memory/read` 和 `memory/propose` 的回复。 */
 	memory?: {
 		/** `toolCallId` 是请求带的 `tool_call_id`：自动注入的检索没有。 */
@@ -297,6 +311,24 @@ export async function startFakeHost(
 			throw new Error("假 Host 没有准备接收记忆候选");
 		}
 		return options.memory.propose(params);
+	});
+	channel.handle("subagent/start", async (params) => {
+		if (options.subagents?.start === undefined) {
+			throw new Error("假 Host 没有准备启动子 agent");
+		}
+		return options.subagents.start(params);
+	});
+	channel.handle("subagent/send", async (params) => {
+		if (options.subagents?.send === undefined) {
+			throw new Error("假 Host 没有准备给子 agent 发输入");
+		}
+		return options.subagents.send(params);
+	});
+	channel.handle("subagent/stop", async (params) => {
+		if (options.subagents?.stop === undefined) {
+			throw new Error("假 Host 没有准备停止子 agent");
+		}
+		return options.subagents.stop(params);
 	});
 	channel.handle("task/end", async (params) => {
 		const index = ends.length;

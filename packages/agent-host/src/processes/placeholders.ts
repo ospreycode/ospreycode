@@ -28,6 +28,9 @@ function parseTable(text: string, path: string): Table {
 	return value as Table;
 }
 
+/** 沙盒用到的占位登记：包装前登记，沙盒启动和停止时清理。 */
+export type PlaceholderRegistry = Pick<Placeholders, "record" | "clean">;
+
 /**
  * Linux 上受保护路径的占位登记表（`data/placeholders.json`）。sandbox-runtime 为还不存在的受保护名字
  * 在用户的目录里放占位（空目录），命令结束后删除；Host 被强制结束时它们会留下来。

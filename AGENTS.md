@@ -13,13 +13,13 @@
 | [docs/packages/sandbox.md](docs/packages/sandbox.md) | 防护范围、照搬 Codex 的权限分层（沙盒模式、命名权限配置、审批策略、权限规则）、受保护的路径、构建工具的缓存、命令的执行（每条命令单独的沙盒）、越界申请（本机服务和本地端口、文件改动）、网络访问的审批、沙盒后端（辅助进程、sandbox-runtime 的限制和处理） | 改 `sandbox` 包，或改动涉及权限、沙盒和凭据 |
 | [docs/packages/session-store.md](docs/packages/session-store.md) | session 记录的存储格式（SQLite）、保存期限、事件格式、会话树（回退和分叉）、分叉的存储、回退时的后台命令、检查点的保留、删除和按事件脱敏 | 改 `session-store` 包，或新增事件、修改存储格式 |
 | [docs/packages/memory.md](docs/packages/memory.md) | 长期记忆的两种范围、记录格式、写入和检索、和规则文件的关系、查看纠正和删除、存储、评测、可借鉴的项目 | 改 `memory` 包 |
-| [docs/packages/api.md](docs/packages/api.md) | 内部协议、模型清单、发请求的方式、各家模型协议（`openai.chat`、`openai.responses`、`anthropic.messages` 等）的转换规则、追加指令的来源、原样重放、拒绝和回退、前缀校验失败、token 计数、上下文压缩 | 改 `api` 包，或改动涉及模型请求、模型配置 |
+| [docs/packages/api.md](docs/packages/api.md) | 内部协议、云平台上的模型服务和认证方式、模型清单、发请求的方式、各家模型协议（`openai.chat`、`openai.responses`、`anthropic.messages`、`google.generate-content`）的转换规则、追加指令的来源、原样重放、拒绝和回退、前缀校验失败、服务端工具、token 计数、上下文压缩 | 改 `api` 包，或改动涉及模型请求、模型配置 |
 | [docs/packages/skills.md](docs/packages/skills.md) | SKILL.md 的解析和校验、查找、按需加载；不支持 MCP 提供的 skills 的原因 | 改 `skills` 包 |
 | [docs/packages/mcp.md](docs/packages/mcp.md) | MCP 客户端的模块、为什么只在 Host 一侧使用、传输和请求、授权、协议版本、支持的功能、实现方式、本地 server 进程的生命周期 | 改 `mcp` 包，或改动涉及 MCP server 的连接 |
 | [docs/packages/agent-plugins.md](docs/packages/agent-plugins.md) | 插件格式、`mcp.json` 的解析、路径检查、本项目的命名空间 | 改 `agent-plugins` 包 |
 | [docs/packages/agent-runtime.md](docs/packages/agent-runtime.md) | 通道的操作和消息格式、进程入口、从 Host 得到的配置、工具执行（工具表、shell、编辑、重试）、运行中的用户输入、后台命令、上下文、系统指令、规则文件和模型切换、子 agent 和多 worker | 改 `agent-runtime` 包，或改动涉及通道 |
-| [docs/packages/agent-host.md](docs/packages/agent-host.md) | Host 的模块和职责、进程形态和通信（通道的连接、agent 进程的启动、异常退出和重启）、标识、项目身份、目录位置、配置的分层和配置项、凭据和登录、session 的打开和关闭（工作区锁、进程登记表）、task 的开始结束和取消、工具调用的处理、预算、恢复、快照和撤销、扩展的管理和信任、hooks（`hooks.json` 的格式和输入输出）、CLI（子命令、会话内命令、退出码、对外的事件格式、交互界面、提及文件和附件；`cli` 包的设计也在这里） | 改 `agent-host` 或 `cli` 包，或改动涉及标识、项目身份、目录、配置、凭据、锁、恢复、撤销、扩展的信任和 hooks |
-| [docs/packages/evaluation.md](docs/packages/evaluation.md) | 两类评测、各部分的评测要求、memory 评测（对比组、统计方法、Mem0 对照组）、防止刷分、报告内容、首批 benchmark、评测时的权限配置、sandbox 专项评测的组成和运行环境 | 写测试或评测，或判断改动是否有效 |
+| [docs/packages/agent-host.md](docs/packages/agent-host.md) | Host 的模块和职责、进程形态和通信（通道的连接、agent 进程的启动、异常退出和重启）、标识、项目身份、目录位置、配置的分层和配置项、凭据和登录、session 的打开和关闭（工作区锁、进程登记表）、task 的开始结束和取消、工具调用的处理、预算、恢复、快照和撤销、子 agent 和多 worker（定义、进程和权限、worker 的工作区、预算和取消、记录）、扩展的管理和信任、hooks（`hooks.json` 的格式和输入输出）、CLI（子命令、会话内命令、退出码、对外的事件格式、交互界面、提及文件和附件；`cli` 包的设计也在这里） | 改 `agent-host` 或 `cli` 包，或改动涉及标识、项目身份、目录、配置、凭据、锁、恢复、撤销、子 agent、扩展的信任和 hooks |
+| [docs/packages/evaluation.md](docs/packages/evaluation.md) | 两类评测、各部分的评测要求、memory 评测（对比组、统计方法、Mem0 对照组）、防止刷分、报告内容、对比实验（逐项关闭模块、开关沙盒、版本对比）、首批 benchmark、评测时的权限配置、sandbox 专项评测的组成和运行环境 | 写测试或评测，或判断改动是否有效 |
 
 ## 编码规则
 

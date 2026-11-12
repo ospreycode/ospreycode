@@ -227,7 +227,7 @@ coding-agent/
 - Node 的 `fetch` 默认不使用 `HTTPS_PROXY`，开启代理会改变整个进程的状态，所以由进程的拥有者开启：CLI 入口在打开 session 之前，按配置的 `proxy` 或启动环境里的 `HTTPS_PROXY` 调用 `http.setGlobalProxyFromEnv()`；`agent-host` 的 SDK 不改全局状态，嵌入它的程序自己开启代理，或经 SDK 传入带代理的 `fetch`。评测容器要求经代理访问模型服务时就是这种情况。
 - CLI 只以 npm 包分发：`cli` 包用 esbuild 把自己和全部 JS 依赖打包（照 pi v1.5.0），用 `npm install -g --ignore-scripts` 安装。按进程入口打成几个文件：CLI 本身、agent-runtime 的各个角色（agent 进程、apply-edits）和 `sandbox` 的辅助进程，Host 用 `process.execPath` 运行对应的文件。全局安装不使用包里的 lockfile，打包也就是在构建时固定传递依赖的办法；单独使用 SDK 包的项目由自己的 lockfile 固定，Host 从 `agent-runtime` 和 `sandbox` 的 `exports` 找到这些入口。
 - sandbox-runtime 的 `vendor/` 二进制随 `cli` 包发布。适配层确认 `apply-seccomp` 等文件存在后显式传入路径，不存在就停止，不让 sandbox-runtime 去 `npm root -g` 这类用户可写的位置找。
-- 不做单文件可执行程序：Node 26 的单文件程序还在开发阶段；Bun 编译的产物默认读取当前目录的 `.env` 和 `bunfig.toml`，等于让仓库文件改 Host 的环境。
+- 不做单文件可执行程序：Node 26 的单文件程序还在开发阶段（2026-11-12 核对，文档里的稳定性仍是 1.1 Active development）；Bun 编译的产物默认读取当前目录的 `.env` 和 `bunfig.toml`，等于让仓库文件改 Host 的环境。
 
 ### 工具链
 
@@ -247,13 +247,14 @@ coding-agent/
 
 先跑通开发机所用的 macOS。评测在 Linux 容器里运行，所以 agent 本身（不启用沙盒）从 P1 起也要能在 Linux 上运行。
 
-- **macOS**：只支持 Apple Silicon，最低 macOS 15，CI 在 GitHub 托管的 `macos-15` 和 `macos-26`（arm64）上用真实沙盒测试。不支持 Intel Mac：Node 26 已把 macOS x64 降为 Tier 2。
-- **Linux 上的 agent 本身**（不启用沙盒）：从 P1 起支持 x64 和 arm64 的 glibc 发行版，要求 glibc 2.28 以上；用 Node 26 时还要有 `libatomic1`。DeepSWE 的基础镜像 mars-base（Debian 12）满足这两项，但预装的 Node 24.12.0 低于下限，评测的安装步骤自带固定版本的 Node。不支持 musl（Alpine）。
+- **macOS**：只支持 Apple Silicon，最低 macOS 15，CI 在 GitHub 托管的 `macos-15` 和 `macos-26`（arm64）上用真实沙盒测试。不支持 Intel Mac：Node 26 已把 macOS x64 降为 Tier 2，并写明 2028 年初再降为 Experimental；CI 里也没有 Intel 的 runner（2026-11-12 核对）。
+- **Linux 上的 agent 本身**（不启用沙盒）：从 P1 起支持 x64 和 arm64 的 glibc 发行版，要求 glibc 2.28 以上；用 Node 26 时还要有 `libatomic1`。DeepSWE 的基础镜像 mars-base（Debian 12）满足这两项，但预装的 Node 24.12.0 低于下限，评测的安装步骤自带固定版本的 Node。不支持 musl（Alpine）：最低支持的 Node 24 把 musl 列为 Experimental，Node 26 才升为 Tier 2、官方二进制只有 x64，CI 里也没有 Alpine 的任务（2026-11-12 核对）。
 - **Linux 沙盒**：适配层在启动时按条件检查，不按发行版名判断：bubblewrap 0.8.0 以上且不是 setuid 安装，x64 或 arm64，非特权 user namespace 里能拿到能力，没有加载 `bwrap-userns-restrict`；任何一项不满足就报告不支持并停止。
   - 首个列入支持的发行版是 Ubuntu 24.04（自带 bubblewrap 0.9.0）：安装说明按它的发行说明给出允许 `bwrap` 使用 `userns` 的 AppArmor 配置，由用户以 root 安装，不整体关闭 `kernel.apparmor_restrict_unprivileged_userns`。
-  - Ubuntu 22.04（bubblewrap 0.6.1）不支持。Ubuntu 26.04 的 `apparmor` 包自带 `bwrap-userns-restrict`，在 sandbox-runtime issue #429 解决前不支持。
+  - Ubuntu 22.04（bubblewrap 0.6.1）不支持。Ubuntu 26.04 的 `apparmor` 包自带 `bwrap-userns-restrict`，在 sandbox-runtime issue #429 解决前不支持（2026-11-12 核对，issue 还开着）。
   - Debian 12、13 和 Fedora 43 起的 bubblewrap 满足版本要求，启动检查通过就能运行，但 CI 不测。
-- **不支持 Windows**：sandbox-runtime 的 Windows 后端还是 alpha，Node 在 Windows 上只能给子进程传三个标准流、通道用不了 fd 3，也没有 CI runner 验证。
+- **不支持 Windows**：sandbox-runtime 的 Windows 后端还是 alpha，Node 在 Windows 上只能给子进程传三个标准流、通道用不了 fd 3，也没有 CI runner 验证。2026-11-12 核对：sandbox-runtime 0.0.82（2026-11-10 发布）的 README 仍把 Windows 后端标为 alpha，并写明 Windows 上包装后的命令只带三个标准流启动。
+- **P5 的"更多平台"**指上面写着不支持或 CI 不测的各项：Windows、Intel Mac、musl、Ubuntu 26.04、Debian 和 Fedora，以及 Linux 桌面（要接系统凭据库，见 agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录)）。2026-11-12 逐项核对，没有一项的条件已经满足，也没有一项能在开发机（macOS arm64）或现有的 CI 配置里验证，所以没有新增平台；各项加入的条件见[实施计划](roadmap.md#不做的功能)。
 
 ### 名字
 
@@ -291,7 +292,7 @@ coding-agent/
 - 选中了模型测试却缺少密钥时直接失败，不用 `skipIf`：`npm test` 排除 `model` 标签是命令显式选择的。
 - 模型测试经一个中转服务访问 OpenAI、Anthropic 和 Gemini 三家的模型，每家一个密钥，各设额度上限。密钥放在仓库之外的一个目录里，每家一个只对当前用户可读写（0600）的文件，文件名是服务名（`openai`、`anthropic`、`gemini`），另有一个 `base-url` 文件写三家共用的接口地址；由环境变量 `OSPREYCODE_TEST_KEYS` 给出目录的路径。测试只拿到密钥文件的路径和接口地址，这个目录列入沙盒的读取禁止名单：macOS 上沙盒内能读到同一用户其他进程的初始环境变量（见 sandbox 的[沙盒后端](packages/sandbox.md#沙盒后端)）。
 - 测试从干净的环境变量和临时的 HOME 目录开始，只传入需要的设置。
-- 测试用的模型按中转服务上可用的选定：`anthropic.messages` 用 `claude-haiku-5-5`，P0 的验收场景也用它；`openai.responses` 和 `openai.chat` 用 `gpt-5.6-sol`（它在 Chat Completions 里只有 `reasoning_effort: none` 时才能调用工具），中转服务上它是 OpenAI 模型里最便宜的。中转服务返回的错误不带各家原来的错误码，错误归类的测试用 `api` 的脚本模型。模型清单的价格结构要能表达分时段的价格（如 DeepSeek 工作日高峰时段加倍）。
+- 测试用的模型按中转服务上可用的选定：`anthropic.messages` 用 `claude-haiku-5-5`，P0 的验收场景也用它；`openai.responses` 和 `openai.chat` 用 `gpt-5.6-sol`（它在 Chat Completions 里只有 `reasoning_effort: none` 时才能调用工具），中转服务上它是 OpenAI 模型里最便宜的；`google.generate-content` 用 `gemini-4-argon`，中转服务上能用原生接口调用的 Gemini 模型只有它。中转服务返回的错误不带各家原来的错误码，错误归类的测试用 `api` 的脚本模型。模型清单的价格结构要能表达分时段的价格（如 DeepSeek 工作日高峰时段加倍）。
 - 每个测试显式给出 run 的上限（0.05 美元、20 次请求、5 分钟）。每次运行有一份费用账本：全局初始化建的临时文件，各个 worker 进程里的测试在断言之前把花的钱记进去，失败和重跑的也算；合计超过每次运行的上限（1 美元）后，其余模型测试失败，运行结束时报告合计。
 - 断言只检查结构化结果：停止原因、工具名和按 schema 校验的参数、文件结果和退出码、事件和 session 记录的完整性、用量和错误类别，不检查模型写的原文。
 - 只对 `api` 归为限流、服务过载、网络中断和超时的失败重跑一次（vitest 标签上的 `retry.condition`），断言失败不重跑；重跑后才通过的测试按 `diagnostic().flaky` 记为不稳定，在运行结束时列出。账本、重跑的判断和上限的常量在 `scripts/model-test.ts`，模型测试都经它记账和报告模型请求的错误。

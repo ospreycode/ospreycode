@@ -132,8 +132,23 @@ export function onSegments(
 	);
 }
 
+/** 这个 session 自己的 run 是不是子 agent 的 run：它不进入会话树的路径。 */
+export function isSubagentRun(
+	db: DatabaseSync,
+	sessionId: string,
+	runId: string,
+): boolean {
+	const run = db
+		.prepare(
+			"SELECT parent_agent_id FROM runs WHERE session_id = ? AND run_id = ?",
+		)
+		.get(sessionId, runId) as { parent_agent_id: string | null } | undefined;
+	return run !== undefined && run.parent_agent_id !== null;
+}
+
 /**
- * `position` 在不在这个 session 的会话树里：自己的、属于 task 的事件，或者分叉沿用的那段路径上的事件。
+ * `position` 在不在这个 session 的会话树里：自己的、属于 task 又不在子 agent 的 run 里的事件，
+ * 或者分叉沿用的那段路径上的事件。
  */
 export function inTree(
 	db: DatabaseSync,
@@ -147,7 +162,11 @@ export function inTree(
 		.get(sessionId, position.run_id, position.seq) as
 		| { task_id: string | null }
 		| undefined;
-	if (own !== undefined) return own.task_id !== null;
+	if (own !== undefined) {
+		return (
+			own.task_id !== null && !isSubagentRun(db, sessionId, position.run_id)
+		);
+	}
 	const origin = forkOrigin(db, sessionId);
 	return (
 		origin !== null &&

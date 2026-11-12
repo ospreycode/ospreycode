@@ -56,11 +56,18 @@ function taskFailure(ended: TaskEndedEvent): string {
 }
 
 /**
- * 文本输出：stdout 上只有主任务的最后一条回复，脚本可以直接取用；过程（工具调用、警告、错误和
- * 没有完成的原因）每项一行写到 stderr。
+ * 文本输出：stdout 上只有主任务的最后一条回复，脚本可以直接取用；过程（工具调用、子 agent 的起止、
+ * 警告、错误和没有完成的原因）每项一行写到 stderr。
  */
 export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 	const names = new Map<string, string>();
+	/** 见过的子 agent 的名字，按 `agent_id`。 */
+	const subagents = new Map<string, string>();
+	/** 子 agent 的工具调用前面写明是哪一个的。 */
+	const owner = (agentId: string) => {
+		const name = subagents.get(agentId);
+		return name === undefined ? "" : `子 agent ${name} 的`;
+	};
 	let mainTask: string | undefined;
 	/** 主任务失败的原因：`mainTaskEnded` 会写出来，`error` 里和它重复的部分不再写。 */
 	let failure: string | undefined;
@@ -75,7 +82,9 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 					break;
 				case "tool_call.started":
 					names.set(event.tool_call_id, event.name);
-					stderr.write(`工具 ${event.name}：${brief(event.arguments)}\n`);
+					stderr.write(
+						`${owner(event.agent_id)}工具 ${event.name}：${brief(event.arguments)}\n`,
+					);
 					break;
 				case "tool_call.completed":
 					if (event.result.status !== "succeeded") {
@@ -84,10 +93,24 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 						stderr.write(
 							name === undefined
 								? `上次中断的工具调用的结果：${event.result.status}\n`
-								: `工具 ${name} 的结果：${event.result.status}\n`,
+								: `${owner(event.agent_id)}工具 ${name} 的结果：${event.result.status}\n`,
 						);
 					}
 					break;
+				case "subagent.started":
+					subagents.set(event.agent_id, event.name);
+					stderr.write(
+						`子 agent ${event.name} 开始运行（模型 ${event.model}，沙盒模式 ${event.sandbox_mode}）\n`,
+					);
+					break;
+				case "subagent.ended": {
+					// 恢复 session 时 Host 给上次中断的子 agent 补上结束，它开始的事件在上一次运行里
+					const name = subagents.get(event.agent_id);
+					stderr.write(
+						`${name === undefined ? "上次中断的子 agent" : `子 agent ${name}`} 结束了（${event.outcome}）${event.error === undefined ? "" : `：${brief(event.error)}`}\n`,
+					);
+					break;
+				}
 				case "context.compacted":
 					stderr.write(
 						`上下文接近模型的上限，已自动压缩（压缩前约 ${event.tokens_before} token）\n`,

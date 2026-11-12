@@ -84,6 +84,8 @@ describe("估算", () => {
 		expect(imageTokens("openai.chat", jpeg(4000, 3000))).toBe(85 + 170 * 4);
 		expect(imageTokens("anthropic.messages", gif(750, 100))).toBe(100);
 		expect(imageTokens("anthropic.messages", webp(1500, 1000))).toBe(2000);
+		// Gemini 每张图片固定 1120 个 token
+		expect(imageTokens("google.generate-content", png(1000, 500))).toBe(1120);
 		// 读不出尺寸时按会话允许的最大尺寸 2000 × 2000 算
 		expect(
 			imageTokens("anthropic.messages", {
@@ -155,6 +157,32 @@ describe("估算", () => {
 				estimateContext(model, [system, reply(fields), result], tools),
 			).toBe(toolTokens + 100 + 50 + 10);
 		}
+	});
+
+	test("带服务端工具内容块的回复不作锚点：它的输入用量是服务端几次采样的累计", () => {
+		const searched = reply({
+			message_id: "a2",
+			content: [
+				{
+					type: "opaque",
+					kind: "web_search_tool_result",
+					raw: "r".repeat(1_700),
+					origin: { protocol: "anthropic.messages", service: "s", model: "m" },
+				},
+				{ type: "text", text: "ok" },
+			],
+			usage: {
+				input: 90_000,
+				output: 80,
+				cache_read: 0,
+				cache_write: 0,
+				reasoning: 0,
+			},
+		});
+		// 以前一条回复为锚点；这条回复按它的输出 token 加上搜索结果的估算
+		expect(
+			estimateContext(model, [system, reply({}), result, searched], []),
+		).toBe(3_350 + 10 + 80 + 1_000);
 	});
 
 	test("Host 数过的位置比最后一条回复更靠后时以它为锚点；换了模型或那条消息不在了就不用", () => {

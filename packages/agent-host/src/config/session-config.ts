@@ -5,6 +5,8 @@ import {
 	type ModelEntry,
 	type ModelFields,
 	mergeModelFields,
+	type ServerToolName,
+	serverToolNames,
 } from "@ospreycode/api";
 import type { ReasoningEffort } from "@ospreycode/api/protocol";
 import {
@@ -26,6 +28,7 @@ import {
 import { ConfigError, joinKey, KeyError } from "./errors.js";
 import { readRepoToml, readUserToml } from "./files.js";
 import {
+	type AgentLayer,
 	type BudgetLayer,
 	type ConfigLayer,
 	checkStartupLayer,
@@ -94,6 +97,24 @@ export interface UiSettings {
 	showReasoning: boolean;
 }
 
+/** 一个子 agent 的定义（`[agents.<名字>]`）：模型和工具都已核对。 */
+export interface AgentDefinition {
+	/** 给主 agent 看的用途。 */
+	description: string;
+	/** 给子 agent 自己的补充说明。 */
+	instructions?: string;
+	/** 它用的模型；没写时用 session 当前的模型。 */
+	model?: ModelEntry;
+	/** 没写时用 session 当前的推理强度。 */
+	reasoningEffort?: ReasoningEffort;
+	/** 定义把沙盒收紧成只读；否则和 session 当前的沙盒模式相同。 */
+	readOnly: boolean;
+	/** 写了就只启用这些内置工具；没写时和主 agent 的工具相同。 */
+	tools?: readonly string[];
+	/** 在自己的工作区里运行（worker）；否则和主 agent 共用工作区。 */
+	isolated: boolean;
+}
+
 /** 分层合并、检查过的 session 配置。 */
 export interface SessionConfig {
 	/** 工作区的真实路径。 */
@@ -134,8 +155,15 @@ export interface SessionConfig {
 	 * 记忆工具不在里面：启用哪几个由 `memory` 决定，声明时排在最后。
 	 */
 	tools: readonly string[];
+	/**
+	 * 打开的服务端工具（`[server_tools.<服务名>]`），键是服务名；一个也没打开的服务不在里面。
+	 * 一次请求实际启用的是其中模型条目也列出了的。
+	 */
+	serverTools: Readonly<Record<string, readonly ServerToolName[]>>;
 	/** 长期记忆的写入策略和注入方式；这个 session 不用长期记忆时没有。 */
 	memory?: MemorySettings;
+	/** 子 agent 的定义（`[agents.<名字>]`），键是名字；一个也没有时不启用子 agent 的工具。 */
+	agents: Readonly<Record<string, AgentDefinition>>;
 	/** 交互界面的显示设置（`[ui]`），Host 只读取和合并，由前端使用。 */
 	ui: UiSettings;
 	/** 访问模型服务用的 HTTP 代理，由 CLI 入口应用。 */
@@ -255,7 +283,9 @@ interface MergedLayer extends ConfigLayer {
 	deny_read: string[];
 	deny_write: string[];
 	tools: Record<string, boolean>;
+	server_tools: Record<string, Partial<Record<ServerToolName, boolean>>>;
 	ui: Required<UiLayer>;
+	agents: Record<string, AgentLayer>;
 }
 
 function mergeModels(
@@ -267,6 +297,17 @@ function mergeModels(
 		const previous = result[id];
 		result[id] =
 			previous === undefined ? fields : mergeModelFields(previous, fields);
+	}
+	return result;
+}
+
+function mergeServerTools(
+	lower: Record<string, Partial<Record<ServerToolName, boolean>>>,
+	higher: Record<string, Partial<Record<ServerToolName, boolean>>> | undefined,
+): Record<string, Partial<Record<ServerToolName, boolean>>> {
+	const result = { ...lower };
+	for (const [service, switches] of Object.entries(higher ?? {})) {
+		result[service] = { ...result[service], ...switches };
 	}
 	return result;
 }
@@ -290,7 +331,9 @@ function mergeLayers(lower: MergedLayer, higher: ConfigLayer): MergedLayer {
 		deny_read: union(lower.deny_read, higher.deny_read),
 		deny_write: union(lower.deny_write, higher.deny_write),
 		tools: { ...lower.tools, ...higher.tools },
+		server_tools: mergeServerTools(lower.server_tools, higher.server_tools),
 		ui: { ...lower.ui, ...higher.ui },
+		agents: { ...lower.agents, ...higher.agents },
 	};
 }
 
@@ -308,7 +351,8 @@ const budgetKeys: Record<keyof BudgetLayer, string> = {
  * 仓库配置只能收紧：沙盒模式只能改成 `read-only`，用户级配置选用了命名权限配置时不改（换成
  * `read-only` 会放开它禁止读的路径）；审批策略从 `on-request`、`granular` 到 `never`
  * 越来越严，`[approval_granular]` 只能关闭类别（`on-request` 相当于七个类别都询问）；上限只能调低；
- * 禁止的路径取并集。更松的值忽略，记进 `warnings`。
+ * 禁止的路径取并集；服务端工具只能关闭；子 agent 的定义只能新增，不能改用户级配置里同名的。
+ * 更松的值忽略，记进 `warnings`。
  */
 function applyRepo(
 	lower: MergedLayer,
@@ -384,6 +428,89 @@ function applyRepo(
 	result.budget = budget;
 	result.deny_read = union(lower.deny_read, repo.deny_read);
 	result.deny_write = union(lower.deny_write, repo.deny_write);
+	const closed: Record<string, Partial<Record<ServerToolName, boolean>>> = {};
+	for (const [service, switches] of Object.entries(repo.server_tools ?? {})) {
+		for (const [name, enabled] of Object.entries(switches)) {
+			if (!enabled) {
+				closed[service] = { ...closed[service], [name]: false };
+			} else if (
+				lower.server_tools[service]?.[name as ServerToolName] !== true
+			) {
+				ignore(
+					joinKey(joinKey("server_tools", service), name),
+					"在仓库配置里只能关闭",
+				);
+			}
+		}
+	}
+	result.server_tools = mergeServerTools(lower.server_tools, closed);
+	const agents = { ...lower.agents };
+	for (const [name, definition] of Object.entries(repo.agents ?? {})) {
+		if (Object.hasOwn(lower.agents, name)) {
+			ignore(joinKey("agents", name), "和用户级配置里的定义同名");
+		} else {
+			agents[name] = definition;
+		}
+	}
+	result.agents = agents;
+	return result;
+}
+
+/**
+ * 核对子 agent 的定义里的模型和工具，换成 session 用的样子。`sourceOf` 给出一个定义写在哪个文件里。
+ */
+function resolveAgents(
+	layers: Record<string, AgentLayer>,
+	context: {
+		models: readonly ModelEntry[];
+		toolNames: readonly string[];
+		costLimit: boolean;
+		sourceOf: (name: string) => string;
+	},
+): Record<string, AgentDefinition> {
+	const result: Record<string, AgentDefinition> = {};
+	for (const [name, layer] of Object.entries(layers)) {
+		const key = joinKey("agents", name);
+		const fail = (field: string, message: string) =>
+			new ConfigError(
+				`${context.sourceOf(name)}：${joinKey(key, field)} ${message}`,
+			);
+		let model: ModelEntry | undefined;
+		if (layer.model !== undefined) {
+			model = context.models.find((entry) => entry.id === layer.model);
+			if (model === undefined) {
+				throw fail("model", `模型清单里没有 ${layer.model}`);
+			}
+			if (context.costLimit && model.price === undefined) {
+				throw fail(
+					"model",
+					`启用了每个 run 的费用上限，但模型 ${model.id} 在清单里没有价格：在 [models.${model.id}] 里写上 price，或者关闭费用上限`,
+				);
+			}
+		}
+		const unknown = layer.tools?.find(
+			(tool) => !context.toolNames.includes(tool),
+		);
+		if (unknown !== undefined) {
+			throw fail(
+				"tools",
+				`里的 ${unknown} 不是内置工具：可以写的有 ${context.toolNames.join("、")}`,
+			);
+		}
+		result[name] = {
+			description: layer.description,
+			...(layer.instructions === undefined
+				? {}
+				: { instructions: layer.instructions }),
+			...(model === undefined ? {} : { model }),
+			...(layer.reasoning_effort === undefined
+				? {}
+				: { reasoningEffort: layer.reasoning_effort }),
+			readOnly: layer.sandbox_mode === "read-only",
+			...(layer.tools === undefined ? {} : { tools: layer.tools }),
+			isolated: layer.workspace === "isolated",
+		};
+	}
 	return result;
 }
 
@@ -454,7 +581,9 @@ export function resolveSessionConfig(
 		deny_read: [],
 		deny_write: [],
 		tools: {},
+		server_tools: {},
 		ui: { show_reasoning: true },
+		agents: {},
 	};
 	const merged = mergeLayers(
 		applyRepo(
@@ -519,6 +648,13 @@ export function resolveSessionConfig(
 
 	const memory = resolveMemorySettings(options.memory);
 	const { budget } = merged;
+	const agents = resolveAgents(merged.agents, {
+		models,
+		toolNames: context.toolNames,
+		costLimit: budget.max_cost_usd !== null,
+		sourceOf: (name) =>
+			Object.hasOwn(user.layer.agents ?? {}, name) ? userFile : repoFile,
+	});
 	return {
 		workspace: context.workspace,
 		projectRoot,
@@ -546,7 +682,16 @@ export function resolveSessionConfig(
 			...defaultTools,
 			...optionalTools.filter((name) => merged.tools[name] === true),
 		],
+		serverTools: Object.fromEntries(
+			Object.entries(merged.server_tools)
+				.map(([service, switches]) => [
+					service,
+					serverToolNames.filter((name) => switches[name] === true),
+				])
+				.filter(([, names]) => names.length > 0),
+		),
 		...(memory === undefined ? {} : { memory }),
+		agents,
 		ui: { showReasoning: merged.ui.show_reasoning },
 		...(merged.proxy === undefined ? {} : { proxy: merged.proxy }),
 		warnings,

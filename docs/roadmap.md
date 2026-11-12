@@ -56,11 +56,14 @@
 | 回退和分叉会话 | P3 | 已完成 | session-store 的[会话的分支和回退](packages/session-store.md#会话的分支和回退) |
 | session 记录的保存期限和清理；session 的删除、导出（JSONL）、索引重建和按事件脱敏 | P3 | 已完成 | session-store 的[保存期限](packages/session-store.md#保存期限)和[要点](packages/session-store.md#要点) |
 | 上下文压缩，经 Host 的 token 计数接口 | P3 | 进行中 | api 的[上下文压缩](packages/api.md#上下文压缩)和 [token 计数](packages/api.md#token-计数) |
-| 保留题集、memory 连续场景、逐项关闭模块的对比、开关沙盒的对比、版本对比；DeepSWE v1.1 作主 benchmark | P4 | 未开始 | [evaluation](packages/evaluation.md) |
-| Mem0 作记忆评测的外部系统对照组 | P4 | 未开始 | evaluation 的 [Memory 评测](packages/evaluation.md#memory-评测) |
-| 更多 benchmark、模型服务（Azure、Foundry、AWS、Vertex、Gemini）和平台 | P5 | 未开始 | api 的[首批支持的协议](packages/api.md#首批支持的协议)；overview 的[实施阶段](overview.md#实施阶段) |
-| 模型服务自带的服务端工具（联网搜索等）的开关和内容块的原样往返 | P5 | 未开始 | api 的[在系统中的位置](packages/api.md#在系统中的位置) |
-| 子 agent 和多 worker | P5 | 未开始 | agent-runtime 的[子 agent](packages/agent-runtime.md#子-agent)和[多 worker](packages/agent-runtime.md#多-worker) |
+| 保留题集、memory 连续场景、逐项关闭模块的对比、开关沙盒的对比、版本对比；DeepSWE v1.1 作主 benchmark | P4 | 进行中 | evaluation 的[防止刷分](packages/evaluation.md#防止刷分)、[Memory 评测](packages/evaluation.md#memory-评测)、[对比实验](packages/evaluation.md#对比实验)和[首批 benchmark](packages/evaluation.md#首批-benchmark) |
+| Mem0 作记忆评测的外部系统对照组 | P4 | 进行中 | evaluation 的 [Memory 评测](packages/evaluation.md#memory-评测) |
+| 更多 benchmark：LongMemEval 的检索专项 | P5 | 进行中 | evaluation 的[首批 benchmark](packages/evaluation.md#首批-benchmark)；overview 的[实施阶段](overview.md#实施阶段) |
+| 更多模型服务（Azure、Foundry、AWS、Vertex、Gemini） | P5 | 进行中 | api 的 [P5 增加的服务](packages/api.md#p5-增加的服务)、[认证](packages/api.md#认证)和 [Gemini 的转换规则](packages/api.md#gemini-的转换规则)；overview 的[实施阶段](overview.md#实施阶段) |
+| 输出凭据的命令（云厂商的短期凭据） | P5 | 已完成 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
+| 更多平台（Windows、Intel Mac、musl、Ubuntu 26.04、Debian 和 Fedora、Linux 桌面；条件见下表） | P5 | 未开始 | overview 的[支持的平台](overview.md#支持的平台)和[实施阶段](overview.md#实施阶段) |
+| 模型服务自带的服务端工具（联网搜索、网页读取）的开关和内容块的原样往返 | P5 | 已完成 | api 的[服务端工具](packages/api.md#服务端工具)；agent-host 的[配置项](packages/agent-host.md#配置项) |
+| 子 agent 和多 worker | P5 | 进行中 | agent-runtime 的[子 agent](packages/agent-runtime.md#子-agent)和[多 worker](packages/agent-runtime.md#多-worker)；agent-host 的[子 agent 和多 worker](packages/agent-host.md#子-agent-和多-worker) |
 | 用 ChatGPT 账号登录（条件见下表） | P5 | 未开始 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | 可选的 microVM 后端（满足接入标准时） | P5 | 未开始 | sandbox 的[备选和更强的隔离](packages/sandbox.md#备选和更强的隔离) |
 
@@ -68,14 +71,15 @@
 
 | 功能 | 原因和以后加入的条件 | 见 |
 |---|---|---|
-| Windows | sandbox-runtime 的 Windows 后端还是 alpha，Node 在那上面只能给子进程传三个标准流、通道用不了 fd 3，也没有 CI runner 验证 | overview 的[支持的平台](overview.md#支持的平台) |
-| 单文件可执行程序、Intel Mac、musl | 见 overview | overview 的[语言和运行环境](overview.md#语言和运行环境)和[支持的平台](overview.md#支持的平台) |
-| Linux 桌面的系统凭据库 | P1 的 Linux 只用于评测容器和 CI。Linux 桌面列入支持时接 Secret Service，并固定后端，不让它悄悄改用重启即丢失的 keyutils | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
+| Windows | sandbox-runtime 的 Windows 后端还是 alpha（2026-11-12 核对，0.0.82 仍是），Node 在那上面只能给子进程传三个标准流、通道用不了 fd 3，也没有 CI runner 验证。后端结束 alpha、通道有了不靠 fd 3 的做法，并在 CI 的 Windows runner 上通过真实沙盒测试后加入 | overview 的[支持的平台](overview.md#支持的平台) |
+| 单文件可执行程序、Intel Mac、musl | 见 overview。2026-11-12 核对都还不满足：Node 26 的单文件程序仍在开发阶段；macOS x64 在 Node 26 是 Tier 2，musl 在最低支持的 Node 24 是 Experimental，CI 里都没有对应的 runner。Intel Mac 和 musl 要先在 CI 加上对应的任务并通过测试才列入支持 | overview 的[语言和运行环境](overview.md#语言和运行环境)和[支持的平台](overview.md#支持的平台) |
+| Ubuntu 26.04 上的沙盒 | `apparmor` 包自带的 `bwrap-userns-restrict` 让沙盒里的命令都运行不了。sandbox-runtime issue #429 解决（2026-11-12 核对，还开着）、并在 `ubuntu-26.04` 的 runner 上通过真实沙盒测试后加入 | overview 的[支持的平台](overview.md#支持的平台) |
+| Debian 和 Fedora 上的 CI 测试 | Debian 12、13 和 Fedora 43 起启动检查通过就能运行，但 CI 里没有这两个发行版的任务（2026-11-12 核对）。CI 加上对应的任务并通过真实沙盒测试后列入 CI 测试的平台 | overview 的[支持的平台](overview.md#支持的平台) |
+| Linux 桌面的系统凭据库 | P1 的 Linux 只用于评测容器和 CI。Linux 桌面列入支持时接 Secret Service，并固定后端，不让它悄悄改用重启即丢失的 keyutils。2026-11-12 核对：`@napi-rs/keyring` 2.1.2 已能固定到 Secret Service，但 Linux 桌面还没有列入支持，也没有带 Secret Service 的环境可以验证；接入时另要确认沙盒里读不到凭据库的文件、连不上会话总线 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | Linux 上的 `unix_sockets` 申请、跨命令的本机端口访问和访问宿主上的本地服务 | seccomp 不能按路径放行 Unix socket；每个命令沙盒有自己的网络命名空间和 127.0.0.1。sandbox-runtime 在 Linux 上支持按路径放行 socket 后加入 `unix_sockets`；支持多个命令沙盒共用网络命名空间、并能按端口放行宿主的 127.0.0.1 后加入后两项 | sandbox 的[本机服务和本地端口](packages/sandbox.md#本机服务和本地端口) |
 | 命名权限配置里更深的嵌套：重新放开读的路径里禁止的目录里再放开；可写路径里设成只读的目录（和其中的密钥位置）里再放开写 | sandbox-runtime 的读取规则只有"禁止、放开、再禁止"三层，写入规则里禁止优先于允许，这些写法现在加载报错。sandbox-runtime 支持按最具体的路径匹配，或者换用能这样匹配的后端后加入 | sandbox 的[命名权限配置](packages/sandbox.md#命名权限配置) |
 | 用 ChatGPT 账号登录（P5 之前） | P2 的 MCP OAuth 已提供令牌存储、刷新加锁和回环回调，并且这项服务结束预览、刷新失败的问题解决后，在 P5 加入；预览版只能调用 Responses API 的一个子集 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | Claude 订阅登录 | Anthropic 的条款不允许 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
-| 输出凭据的命令（`apiKeyHelper` 一类） | 要在沙盒外以用户的全部权限运行程序。接入需要短期令牌的服务（云厂商、网关）时，照 Codex 的 `model_providers.<id>.auth` 加入：程序加参数数组、不经 shell，只认用户级配置和启动参数 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | 联网读取网页的工具 | 模型用 shell 里的命令读网页，走同一个代理和审批，专门的工具不多出能力 | agent-runtime 的[工具执行](packages/agent-runtime.md#工具执行) |
 | 自动审批（由模型代替用户审批） | 和"模型读到的内容不能改变权限"冲突，公开的漏放率没有可信的数字 | sandbox 的[审批策略](packages/sandbox.md#审批策略) |
 | 危险命令判断覆盖强制删除以外的命令（`git reset --hard`、`git clean -f`、`find -delete` 等） | sandbox 专项评测统计出这些命令漏问时加入 | sandbox 的[内置的判断](packages/sandbox.md#内置的判断) |
@@ -83,6 +87,10 @@
 | Codex 的 Starlark 权限规则格式 | 权限规则只是数据，用 TOML；需要时写转换工具 | sandbox 的[规则](packages/sandbox.md#规则) |
 | 按消息设置推理强度（Anthropic 末尾内容为空、带 `output_config` 的 system 消息，Responses 的 `configuration_update`） | 这条消息要作为历史的一部分保留（推理内容绑定它之前的全部内容），内部协议得为它加消息类型；不用它时中途改强度只是让提示缓存重新开始。评测显示切换推理强度频繁、缓存失效的费用明显时加入：内部协议加"推理强度改为…"的追加消息，模型清单加 `effort_updates`，顶层固定为 `low` | api 的[请求参数](packages/api.md#请求参数) |
 | 参数受语法约束的工具（OpenAI custom 工具的写法） | 工具集不随服务变化。评测表明它在 GPT 模型上明显更好时，只作为单个字符串参数的工具的发送写法加入 | api 的[内部协议](packages/api.md#内部协议) |
+| Gemini 的长输出续接（`continuationToken`）、内置工具（Google Search、URL context）和 Vertex AI 上的 Gemini | 续接只在一次回复超过 65,536 个 token 时用到，清单里的输出上限不超过它；内置工具和函数声明一起用还在预览，用量里也没有计费的搜索次数，费用上限算不准；Vertex AI 上的接口字段和 Gemini API 有出入，没有核对过。评测或用户需要更长的单次输出时加续接；内置工具转正并在用量里给出计费次数后加入；有 Vertex 的账号可以核对时加入 | api 的 [Gemini 的转换规则](packages/api.md#gemini-的转换规则) |
+| Bedrock Converse 和 `InvokeModel`、Anthropic 托管的 Google Cloud 接入、云平台模型的内置清单条目 | Converse 和 `InvokeModel` 是另一套请求格式，Bedrock 已经提供 Messages 格式的 `bedrock-mantle`；Anthropic 托管的 Google Cloud 接入（`claude.googleapis.com`）用的也是 Messages 格式，认证方式这次没有核对。云平台的地址带用户自己的资源名、区域或项目，条目由用户写在用户级配置里。`bedrock-mantle` 上没有而 Converse 上有的模型有人要用时再做 Converse；Anthropic 托管的接入核对过认证方式后，在 README 里加一个条目的例子 | api 的 [P5 增加的服务](packages/api.md#p5-增加的服务) |
+| 服务端工具里的 code execution、tool search、advisor、MCP connector，OpenAI 的 code interpreter、file search 等，带动态过滤的 web search 和 web fetch | 它们要在模型服务一侧保存容器、文件或向量库，或者和本地的工具、MCP 重复；带动态过滤的版本经代码执行的容器调用。评测表明带动态过滤的搜索明显省 token 时，连同容器编号的保存一起加入 | api 的[服务端工具](packages/api.md#服务端工具) |
+| FrontierMemory 和 Terminal-Bench 两个 benchmark | FrontierMemory 的数据要向 Letta 申请，拿到后核对格式和许可证再接入记忆评测。Terminal-Bench 多数题要联网安装软件，和"agent 只能访问模型服务"冲突，部分题还要 GPU；它提供不联网也能做的子集，或者评测有了按题放行域名又查不到答案的办法后，作为终端操作类任务的补充接入 | evaluation 的[首批 benchmark](packages/evaluation.md#首批-benchmark) |
 | memory 自动改写规则文件 | 规则文件是团队共享的仓库内容，记忆可能含不可信来源；用户让 agent 用编辑工具改，照常经过 Permission | memory 的[和规则文件的关系](packages/memory.md#和规则文件的关系) |
 | 通过 MCP 提供的 skills | 扩展还在 Beta，和本项目的执行方式冲突。扩展进入 Stable，或 Claude Code、Codex、VS Code、Cursor 中有两家发布支持后加入：安装成本地 skill，批准绑定扩展列出的文件和 sha256 摘要，之后和本地 skill 一样确认和启用 | skills 的[通过 MCP 提供的 skills](packages/skills.md#通过-mcp-提供的-skills) |
 | MCP 的 resources、prompts、URL 模式的 elicitation、sampling、roots | 需要新的交互和通道操作，或已被规范弃用；P2 的兼容测试统计实际需要 | mcp 的[支持的功能](packages/mcp.md#支持的功能) |

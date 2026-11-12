@@ -15,6 +15,7 @@
 - 扩展带来前端必须处理的询问：`approval.requested` 多了 `kind: "extension_changed"`（要用的 skill 内容和确认时不一样，回答的 `scope` 只能是 `once`），`kind: "tool_call"` 的 `request` 多了 `kind: "mcp_tool"`（每次 MCP 工具调用默认都问）；另有不属于 task 的 `server_approval.requested`（本地 MCP server 连接没有放行的域名）和 `elicitation.requested`（MCP server 向用户要输入）。不回答时对应的工具调用或连接一直挂起。迁移：前端显示这四种询问并用 `session.respond` 回答，`elicitation.requested` 用 `ElicitationAnswer`。
 - `session.submit` 多了一种失败：`UserPromptSubmit` hooks 阻止这条输入时抛出 `InputBlockedError`，task 没有开始；`openSession` 在 `SessionStart` hooks 阻止时抛出 `SessionBlockedError`。迁移：配置了 hooks 的环境里捕获这两个错误，把 `message`（hooks 给的原因）显示给用户。
 - `session.memory.purge` 的结果变了：`remaining`（`RemainingSource`）不再只是没能脱敏的来源，而是记忆的内容还留在记录里的每个 session，没有来源事件在里面的也列出，这时 `event_ids` 为空；多了可选的 `workspace`。user 记忆的来源在别的项目里时不再留在 `remaining` 里，直接在那个项目的记录里脱敏。迁移：把 `remaining` 交给 `host.redactEvents` 时带上 `memoryIds: [记忆的编号]`（`eventIds` 可以为空），`directory` 用它的 `workspace`。
+- `message.completed` 的回复里多了一种内容块 `type: "opaque"`（模型服务一侧执行的工具的调用和结果，带 `kind`、`raw`、`origin` 和可选的 `summary`），文本块多了可选的 `citations`，用量多了可选的 `server_tools`；`isHostEvent` 和 `hostEventSchema` 接受它们。只有用户在配置里打开了服务端工具才会出现。迁移：对内容块的 `type` 做穷尽判断的前端补上 `opaque` 分支，要显示时用 `summary`（如 `web_search: node lts`），不解释 `raw`。
 
 ### Added
 
@@ -141,6 +142,25 @@
   - 后台提取：交互模式的 session 打开后，对同一项目里已经关闭、空闲 6 小时以上、10 天以内、还没提取过的 session 逐个提取候选，每次打开最多 2 个。模型请求由 Host 用当前模型的定义和凭据直接发出，每次提取最多 20 次请求、1 美元，用量并进 session 的合计；只记 `memory.extraction.started` 和 `memory.extraction.ended` 两个事件。审批策略为 `never` 时不提取。
   - `SessionOptions.memory`（`MemoryOptions`，给评测用，CLI 和配置文件都不能设置）：`enabled: false` 关掉长期记忆、不打开任何记忆库；`write` 是写入策略（`explicit`、`propose`、`extract`），`retrieval` 是记忆注入方式（`index`、`tools`、`both`、`auto`）。`Session.extractMemory(sessionId)` 对一个已关闭的 session 立即提取，不看空闲时间。
   - 对外事件新增 `memory.candidates`、`memory.retrieved`、`memory.updated`、`memory.extraction.started`、`memory.extraction.ended`，都写进 session 记录和 CLI 的 JSON 输出。
+- 子 agent 和多 worker（P5，设计见 `docs/packages/agent-host.md` 的"子 agent 和多 worker"）：
+  - 配置项 `[agents.<名字>]`：`description`（必填）、`instructions`、`model`、`reasoning_effort`、`sandbox_mode`（只能写 `read-only`）、`tools`、`workspace`（`shared` 或 `isolated`）。`SessionConfig` 多了 `agents`（按名字的 `AgentDefinition`）。仓库配置可以新增定义，不能改用户级配置里同名的，定义里的 `model` 只认用户级配置和启动参数；写错的键和值抛出 `ConfigError`。一个定义也没有时不启用子 agent 的工具，session 的工具集和行为同以前一样。
+  - 有定义时模型多了 `spawn_agent`、`send_message`、`interrupt_agent` 三个工具。每个子 agent 是 Host 另起的一个 agent 进程，有自己的通道、沙盒和模型代理，在自己的 run 里做一个任务（`run.started` 带 `parent_agent_id` 和 `parent_tool_call_id`）；沙盒模式取 session 当前模式和定义里较严的一个，审批策略和权限规则用 session 的，本任务内的批准不在 agent 之间共用。嵌套只有一层，同一个 run 同时最多 6 个。
+  - `workspace = "isolated"` 的子 agent（worker）在 `workers/<session>/<agent>/repo` 下项目仓库的一份克隆里运行（沙盒里的 `git clone --shared`，只有 `HEAD` 的提交）：别的沙盒对它只读，合并由主 agent 做，session 关闭时删除。项目不是 git 仓库或还没有提交时启动失败，原因交给模型。
+  - 子 agent 的模型请求计入所属 task 的请求次数、用量和费用，超出上限时只问一次；取消 task 或 task 以其他结果结束时先停掉它的全部子 agent，`task.ended` 记在它们结束之后。
+  - 对外事件新增 `subagent.started`（定义的名字、模型、沙盒模式、工作区）和 `subagent.ended`（结果、这个子 agent 的用量、失败原因），都写进 session 记录和 CLI 的 JSON 输出，类型 `SubagentStartedEvent`、`SubagentEndedEvent`，内容 `SubagentStarted`、`SubagentEnded`、`SubagentOutcome`。配置了定义之后，`message.completed`、`tool_call.*`、`approval.requested` 等事件也会来自子 agent，前端按 `agent_id` 区分。子 agent 的结果在父 run 里记成 `background.notification`（`background_id` 为空；它做完时另带新增的可选字段 `message_id`，是通知里引用的那条回复的编号）。
+  - 子 agent 的 run 不在会话树的路径上：`history()`、回退、分叉、恢复和记忆提取都只看主 agent 的对话。中断后的恢复不恢复子 agent：没有结束的补记 `subagent.ended`（`failed`），主 agent 没有结果的子 agent 工具调用记成 `interrupted`，不询问。
+  - 按事件脱敏（`redactEvents`）：指名子 agent 最后一条回复时，父 run 里引用它的结果通知一起覆盖。
+- 模型服务自带的服务端工具（联网搜索和网页读取，P5，设计见 `docs/packages/api.md` 的"服务端工具"）：
+  - 用户级配置的新表 `[server_tools.<服务名>]`：`web_search = true`、`web_fetch = true` 按模型条目的 `service` 打开，默认都关闭；只对模型条目的 `server_tools` 里列出的工具起作用。仓库配置只能写 `false`，写 `true` 的被忽略并发 `warning`。没有对应的启动参数。合并的结果在 `SessionConfig.serverTools` 里（没有打开任何工具的服务不出现）。
+  - 开关在打开 session 时定下，`session.reload()` 不改它，子 agent 的模型请求用同一份。调用和结果由模型服务执行，不经过沙盒、审批和 hooks；计费的次数记在用量的 `server_tools` 里并逐次累加，费用按模型条目的 `price.server_tools` 算进 run 的费用上限。
+  - 按事件脱敏（`redactEvents`）覆盖一条回复时，不透明块的原文和说明、文本块上的引用一起去掉；恢复 session 时被覆盖的回复里的不透明块不再发回模型。
+- 输出凭据的命令（P5，云厂商的短期凭据，设计见 `docs/packages/agent-host.md` 的"凭据和登录"）：
+  - 凭据的来源多了 `CommandSource`：`{ command, args?, timeout_ms?, refresh_interval_ms? }`，写在用户级配置的 `[credentials]` 或 `credentials` 选项里，仓库配置里的照常忽略；只能用于模型服务，MCP 的凭据用它时报错。`command` 要是绝对路径或不带路径分隔符的程序名。
+  - Host 不经 shell 运行它：标准输入关闭，环境变量是 Host 的，当前目录是 Host 根目录，标准输出去掉首尾空白就是凭据。退出码不是 0、超过 `timeout_ms`（默认 5000）或输出为空时抛出 `CredentialError`，错误信息只有程序名和退出码。
+  - 距上次运行超过 `refresh_interval_ms`（默认 300000，0 表示不定时刷新）后，下一次模型请求之前重新运行；模型服务返回 401 时也重新运行一次，值变了才重发。会话中运行不了时，这次模型请求不发出、以 `authentication` 结束，不占请求次数。
+  - `host.credentialStatus()` 的结果多了可选的 `command`（只有程序名，没有参数）。
+  - 凭据是 AWS `credential_process` 格式的 JSON 时（模型条目的 `auth` 为 `aws-sigv4`），除了整个凭据，里面的 `SecretAccessKey` 和 `SessionToken` 也从日志、错误信息和事件里去掉。
+- 更多模型服务（P5）：`[models.<ID>]` 接受 `@ospreycode/api` 新增的字段（`auth`、`headers`、`vertex`、`server_tools`、`price.server_tools`、`price.changes`），可以写 Azure OpenAI、Microsoft Foundry、Amazon Bedrock、Claude Platform on AWS 和 Vertex AI 上的模型；内置清单多了 Gemini API 的模型（协议 `google.generate-content`，凭据的 ID 是 `google`）。
 
 ### Fixed
 

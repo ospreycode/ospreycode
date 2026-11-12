@@ -26,6 +26,16 @@ ospreycode login status               # 各个服务的凭据来自哪里，不�
 
 没有系统凭据库的环境（Linux、CI）把密钥放在只对当前用户可读写的文件里，用 `--credential-file <服务>=<路径>` 或用户级配置的 `[credentials]` 指定。
 
+云平台上只发短期凭据的服务（Vertex AI、Entra ID、AWS 的临时凭据）在用户级配置里写一条输出凭据的命令，Host 不经 shell 运行它并定时刷新；模型服务自带的联网搜索和网页读取默认关闭，按服务打开。打开之后，模型每次搜索或读取网页在回复结束时各显示一行（如 `web_search: node lts`），费用算进这个 run。
+
+```toml
+[credentials]
+vertex = { command = "gcloud", args = ["auth", "print-access-token"] }
+
+[server_tools.anthropic]
+web_search = true
+```
+
 ### 交互模式
 
 ```sh
@@ -72,6 +82,21 @@ ospreycode -C ~/code/app -m claude-haiku-5-5 --sandbox workspace-write --approva
 Enter 和 Alt+Enter 的区分靠终端支持 Kitty 键盘协议，或者把 Option（Alt）键当作 Meta 键发送。
 
 长期记忆默认启用：模型提议的和后台从旧会话里提取的记忆先作为候选列出来，用 `/memory confirm ID` 确认之后才在以后的会话里生效。`exec` 不处理候选，只在标准错误上提示有几条待确认。
+
+在 `config.toml` 里写了子 agent 的定义之后，模型可以把一部分工作交给子 agent 并行去做：
+
+```toml
+# ~/.ospreycode/config.toml
+[agents.explorer]
+description = "Looks things up in the repository without changing it."
+sandbox_mode = "read-only"
+
+[agents.worker]
+description = "Makes a change in its own copy of the repository."
+workspace = "isolated"
+```
+
+`description` 告诉模型什么时候用它；还可以写 `instructions`、`model`、`reasoning_effort` 和 `tools`。子 agent 的权限不会比会话更宽，费用和请求次数算在同一个任务的预算里。`workspace = "isolated"` 的子 agent 在项目仓库的一份克隆里改动（只含已提交的内容），由主 agent 合并回来，会话结束时这份克隆删除。交互界面里每个子 agent 占一条，显示它的进展和结果；它发起的询问写明是哪个子 agent 的。`exec` 的标准输出仍然只有主 agent 最后一条回复。
 
 每次输入（任务运行中插入的也算）建立一个检查点，记着那次输入之前工作区的样子。`/undo` 或 `/rewind` 不带参数时列出检查点和序号，`/diff N`、`/undo N`、`/rewind N`、`/fork N` 的 `N` 就是这份列表里的序号；回退或分叉之后要重新列出。
 

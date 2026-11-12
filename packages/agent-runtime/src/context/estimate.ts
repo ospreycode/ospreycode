@@ -1,5 +1,6 @@
 import type {
 	AssistantContent,
+	AssistantMessage,
 	ImageBlock,
 	Message,
 	ProtocolName,
@@ -110,6 +111,8 @@ export function imageTokens(protocol: ProtocolName, image: ImageBlock): number {
 		const scaled = scale(size, 1568 / Math.max(size.width, size.height));
 		return Math.ceil((scaled.width * scaled.height) / 750);
 	}
+	// Gemini 3 起的模型按默认的分辨率，每张图片固定 1120 个 token
+	if (protocol === "google.generate-content") return 1120;
 	// 先缩进 2048×2048，再把短边缩到 768，按 512 像素的块数乘 170 再加 85
 	const fitted = scale(size, 2048 / Math.max(size.width, size.height));
 	const shrunk = scale(fitted, 768 / Math.min(fitted.width, fitted.height));
@@ -155,7 +158,18 @@ function blockTokens(block: AssistantContent, divisor: number): number {
 			return tokensOf(block.name + block.arguments, divisor);
 		case "fallback":
 			return 0;
+		case "opaque":
+			return tokensOf(block.raw, divisor);
 	}
+}
+
+/** 服务端工具的内容块。带着它们的回复，输入用量是服务端几次采样的累计，不是上下文的长度。 */
+function opaqueTokens(message: AssistantMessage, divisor: number): number {
+	return message.content.reduce(
+		(total, block) =>
+			total + (block.type === "opaque" ? blockTokens(block, divisor) : 0),
+		0,
+	);
 }
 
 /** 一条消息的估算；回复按它报告的输出 token 计（含推理），没有用量时按内容估算。 */
@@ -167,7 +181,10 @@ function messageTokens(
 	if (message.role !== "assistant") {
 		return contentTokens(protocol, message.content, divisor);
 	}
-	if (message.usage.output > 0) return message.usage.output;
+	// 服务端工具的结果不是模型的输出，另外估算
+	if (message.usage.output > 0) {
+		return message.usage.output + opaqueTokens(message, divisor);
+	}
 	return message.content.reduce(
 		(total, block) => total + blockTokens(block, divisor),
 		0,
@@ -192,8 +209,8 @@ export interface EstimateOptions {
 }
 
 /**
- * 这次请求的上下文估算：以最后一条由当前模型正常结束的回复报告的用量为锚点，加上之后新增内容的估算；
- * Host 数过更靠后的位置时以它为锚点。没有锚点时估算全部内容，工具声明也算进去。
+ * 这次请求的上下文估算：以最后一条由当前模型正常结束、没有服务端工具内容块的回复报告的用量为锚点，
+ * 加上之后新增内容的估算；Host 数过更靠后的位置时以它为锚点。没有锚点时估算全部内容，工具声明也算进去。
  */
 export function estimateContext(
 	model: ModelInfo,
@@ -209,7 +226,8 @@ export function estimateContext(
 			message.requested_model === model.id &&
 			message.stop_reason !== "error" &&
 			message.stop_reason !== "cancelled" &&
-			usageTokens(message.usage) > 0,
+			usageTokens(message.usage) > 0 &&
+			!message.content.some((block) => block.type === "opaque"),
 	);
 	const count =
 		counted?.model === model.id

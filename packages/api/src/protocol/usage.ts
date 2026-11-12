@@ -8,6 +8,11 @@ export interface Usage {
 	cache_read: number;
 	cache_write: number;
 	reasoning: number;
+	/**
+	 * 服务端工具计费的调用次数，键是工具名（`web_search`、`web_fetch`）；没有调用时不写。
+	 * 取模型服务报告的次数，不按内容块的个数算。
+	 */
+	server_tools?: Record<string, number>;
 	/** 按模型清单的价格算出的费用（美元）；清单里没有这个模型的价格时为空。 */
 	cost_usd?: number;
 }

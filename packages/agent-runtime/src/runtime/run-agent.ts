@@ -16,6 +16,11 @@ import { readTool } from "../tools/read.js";
 import { requestPermissionsTool } from "../tools/request-permissions.js";
 import { shellTool } from "../tools/shell.js";
 import { skillLoadLocalTool, skillLoadTool } from "../tools/skill-load.js";
+import {
+	RunningSubagents,
+	subagentToolRegistry,
+	subagentTools,
+} from "../tools/subagents.js";
 import { writeTool } from "../tools/write.js";
 import { version } from "../version.js";
 
@@ -64,12 +69,17 @@ export async function runAgent(stream: Duplex): Promise<void> {
 	channel.on("input/available", () => {
 		void ready.promise.then((loop) => loop.inputAvailable());
 	});
+	channel.on("subagent/ended", (ended) => {
+		void ready.promise.then((loop) => loop.subagentEnded(ended));
+	});
 	channel.handle("run/cancel", async () => {
 		(await ready.promise).cancel();
 		return {};
 	});
 	channel.handle("status", async () => (await ready.promise).status());
 	const config = await channel.request("initialize", { version });
+	// 正在运行的子 agent：工具在启动和停止时增减，loop 据此决定 task 能不能结束
+	const subagents = new RunningSubagents();
 	const executor = new ToolExecutor(
 		channel,
 		{
@@ -77,7 +87,12 @@ export async function runAgent(stream: Duplex): Promise<void> {
 			writableRoots: config.writable_roots,
 			records: new FileRecords(),
 		},
-		[...localTools, ...memoryTools(channel), skillLoadLocalTool(channel)],
+		[
+			...localTools,
+			...memoryTools(channel),
+			skillLoadLocalTool(channel),
+			...subagentTools(channel, subagents),
+		],
 	);
 	const ruleFiles = await loadRuleFiles(
 		config.workspace,
@@ -98,11 +113,13 @@ export async function runAgent(stream: Duplex): Promise<void> {
 				...toolRegistry,
 				...memoryToolRegistry,
 				[skillLoadTool.declaration.name, skillLoadTool],
+				...subagentToolRegistry,
 			]),
 			executor,
 			ruleFiles,
 			resumed,
 			index === undefined ? undefined : await changedMemories(index),
+			subagents,
 		),
 	);
 	await channel.closed;

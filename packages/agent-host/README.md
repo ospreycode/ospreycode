@@ -115,7 +115,38 @@ shell 工具放到后台的命令属于 session，task 结束后继续运行；`
 
 长期记忆默认启用，模型另有 `memory_propose`、`memory_search`、`memory_read` 三个工具（不受 `[tools]` 控制）。记忆分 project 和 user 两种范围，各自一个 SQLite 文件，放在 Host 根目录的 `data` 下。模型提议的和后台从旧 session 里提取的都只是候选（`memory.candidates` 事件），用户确认后才生效；生效记忆的标题列在会话开始的上下文里，正文由模型按需读取（`memory.retrieved` 事件）。`session.memory` 是查看、确认、纠正和删除的接口（`list`、`get`、`add`、`confirm`、`reject`、`correct`、`rollback`、`retire`、`restore`、`expire`、`purge`），会改动的操作要带上看到的版本号，记忆在那之后被改过时抛出 `MemoryConflictError`。`purge` 彻底删除一条记忆，并把它留在 session 记录里的内容按事件脱敏：它依据的对话，和列过它的标题和正文的地方（给模型的索引、检索结果、候选列表；user 记忆在每个登记过的项目里找）。返回 `PurgedMemory`：`redacted` 是脱敏了的 session，`remaining` 是这一次脱敏不了的 session 和原因（比如它正打开着），之后用 `host.redactEvents` 处理，带上 `memoryIds`。评测用 `openSession` 的 `memory` 选项关掉长期记忆（`{ enabled: false }`）或换写入策略和注入方式，用 `session.extractMemory(sessionId)` 对一个已关闭的 session 立即提取。
 
+子 agent 按配置里 `[agents.<名字>]` 的定义启动，一个定义也没有时模型没有这几个工具：
+
+```toml
+[agents.explorer]
+description = "Looks things up in the repository without changing it."
+sandbox_mode = "read-only"
+tools = ["read", "grep", "ls"]
+
+[agents.worker]
+description = "Makes a change in its own copy of the repository."
+workspace = "isolated"
+```
+
+有定义时模型另有 `spawn_agent`、`send_message`、`interrupt_agent` 三个工具。每个子 agent 是另一个 agent 进程，有自己的沙盒（沙盒模式取 session 当前模式和定义里较严的一个）和自己的 run，和启动它的 task 共用一份预算；`workspace = "isolated"` 的在 Host 根目录下项目仓库的一份克隆里运行（要求项目是有提交的 git 仓库），改动由主 agent 合并，session 关闭时删除。子 agent 的事件带它自己的 `agent_id`，开始和结束是 `subagent.started`、`subagent.ended`，结果作为通知交给主 agent；`session.history()`、回退、分叉和恢复只看主 agent 的对话。定义里的 `model` 只认用户级配置。
+
 凭据按启动参数（`credentials`）、用户级配置的 `[credentials]`、系统凭据库的顺序取第一个找到的来源。macOS 上的系统凭据库是登录钥匙串，`host.saveCredential(id, value)` 写入；`createHost` 的 `credentialStore` 可以换成别的实现，传 `null` 不用。错误和警告写进根目录下的 `data/logs/`，日志、错误信息和事件里都去掉 Host 持有的凭据。
+
+云厂商只发短期凭据的模型服务（Vertex AI、Entra ID、AWS 的临时凭据），凭据的来源可以写成一条输出凭据的命令：`{ command, args, timeout_ms, refresh_interval_ms }`，后两项默认 5 秒和 5 分钟。Host 不经 shell 运行它，当前目录是 Host 根目录，标准输出去掉首尾空白就是凭据；过了刷新间隔、或模型服务返回 401 之后重新运行。它在沙盒外运行，只认用户级配置和 `credentials` 选项，只能用于模型服务。云平台上的模型在 `[models.<ID>]` 里写全（字段的例子见 `@ospreycode/api` 的 README）：
+
+```toml
+[credentials]
+vertex = { command = "gcloud", args = ["auth", "print-access-token"] }
+# auth 为 aws-sigv4 的条目：凭据是 credential_process 格式的 JSON
+bedrock = { command = "aws", args = ["configure", "export-credentials", "--format", "process"] }
+
+# 模型服务自带的联网搜索和网页读取默认关闭，按服务打开；仓库配置只能关闭
+[server_tools.anthropic]
+web_search = true
+web_fetch = true
+```
+
+打开的服务端工具由模型服务执行，不经过沙盒和审批：调用和结果作为 `opaque` 块留在 `message.completed` 的回复里，计费的次数记在用量的 `server_tools`，费用算进 run 的预算。开关在打开 session 时定下。
 
 打开的 session 持有工作区锁：同一个工作区或互相包含的工作区同时只能有一个打开的 session，`close()` 时释放。Host 启动的进程记在根目录的 `data/processes.json` 里，Host 崩溃后残留的进程在下次打开同一工作区时结束。`host.listProjects()` 和 `host.linkProject(directory, projectId)` 查看和关联项目。
 

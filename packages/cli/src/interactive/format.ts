@@ -97,8 +97,8 @@ export function parseArguments(
 }
 
 /**
- * 一次工具调用的参数要点：命令原文，搜索的模式（后面是路径和 glob），或者路径；都没有时是压成
- * 一行的参数原文，一个参数也没写时为空。
+ * 一次工具调用的参数要点：命令原文，搜索的模式（后面是路径和 glob），路径，或者子 agent 的名字和
+ * 交给它的任务；都没有时是压成一行的参数原文，一个参数也没写时为空。
  */
 export function toolSummary(rawArguments: string): string {
 	const args = parseArguments(rawArguments);
@@ -114,6 +114,10 @@ export function toolSummary(rawArguments: string): string {
 			.join(" ");
 	}
 	if (typeof args?.path === "string") return sanitize(args.path);
+	// `spawn_agent`：哪个子 agent，交给它什么
+	if (typeof args?.agent === "string" && typeof args.prompt === "string") {
+		return `${sanitize(args.agent)}：${brief(args.prompt)}`;
+	}
 	if (args !== undefined && Object.keys(args).length === 0) return "";
 	return brief(rawArguments);
 }

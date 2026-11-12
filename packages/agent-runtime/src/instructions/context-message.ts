@@ -19,18 +19,21 @@ function ruleFileBlock(file: RuleFile): TextBlock {
 
 /**
  * 会话开始的上下文消息的内容：规则文件（用户级的在前，然后从根目录到工作区）、skills 列表、
- * 记忆索引、当前日期和操作系统。只渲染一次，之后原样发送。`memoryIndex` 是渲染好的记忆索引，
- * `skills` 是渲染好的 skills 列表，没有时不放。
+ * 子 agent 的列表（子 agent 自己是它的补充说明）、记忆索引、当前日期和操作系统。只渲染一次，
+ * 之后原样发送。`memoryIndex` 是渲染好的记忆索引，`skills` 是渲染好的 skills 列表，`subagents`
+ * 是渲染好的和子 agent 有关的那一块，没有时不放。
  */
 export function renderContextMessage(
 	files: readonly RuleFile[],
 	environment: { date: string; os: string },
 	memoryIndex?: TextBlock,
 	skills?: TextBlock,
+	subagents?: TextBlock,
 ): TextBlock[] {
 	return [
 		...files.map(ruleFileBlock),
 		...(skills === undefined ? [] : [skills]),
+		...(subagents === undefined ? [] : [subagents]),
 		...(memoryIndex === undefined ? [] : [memoryIndex]),
 		{
 			type: "text",

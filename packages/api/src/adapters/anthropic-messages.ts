@@ -9,11 +9,12 @@ import {
 } from "../client/request.js";
 import type { SseEvent } from "../client/sse.js";
 import type { StreamOptions } from "../client/stream.js";
-import { computeCost } from "../models/cost.js";
+import { computeCost, serverToolsCost } from "../models/cost.js";
 import {
 	type ModelEntry,
 	type ResolvedEffort,
 	resolveEffort,
+	type ServerToolName,
 } from "../models/entry.js";
 import type {
 	AssistantContent,
@@ -23,6 +24,7 @@ import type {
 	Message,
 	ModelErrorInfo,
 	ModelRequest,
+	OpaqueBlock,
 	Origin,
 	RefusalDetails,
 	StopReason,
@@ -36,10 +38,12 @@ import {
 	contentSha256,
 	fitIdentifier,
 	fitImages,
+	inputRaw,
 	jsonArray,
 	jsonObject,
 	messageHashInput,
 	renderPart,
+	sameService,
 	ToolNames,
 } from "./wire.js";
 
@@ -50,6 +54,30 @@ const nameLimit = 128;
 const callIdLimit = 64;
 
 type Json = Record<string, unknown>;
+
+/**
+ * 服务端工具在 Messages API 里的定义。用不带动态过滤的基础版本：之后的版本默认经代码执行的容器
+ * 调用，要保存和带回容器的编号；基础版本也是 Vertex 和 Azure 托管的 Foundry 上唯一能用的。
+ */
+const serverToolWire: Record<ServerToolName, string> = {
+	web_search: '{"type":"web_search_20250305","name":"web_search"}',
+	web_fetch: '{"type":"web_fetch_20250910","name":"web_fetch"}',
+};
+
+/** 服务端工具的调用：结果可能要到下一条回复的开头才有。 */
+const serverToolUse = "server_tool_use";
+
+/** 服务端工具的结果块，整块随 `content_block_start` 到达。 */
+const serverToolResults = new Set([
+	"web_search_tool_result",
+	"web_fetch_tool_result",
+]);
+
+/** `usage.server_tool_use` 里的计数对应的工具名。 */
+const serverToolCounters: Record<string, ServerToolName> = {
+	web_search_requests: "web_search",
+	web_fetch_requests: "web_fetch",
+};
 
 function scopeOf(entry: ModelEntry) {
 	return {
@@ -97,22 +125,6 @@ function userBlock(block: UserContent): string {
 }
 
 /**
- * 工具参数的原文：Anthropic 自己的工具调用就是流里 `partial_json` 拼出的原文，原样放进 `input`，
- * 不经 JSON 往返；模型写出的参数不是 JSON 对象时发空对象，否则这段历史再也发不出去。
- */
-function inputRaw(args: string): string {
-	try {
-		const value = JSON.parse(args) as unknown;
-		if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-			return args;
-		}
-	} catch {
-		// 参数原文不是 JSON：工具调用已经按失败处理，这里只要能发出去
-	}
-	return "{}";
-}
-
-/**
  * 一条回复里发回 Anthropic 的块和它们在 `content` 里的下标。推理内容只发回同一服务：
  * 同一服务上换模型时原样带回，由服务端丢弃读不了的；其他服务的签名这里验不了。
  */
@@ -123,9 +135,10 @@ function sentBlocks(
 	return message.content.flatMap((block, index) => {
 		if (block.type === "text" && block.text === "") return [];
 		if (
-			(block.type === "reasoning" || block.type === "fallback") &&
-			(block.origin.protocol !== "anthropic.messages" ||
-				block.origin.service !== entry.service)
+			(block.type === "reasoning" ||
+				block.type === "fallback" ||
+				block.type === "opaque") &&
+			!sameService(entry, "anthropic.messages", block.origin)
 		) {
 			return [];
 		}
@@ -133,10 +146,92 @@ function sentBlocks(
 	});
 }
 
-function assistantBlock(block: AssistantContent, names: ToolNames): string {
+/** 不透明块原文里的一个字符串字段：`server_tool_use` 的 `id`，结果块的 `tool_use_id`。 */
+function opaqueField(block: OpaqueBlock, name: string): string {
+	return String((JSON.parse(block.raw) as Json)[name]);
+}
+
+/** 这条回复里已经有结果的服务端工具调用的编号。 */
+function resolvedServerCalls(message: Message | undefined): Set<string> {
+	const ids = new Set<string>();
+	if (message?.role !== "assistant") return ids;
+	for (const block of message.content) {
+		if (block.type === "opaque" && serverToolResults.has(block.kind)) {
+			ids.add(opaqueField(block, "tool_use_id"));
+		}
+	}
+	return ids;
+}
+
+/** 这条回复里服务端工具调用的编号。 */
+function serverCalls(message: Message | undefined): Set<string> {
+	const ids = new Set<string>();
+	if (message?.role !== "assistant") return ids;
+	for (const block of message.content) {
+		if (block.type === "opaque" && block.kind === serverToolUse) {
+			ids.add(opaqueField(block, "id"));
+		}
+	}
+	return ids;
+}
+
+/**
+ * 一条回复里不能带回的服务端工具内容块的下标：调用和结果要成对。
+ * - 调用在自己这条回复里没有结果时，后面只能是"工具结果，然后是带着它的结果的下一条回复"，或者历史
+ *   到此为止（服务端在下一次请求里执行它）。多一段文字服务端就返回 400：被取消的 task 之后用户接着
+ *   输入、工具执行期间插入了 steering 时会出现。
+ * - 结果对应的调用要在自己这条回复里，或者在只隔着工具结果的上一条回复里。调用所在的块作废之后
+ *   （回退、按事件脱敏）会剩下没有调用的结果。
+ */
+function unpairedServerBlocks(
+	entry: ModelEntry,
+	messages: readonly Message[],
+	at: number,
+): Set<number> {
+	const message = messages[at];
+	const unpaired = new Set<number>();
+	if (message?.role !== "assistant") return unpaired;
+	let next = at + 1;
+	while (messages[next]?.role === "tool_result") next += 1;
+	const follower = messages[next];
+	let previous = at - 1;
+	while (messages[previous]?.role === "tool_result") previous -= 1;
+	const resolved = resolvedServerCalls(message);
+	const later = resolvedServerCalls(follower);
+	const calls = serverCalls(message);
+	const earlier = serverCalls(messages[previous]);
+	for (const { index, block } of sentBlocks(entry, message)) {
+		if (block.type !== "opaque") continue;
+		if (block.kind === serverToolUse) {
+			const id = opaqueField(block, "id");
+			if (resolved.has(id) || follower === undefined || later.has(id)) continue;
+			unpaired.add(index);
+		} else {
+			const id = opaqueField(block, "tool_use_id");
+			if (!calls.has(id) && !earlier.has(id)) unpaired.add(index);
+		}
+	}
+	return unpaired;
+}
+
+function assistantBlock(
+	entry: ModelEntry,
+	block: AssistantContent,
+	names: ToolNames,
+): string {
 	switch (block.type) {
 		case "text":
-			return JSON.stringify({ type: "text", text: block.text });
+			// 引用里的 encrypted_index 要原样带回，按收到的原文拼回去
+			return block.citations !== undefined &&
+				sameService(entry, "anthropic.messages", block.citations.origin)
+				? jsonObject([
+						["type", '"text"'],
+						["text", JSON.stringify(block.text)],
+						["citations", block.citations.raw],
+					])
+				: JSON.stringify({ type: "text", text: block.text });
+		case "opaque":
+			return block.raw;
 		case "reasoning":
 			return JSON.stringify(
 				block.redacted
@@ -200,9 +295,26 @@ function messagePieces(
 		}
 		case "assistant":
 			return sentBlocks(entry, message).map(({ block }) =>
-				assistantBlock(block, names),
+				assistantBlock(entry, block, names),
 			);
 	}
+}
+
+/** 这次请求启用的服务端工具的定义。启用了条目没有列出的工具、和客户端工具重名，都是调用方的缺陷。 */
+function serverToolDefinitions(
+	entry: ModelEntry,
+	request: ModelRequest,
+	context: RequestContext,
+): string[] {
+	return (context.serverTools ?? []).map((name) => {
+		if (entry.server_tools?.includes(name) !== true) {
+			throw new Error(`模型 ${entry.id} 没有服务端工具 ${name}`);
+		}
+		if (request.tools.some((tool) => tool.name === name)) {
+			throw new Error(`客户端工具和启用的服务端工具重名：${name}`);
+		}
+		return serverToolWire[name];
+	});
 }
 
 /** 做前缀校验的模型在开着推理时，请求带上这个 beta，并显式要求校验失败时报错。 */
@@ -246,7 +358,7 @@ interface Rendered {
 
 /**
  * `count` 为真时拼的是计数接口的请求体：内容和创建消息的相同，去掉计数接口不接受的 `max_tokens`、
- * `prefix_mismatch_behavior`、`fallbacks` 和 `stream`。
+ * `prefix_mismatch_behavior`、`fallbacks`、`stream` 和服务端工具的定义。
  */
 function render(
 	entry: ModelEntry,
@@ -295,9 +407,9 @@ function render(
 		nameLimit,
 	);
 	const wire: WireMessage[] = [];
-	for (const message of rest) {
-		if (fold && message.role === "system") continue;
-		const pieces = renderPart(
+	const sent = rest.filter((message) => !(fold && message.role === "system"));
+	for (const [at, message] of sent.entries()) {
+		const rendered = renderPart(
 			raws,
 			scope,
 			{
@@ -307,20 +419,40 @@ function render(
 			},
 			() => messagePieces(entry, message, names),
 		);
-		if (message.role === "system" || message.role === "assistant") {
+		if (message.role === "assistant") {
+			// 保存的原文是整条回复的；不成对的服务端工具内容块取决于前后的消息，在这里去掉
+			const unpaired = unpairedServerBlocks(entry, sent, at);
+			const kept = sentBlocks(entry, message)
+				.map(({ index }, i) => ({ index, piece: rendered[i] }))
+				.filter(({ index }) => !unpaired.has(index));
 			// 推理块全部来自别的服务、只剩空的回复不发：服务要求每条消息都有内容
+			if (kept.length === 0) continue;
+			wire.push({
+				role: message.role,
+				results: [],
+				blocks: kept.map(({ piece }) => {
+					if (piece === undefined) {
+						throw new Error(
+							`回复 ${message.message_id} 保存的原文和它的内容块对不上`,
+						);
+					}
+					return piece;
+				}),
+				refs: kept.map(({ index }) => ({
+					message_id: message.message_id,
+					index,
+				})),
+			});
+			continue;
+		}
+		const pieces = rendered;
+		if (message.role === "system") {
 			if (pieces.length === 0) continue;
 			wire.push({
 				role: message.role,
 				results: [],
 				blocks: [...pieces],
-				refs:
-					message.role === "assistant"
-						? sentBlocks(entry, message).map(({ index }) => ({
-								message_id: message.message_id,
-								index,
-							}))
-						: pieces.map(() => undefined),
+				refs: pieces.map(() => undefined),
 			});
 			continue;
 		}
@@ -354,29 +486,47 @@ function render(
 			],
 		]);
 	});
+	// 计数接口不接受服务端工具
+	const serverTools = count
+		? []
+		: serverToolDefinitions(entry, request, context);
 	const tools =
-		request.tools.length === 0
+		request.tools.length === 0 && serverTools.length === 0
 			? undefined
 			: renderPart(
 					raws,
 					scope,
 					{
 						part: "tools",
-						content_sha256: contentSha256(entry, request.tools),
+						// 没有启用服务端工具时哈希和以前一样，已经保存的原文照用
+						content_sha256: contentSha256(
+							entry,
+							serverTools.length === 0
+								? request.tools
+								: { tools: request.tools, server_tools: context.serverTools },
+						),
 					},
-					() =>
-						request.tools.map((tool) =>
+					() => [
+						...request.tools.map((tool) =>
 							JSON.stringify({
 								name: names.wire(tool.name),
 								description: tool.description,
 								input_schema: tool.parameters,
 							}),
 						),
+						...serverTools,
+					],
 				);
 	const effort = resolveEffort(entry, request.reasoning_effort);
+	const vertex = entry.vertex === true;
 	return {
 		body: jsonObject([
-			["model", JSON.stringify(entry.model)],
+			// Vertex 上版本写在请求体里，模型写在地址里；只有计数接口的请求体留着 model
+			[
+				"anthropic_version",
+				vertex ? JSON.stringify(anthropicVersion) : undefined,
+			],
+			["model", vertex && !count ? undefined : JSON.stringify(entry.model)],
 			[
 				"max_tokens",
 				count
@@ -522,7 +672,9 @@ export function classifyAnthropicError(
 }
 
 type BlockState =
-	| { type: "text"; text: string }
+	| { type: "text"; text: string; citations: unknown[] }
+	/** 服务端工具的块：`block` 是开始时收到的整块，`json` 是之后 `input_json_delta` 拼出的 `input`。 */
+	| { type: "opaque"; kind: string; block: Json; json: string }
 	| { type: "thinking"; text: string; signature: string }
 	| { type: "redacted_thinking"; data: string }
 	| {
@@ -534,6 +686,14 @@ type BlockState =
 	  }
 	| { type: "fallback"; from: string; to: string };
 
+/** 服务端工具调用的一行说明：工具名加搜索的关键词或读取的地址。结果块不另写。 */
+function serverToolSummary(block: Json, input: Json): string {
+	const detail = input.query ?? input.url;
+	return typeof detail === "string"
+		? `${String(block.name)}: ${detail}`
+		: String(block.name);
+}
+
 function toContent(block: BlockState, origin: Origin): AssistantContent {
 	switch (block.type) {
 		case "fallback":
@@ -544,7 +704,43 @@ function toContent(block: BlockState, origin: Origin): AssistantContent {
 				origin: { ...origin, model: block.to },
 			};
 		case "text":
-			return { type: "text", text: block.text };
+			return {
+				type: "text",
+				text: block.text,
+				...(block.citations.length === 0
+					? {}
+					: {
+							citations: { raw: JSON.stringify(block.citations), origin },
+						}),
+			};
+		case "opaque": {
+			// 调用的 input 是流里 `partial_json` 拼出的原文，没有增量时是块开始时给出的；其余字段按收到的带回
+			const input =
+				block.kind !== serverToolUse
+					? undefined
+					: block.json === ""
+						? JSON.stringify(block.block.input ?? {})
+						: inputRaw(block.json);
+			const summary =
+				input === undefined
+					? undefined
+					: serverToolSummary(block.block, JSON.parse(input) as Json);
+			return {
+				type: "opaque",
+				kind: block.kind,
+				...(summary === undefined ? {} : { summary }),
+				raw: jsonObject([
+					...Object.entries(block.block)
+						.filter(([key]) => key !== "input")
+						.map(([key, value]): [string, string] => [
+							key,
+							JSON.stringify(value),
+						]),
+					["input", input],
+				]),
+				origin,
+			};
+		}
 		case "thinking":
 			return {
 				type: "reasoning",
@@ -580,6 +776,8 @@ class MessagesParser implements StreamParser {
 	#names: ToolNames;
 	#model: string;
 	#usage = zeroUsage();
+	/** 这次请求启用了服务端工具：没启用时响应里出现它们的内容块照旧报错。 */
+	#serverTools: boolean;
 	/** `usage.iterations` 里每次采样的模型和用量：回退时各次按各自模型的价格计费。 */
 	#iterations: { model: string; usage: Usage }[] | undefined;
 	#stopReason: StopReason | undefined;
@@ -599,6 +797,7 @@ class MessagesParser implements StreamParser {
 			request.tools.map((tool) => tool.name),
 			nameLimit,
 		);
+		this.#serverTools = (options.serverTools ?? []).length > 0;
 		this.#model = entry.model;
 	}
 
@@ -657,6 +856,19 @@ class MessagesParser implements StreamParser {
 					message: String(error.message),
 				};
 			}
+			case "vertex-block-event": {
+				// Vertex 上 Google 的内容分类器中断了流：按拒绝处理
+				if (this.#entry.vertex !== true) {
+					throw new Error(`Messages API 返回了不认识的事件：${event}`);
+				}
+				const feedback = payload.promptFeedback as Json | undefined;
+				this.#stopReason = "refusal";
+				this.#refusal = {
+					category: String(feedback?.blockReason ?? "blocked"),
+				};
+				this.#stopped = true;
+				return [];
+			}
 			default:
 				throw new Error(`Messages API 返回了不认识的事件：${event}`);
 		}
@@ -665,7 +877,11 @@ class MessagesParser implements StreamParser {
 	#start(index: number, block: Json): StreamEvent[] {
 		switch (block.type) {
 			case "text":
-				this.#blocks[index] = { type: "text", text: String(block.text ?? "") };
+				this.#blocks[index] = {
+					type: "text",
+					text: String(block.text ?? ""),
+					citations: Array.isArray(block.citations) ? [...block.citations] : [],
+				};
 				return [];
 			case "thinking":
 				this.#blocks[index] = { type: "thinking", text: "", signature: "" };
@@ -700,10 +916,17 @@ class MessagesParser implements StreamParser {
 				this.#model = to;
 				return [];
 			}
-			default:
-				throw new Error(
-					`Messages API 返回了没有列出的内容块：${String(block.type)}`,
-				);
+			default: {
+				const kind = String(block.type);
+				if (
+					this.#serverTools &&
+					(kind === serverToolUse || serverToolResults.has(kind))
+				) {
+					this.#blocks[index] = { type: "opaque", kind, block, json: "" };
+					return [];
+				}
+				throw new Error(`Messages API 返回了没有列出的内容块：${kind}`);
+			}
 		}
 	}
 
@@ -720,6 +943,18 @@ class MessagesParser implements StreamParser {
 		}
 		if (delta.type === "signature_delta" && block.type === "thinking") {
 			block.signature += String(delta.signature);
+			return [];
+		}
+		if (delta.type === "citations_delta" && block.type === "text") {
+			block.citations.push(delta.citation);
+			return [];
+		}
+		if (
+			delta.type === "input_json_delta" &&
+			block.type === "opaque" &&
+			block.kind === serverToolUse
+		) {
+			block.json += String(delta.partial_json);
 			return [];
 		}
 		if (delta.type === "input_json_delta" && block.type === "tool_use") {
@@ -754,6 +989,7 @@ class MessagesParser implements StreamParser {
 				typeof details?.thinking_tokens === "number"
 					? details.thinking_tokens
 					: this.#usage.reasoning,
+			...this.#serverToolUsage(raw.server_tool_use as Json | null | undefined),
 		};
 		if (!Array.isArray(raw.iterations)) return;
 		// 回退时顶层的用量只含作答的那一次，各次采样的用量在 iterations 里
@@ -771,9 +1007,9 @@ class MessagesParser implements StreamParser {
 					reasoning: 0,
 				},
 			}));
-		const sum = (key: keyof Usage) =>
+		const sum = (key: "input" | "output" | "cache_read" | "cache_write") =>
 			(this.#iterations ?? []).reduce(
-				(total, item) => total + (item.usage[key] ?? 0),
+				(total, item) => total + item.usage[key],
 				0,
 			);
 		this.#usage = {
@@ -790,6 +1026,24 @@ class MessagesParser implements StreamParser {
 		if (typeof served?.model === "string") this.#model = served.model;
 	}
 
+	/**
+	 * 服务端工具计费的次数：`message_delta` 里的是累计值，后到的覆盖先到的；这一份用量里没有时
+	 * 沿用已有的。失败的搜索不计费，所以不按内容块的个数算。
+	 */
+	#serverToolUsage(raw: Json | null | undefined): Pick<Usage, "server_tools"> {
+		if (raw === null || raw === undefined) {
+			return this.#usage.server_tools === undefined
+				? {}
+				: { server_tools: this.#usage.server_tools };
+		}
+		const counts: Record<string, number> = {};
+		for (const [counter, name] of Object.entries(serverToolCounters)) {
+			const calls = raw[counter];
+			if (typeof calls === "number" && calls > 0) counts[name] = calls;
+		}
+		return Object.keys(counts).length === 0 ? {} : { server_tools: counts };
+	}
+
 	/** 按实际作答的模型取价格：回退的模型按清单里写的它的价格。 */
 	#price(model: string) {
 		return model === this.#entry.model
@@ -803,11 +1057,20 @@ class MessagesParser implements StreamParser {
 		const iterations = this.#iterations ?? [
 			{ model: this.#model, usage: this.#usage },
 		];
-		let cost = 0;
+		// 服务端工具按次计费，价格是服务的，不随作答的模型变：按条目自己的价格算一次
+		let cost =
+			this.#entry.price === undefined
+				? 0
+				: serverToolsCost(this.#entry.price, this.#usage);
 		for (const item of iterations) {
 			const price = this.#price(item.model);
 			if (price === undefined) return this.#usage;
-			cost += computeCost(price, item.usage, now);
+			const { input, output, cache_read, cache_write, reasoning } = item.usage;
+			cost += computeCost(
+				price,
+				{ input, output, cache_read, cache_write, reasoning },
+				now,
+			);
 		}
 		return { ...this.#usage, cost_usd: cost };
 	}
@@ -866,9 +1129,15 @@ class MessagesParser implements StreamParser {
 		const boundary = content.findLastIndex(
 			(block) => block.type === "fallback",
 		);
+		// 分界之前的服务端工具调用成对留下，没有结果的不能再发回
+		const resolved = resolvedServerCalls(message);
 		const dropped = content.flatMap((block, index) =>
 			index < boundary &&
-			(block.type === "reasoning" || block.type === "tool_call")
+			(block.type === "reasoning" ||
+				block.type === "tool_call" ||
+				(block.type === "opaque" &&
+					block.kind === serverToolUse &&
+					!resolved.has(opaqueField(block, "id"))))
 				? [index]
 				: [],
 		);
@@ -903,6 +1172,11 @@ function locating(refs: (BlockRef | undefined)[][]): ErrorClassifier {
 	};
 }
 
+/** API 版本的请求头；Vertex 上版本写在请求体里，不发这个头。 */
+function versionHeader(entry: ModelEntry): Record<string, string> {
+	return entry.vertex === true ? {} : { "anthropic-version": anthropicVersion };
+}
+
 /** 用 Messages API 发出一次流式请求。出错和取消也以 `end` 结束，不抛出约定中的失败。 */
 export function streamAnthropicMessages(
 	entry: ModelEntry,
@@ -912,14 +1186,17 @@ export function streamAnthropicMessages(
 	const { body, refs } = render(entry, request, options);
 	const beta = betas(entry, request);
 	return runStream(
+		entry,
 		options,
 		{
-			url: `${entry.base_url}/messages`,
+			url:
+				entry.vertex === true
+					? `${entry.base_url}/${entry.model}:streamRawPredict`
+					: `${entry.base_url}/messages`,
 			headers: {
 				"content-type": "application/json",
 				accept: "text/event-stream",
-				"anthropic-version": anthropicVersion,
-				"x-api-key": options.apiKey,
+				...versionHeader(entry),
 				...(beta.length === 0 ? {} : { "anthropic-beta": beta.join(",") }),
 			},
 			body,
@@ -939,13 +1216,16 @@ export function countAnthropicMessages(
 	options: CountOptions,
 ): Promise<TokenCount> {
 	return runCount(
+		entry,
 		options,
 		{
-			url: `${entry.base_url}/messages/count_tokens`,
+			url:
+				entry.vertex === true
+					? `${entry.base_url}/count-tokens:rawPredict`
+					: `${entry.base_url}/messages/count_tokens`,
 			headers: {
 				"content-type": "application/json",
-				"anthropic-version": anthropicVersion,
-				"x-api-key": options.apiKey,
+				...versionHeader(entry),
 			},
 			body: render(entry, request, options, true).body,
 		},

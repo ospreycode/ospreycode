@@ -8,6 +8,7 @@ import type {
 	ServerApprovalRequestedEvent,
 	SessionConfig,
 	SessionEndReason,
+	SubagentEndedEvent,
 	TaskEndedEvent,
 	TaskSource,
 } from "@ospreycode/agent-host";
@@ -46,7 +47,26 @@ export interface ToolEntry {
 export interface ApprovalEntry {
 	kind: "approval";
 	request: ApprovalEvent;
+	/** 询问来自子 agent 时它的名字。 */
+	subagent?: string;
 	decided?: ApprovalDecided;
+}
+
+/**
+ * 一个子 agent：它的回复和工具调用不逐条显示，只在这一项里更新进展；它的结果随后作为给模型的
+ * 通知显示。
+ */
+export interface SubagentEntry {
+	kind: "subagent";
+	name: string;
+	model: string;
+	/** worker 自己的工作区；和主 agent 共用工作区的没有。 */
+	workspace?: string;
+	/** 它开始过的工具调用的个数。 */
+	toolCalls: number;
+	/** 最近开始的一次工具调用。 */
+	last?: { name: string; arguments: string };
+	ended?: SubagentEndedEvent;
 }
 
 /** 一行说明：设置的变化、后台命令、警告和错误。 */
@@ -70,6 +90,7 @@ export type Entry =
 	| AssistantEntry
 	| ToolEntry
 	| ApprovalEntry
+	| SubagentEntry
 	| NoticeEntry
 	| TaskEndedEntry;
 
@@ -141,6 +162,8 @@ export class InteractiveState {
 	readonly #replies = new Map<string, AssistantEntry>();
 	readonly #tools = new Map<string, ToolEntry>();
 	readonly #asked = new Map<string, ApprovalEntry>();
+	/** 见过的子 agent，按 `agent_id`。 */
+	readonly #subagents = new Map<string, SubagentEntry>();
 	readonly #background = new Map<string, string>();
 	#agentStarted = false;
 	/** 最近结束的 task 失败的原因，已经显示在它结束的那一行里；下一个 task 开始时清掉。 */
@@ -185,6 +208,7 @@ export class InteractiveState {
 		this.#replies.clear();
 		this.#tools.clear();
 		this.#asked.clear();
+		this.#subagents.clear();
 		// `#background` 留着：回退时结束的后台命令，结束的事件在重画之后才处理，说明里要写出是哪条命令
 		for (const event of events) this.apply(event);
 		this.taskId = undefined;
@@ -230,8 +254,52 @@ export class InteractiveState {
 		return this.#tools.get(toolCallId);
 	}
 
+	/** 这个 `agent_id` 是子 agent 时它的名字；主 agent 没有。 */
+	subagentName(agentId: string): string | undefined {
+		return this.#subagents.get(agentId)?.name;
+	}
+
+	/**
+	 * 子 agent 的 run 里只在它那一项上显示的事件：返回 true 时已经处理完。它的回复不显示（结果随后
+	 * 作为通知到达），换模型和压缩是它自己的上下文的事，不动状态行。其余的事件（询问、hooks、后台
+	 * 命令）和主 agent 的一样显示。
+	 */
+	#applySubagent(entry: SubagentEntry, event: HostEvent): boolean {
+		switch (event.type) {
+			case "tool_call.started":
+				entry.toolCalls += 1;
+				entry.last = { name: event.name, arguments: event.arguments };
+				// 不进对话区，只留着给询问说明是哪条命令
+				this.#tools.set(event.tool_call_id, {
+					kind: "tool",
+					name: event.name,
+					arguments: event.arguments,
+					output: "",
+				});
+				this.#changed.add(entry);
+				return true;
+			case "subagent.ended":
+				entry.ended = event;
+				this.#changed.add(entry);
+				return true;
+			case "model.delta":
+			case "message.completed":
+			case "tool_call.output":
+			case "tool_call.completed":
+			case "model.changed":
+			case "reasoning_effort.changed":
+			case "context.compacted":
+				return true;
+			default:
+				return false;
+		}
+	}
+
 	/** 按一个事件更新状态。 */
 	apply(event: HostEvent): void {
+		const subagent =
+			"agent_id" in event ? this.#subagents.get(event.agent_id) : undefined;
+		if (subagent !== undefined && this.#applySubagent(subagent, event)) return;
 		switch (event.type) {
 			case "session.started":
 				this.status.model = event.model;
@@ -295,12 +363,19 @@ export class InteractiveState {
 					: "";
 				const streamed = this.#replies.has(message.message_id);
 				// 只有工具调用的回复不占一条
-				if (text === "" && reasoning === "" && !streamed) break;
-				const reply = this.#reply(message.message_id);
-				reply.text = text;
-				reply.reasoning = reasoning;
-				this.#changed.add(reply);
-				this.#replies.delete(message.message_id);
+				if (text !== "" || reasoning !== "" || streamed) {
+					const reply = this.#reply(message.message_id);
+					reply.text = text;
+					reply.reasoning = reasoning;
+					this.#changed.add(reply);
+					this.#replies.delete(message.message_id);
+				}
+				// 模型服务一侧执行的工具没有流式事件：回复结束时各列一行（搜索的关键词、打开的网址）
+				for (const block of message.content) {
+					if (block.type === "opaque" && block.summary !== undefined) {
+						this.notice(block.summary);
+					}
+				}
 				break;
 			}
 			case "tool_call.started": {
@@ -328,7 +403,11 @@ export class InteractiveState {
 				break;
 			}
 			case "approval.requested": {
-				const asked: ApprovalEntry = { kind: "approval", request: event };
+				const asked: ApprovalEntry = {
+					kind: "approval",
+					request: event,
+					...(subagent === undefined ? {} : { subagent: subagent.name }),
+				};
 				this.approvals.push(event);
 				this.#asked.set(event.request_id, asked);
 				this.#add(asked);
@@ -412,6 +491,20 @@ export class InteractiveState {
 					`${event.background_id === null ? "给模型的通知" : "后台通知"}：${event.text}`,
 				);
 				break;
+			case "subagent.started": {
+				const started: SubagentEntry = {
+					kind: "subagent",
+					name: event.name,
+					model: event.model,
+					...(event.workspace === this.status.workspace
+						? {}
+						: { workspace: event.workspace }),
+					toolCalls: 0,
+				};
+				this.#subagents.set(event.agent_id, started);
+				this.#add(started);
+				break;
+			}
 			case "process.started":
 				if (event.kind !== "agent") break;
 				if (this.#agentStarted) this.notice("agent 进程已重启");
@@ -471,6 +564,8 @@ export class InteractiveState {
 				break;
 			}
 			case "run.started":
+			// 子 agent 的结束在它那一项上显示。到这里的只有恢复时补记的：它的开始在上一次运行里，另有通知说明
+			case "subagent.ended":
 			case "process.exited":
 			case "background.delivered":
 			// 候选由 `/memory` 那边列出；记忆的改动由做改动的命令说明，检索在工具调用上看得到

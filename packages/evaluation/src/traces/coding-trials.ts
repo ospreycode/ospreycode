@@ -71,7 +71,7 @@ export interface TrialMeasurements {
 	denials: Denials;
 }
 
-/** 一道题一次运行的结果：运行 agent 的那一遍和重放评分的那一遍合在一起。 */
+/** 一道题一次运行的结果：运行 agent 的部分和评分的部分合在一起。 */
 export type CodingTrial = TrialMeasurements &
 	(
 		| { status: "passed" | "failed" }
@@ -264,18 +264,23 @@ export interface RunJobs {
 	run: number;
 }
 
+/** 评分脚本自己崩溃时写下的分数（DeepSWE 的 `test.sh`）：没有评出结果。 */
+const graderCrashed = -1;
+
 /**
- * 读入一次运行的结果：每道题把运行 agent 的那一遍（用量、时间、被拒次数）和重放评分的那一遍
- * （通过与否）合在一起。两个 job 都是 Pier 的 job 目录，里面每道题只运行一次。
- *
- * 评分的测试超时算不通过，不算环境故障：否则让测试卡住的补丁会被排除在成功率之外。
+ * 把运行 agent 的 job（用量、时间、被拒次数）和评分的 job（通过与否）按题合在一起；只运行一遍的
+ * benchmark 两者是同一个 job。
  */
-export function readRun(jobs: RunJobs): CodingTrial[] {
-	const regraded = readJob(jobs.regradeJob);
-	return [...readJob(jobs.agentJob)]
+function combine(
+	agentJob: string,
+	gradeJob: string,
+	run: number,
+): CodingTrial[] {
+	const graded = agentJob === gradeJob ? undefined : readJob(gradeJob);
+	return [...readJob(agentJob)]
 		.sort(([a], [b]) => (a < b ? -1 : 1))
 		.map(([task, agent]): CodingTrial => {
-			const trial = { task, run: jobs.run };
+			const trial = { task, run };
 			const logs = join(agent.directory, "agent");
 			const duration =
 				agent.result.agentExecutionMs === undefined
@@ -328,7 +333,7 @@ export function readRun(jobs: RunJobs): CodingTrial[] {
 				denials: countDenials(events),
 			};
 
-			const grade = regraded.get(task);
+			const grade = graded === undefined ? agent : graded.get(task);
 			if (grade === undefined) {
 				return {
 					...measured,
@@ -337,6 +342,14 @@ export function readRun(jobs: RunJobs): CodingTrial[] {
 				};
 			}
 			const { reward, exception } = grade.result;
+			// 只有 DeepSWE 这样约定；重放评分的题目里负分没有特别的含义
+			if (graded === undefined && reward === graderCrashed) {
+				return {
+					...measured,
+					status: "environment_failure",
+					failure: "评分脚本崩溃，没有评出结果",
+				};
+			}
 			if (reward !== undefined) {
 				return { ...measured, status: reward === 1 ? "passed" : "failed" };
 			}
@@ -352,4 +365,22 @@ export function readRun(jobs: RunJobs): CodingTrial[] {
 						: `评分没有给出结果：${exception.type}：${exception.message}`,
 			};
 		});
+}
+
+/**
+ * 读入一次运行的结果：每道题把运行 agent 的那一遍（用量、时间、被拒次数）和重放评分的那一遍
+ * （通过与否）合在一起。两个 job 都是 Pier 的 job 目录，里面每道题只运行一次。
+ *
+ * 评分的测试超时算不通过，不算环境故障：否则让测试卡住的补丁会被排除在成功率之外。
+ */
+export function readRun(jobs: RunJobs): CodingTrial[] {
+	return combine(jobs.agentJob, jobs.regradeJob, jobs.run);
+}
+
+/**
+ * 读入只运行一遍的 benchmark（DeepSWE）一次运行的结果：agent 和评分在同一个 job 里，评分由 Pier
+ * 在单独的环境里做。评分脚本崩溃时写下的 -1 算环境故障；评分的测试超时算不通过。
+ */
+export function readSinglePassRun(job: string, run: number): CodingTrial[] {
+	return combine(job, job, run);
 }

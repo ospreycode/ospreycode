@@ -80,6 +80,15 @@ export {
 	type SkillLoadResult,
 	type StatusResult,
 	type StreamNotification,
+	type SubagentEndedParams,
+	type SubagentInfo,
+	type SubagentRole,
+	type SubagentSendParams,
+	type SubagentSendResult,
+	type SubagentStartParams,
+	type SubagentStartResult,
+	type SubagentStopParams,
+	type SubagentStopResult,
 	type TaskEndOutcome,
 	type TaskEndParams,
 	type TaskEndResult,
@@ -158,4 +167,13 @@ export {
 	skillLoadArgumentsSchema,
 	skillLoadTool,
 } from "./tools/skill-load.js";
+export {
+	type InterruptAgentArguments,
+	interruptAgentArgumentsSchema,
+	type SendMessageArguments,
+	type SpawnAgentArguments,
+	sendMessageArgumentsSchema,
+	spawnAgentArgumentsSchema,
+	subagentToolRegistry,
+} from "./tools/subagents.js";
 export { version } from "./version.js";

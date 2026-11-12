@@ -49,6 +49,30 @@ export interface TaskEnded {
 	limit?: BudgetLimit;
 }
 
+/** 子 agent 结束的结果：没有 `budget_exceeded`，超出上限时停止的是整个 task，子 agent 随之取消。 */
+export type SubagentOutcome = Exclude<TaskOutcome, "budget_exceeded">;
+
+/** `subagent.started` 的内容：记在子 agent 自己的 run 里，它完成握手、拿到任务之后。 */
+export interface SubagentStarted {
+	/** 定义的名字（`[agents.<名字>]`）。 */
+	name: string;
+	/** 它用的模型的 ID。 */
+	model: string;
+	/** 它的沙盒模式：session 当前的模式和定义里较严的一个。 */
+	sandbox_mode: string;
+	/** 它的工作区：和 session 的相同，或者 worker 自己的那一份。 */
+	workspace: string;
+}
+
+/** `subagent.ended` 的内容：记在子 agent 自己的 run 里，是这个 run 的最后一个事件。 */
+export interface SubagentEnded {
+	outcome: SubagentOutcome;
+	/** 这个子 agent 的用量：已经算在所属 task 的合计里。 */
+	usage: Usage;
+	/** `failed` 时的原因。 */
+	error?: string;
+}
+
 /**
  * `approval.requested` 的内容：交给前端回答的权限询问。`request_id` 是前端回答时引用的编号，
  * `reasons` 列出要问的原因。
@@ -247,6 +271,11 @@ export interface BackgroundNotified {
 	 * 哪些文件还原了。
 	 */
 	background_id: string | null;
+	/**
+	 * 子 agent 做完时的结果通知带它最后一条回复的编号（这时 `background_id` 为空）：文字里是那条
+	 * 回复的原文，按事件脱敏靠它把两份对上。
+	 */
+	message_id?: string;
 	/** 交给模型的文字；监视的通知是这一批输出的行。 */
 	text: string;
 }

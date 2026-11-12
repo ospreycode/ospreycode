@@ -3,6 +3,7 @@ import {
 	protocolSchemas,
 	type RecordedEdit,
 	skillLoadTool,
+	subagentToolRegistry,
 	toolRegistry,
 } from "@ospreycode/agent-runtime";
 import type { Usage } from "@ospreycode/api/protocol";
@@ -25,18 +26,36 @@ export interface UncertainCall {
 	arguments: string;
 }
 
+/** 中断的 task 里还在运行的一个子 agent：进程已经不在了，恢复时不接着做。 */
+export interface LostSubagent {
+	agentId: string;
+	/** 定义的名字。 */
+	name: string;
+	runId: string;
+	/** 它的 run 里最后一个事件的序号：`subagent.ended` 接着它编。 */
+	seq: number;
+	/** 启动它的那次 `spawn_agent` 调用。 */
+	toolCallId: string;
+	/** 中断之前它已经记下的用量。 */
+	usage: Usage;
+}
+
 /** 上次没有正常结束的 task：有 `task.started`，没有 `task.ended`。 */
 export interface InterruptedTask {
 	taskId: string;
 	runId: string;
 	/** 这个 run 里最后一个事件的序号：收尾的事件接着它编。 */
 	seq: number;
-	/** 中断之前这个 task 已经记下的用量。 */
+	/** 中断之前这个 task 已经记下的用量，含它启动的子 agent 的。 */
 	usage: Usage;
+	/** 有 `subagent.started`、没有 `subagent.ended` 的子 agent。 */
+	subagents: LostSubagent[];
 	/** 登记过文件改动、没有结果的调用：恢复时按文件现在的哈希确定结果。 */
 	edits: { toolCallId: string; edits: RecordedEdit[] }[];
 	/** 要问用户重新执行还是跳过的调用，按登记的顺序。 */
 	uncertain: UncertainCall[];
+	/** 没有结果的子 agent 工具调用：子 agent 不恢复，这些调用直接记成中断，不用问。 */
+	subagentCalls: string[];
 }
 
 /** 上次还在运行的一条后台命令：进程已经在恢复时清理掉了。 */
@@ -89,6 +108,18 @@ const backgroundEnded = Compile(Type.Object({ background_id: Type.String() }));
 const messageCompleted = Compile(
 	Type.Object({ message: Type.Object({ usage: protocolSchemas.usage }) }),
 );
+const subagentStarted = Compile(Type.Object({ name: Type.String() }));
+
+/** 这些事件里 `message.completed` 的用量合计。 */
+function recordedUsage(events: readonly StoredEvent[]): Usage {
+	return events
+		.filter((event) => event.type === "message.completed")
+		.reduce(
+			(total, event) =>
+				addUsage(total, checked(event, messageCompleted).message.usage),
+			emptyUsage(),
+		);
+}
 
 /** 带队列快照的事件。 */
 const queueEvents = new Set([
@@ -124,7 +155,7 @@ function checked<T>(
 /** 中断的 task 里没有结果的调用各自怎么处理。 */
 function danglingCalls(
 	events: readonly StoredEvent[],
-): Pick<InterruptedTask, "edits" | "uncertain"> {
+): Pick<InterruptedTask, "edits" | "uncertain" | "subagentCalls"> {
 	const started = new Map<
 		string,
 		{ name: string; arguments: string; edits?: RecordedEdit[] }
@@ -151,6 +182,7 @@ function danglingCalls(
 	}
 	const edits: InterruptedTask["edits"] = [];
 	const uncertain: UncertainCall[] = [];
+	const subagentCalls: string[] = [];
 	for (const [toolCallId, call] of started) {
 		// 还在等批准的调用没有执行过，下一个 task 开始时重新登记、重新询问
 		const waiting = (asked.get(toolCallId) ?? []).some(
@@ -159,6 +191,8 @@ function danglingCalls(
 		if (waiting) continue;
 		if (call.edits !== undefined) {
 			edits.push({ toolCallId, edits: call.edits });
+		} else if (subagentToolRegistry.has(call.name)) {
+			subagentCalls.push(toolCallId);
 		} else if (!idempotent(call.name)) {
 			uncertain.push({
 				toolCallId,
@@ -167,7 +201,7 @@ function danglingCalls(
 			});
 		}
 	}
-	return { edits, uncertain };
+	return { edits, uncertain, subagentCalls };
 }
 
 /**
@@ -179,10 +213,11 @@ export function readResumeState(
 	sessionId: string,
 ): ResumeState {
 	const events = store.events(sessionId);
+	const all = store.runs(sessionId);
 	// 子 agent 的 run 不算：恢复的是主 agent 的 task
-	const runs = store
-		.runs(sessionId)
-		.filter((run) => run.task_id !== null && run.parent_agent_id === undefined);
+	const runs = all.filter(
+		(run) => run.task_id !== null && run.parent_agent_id === undefined,
+	);
 	const last = runs.at(-1);
 	let interrupted: InterruptedTask | undefined;
 	if (last !== undefined && last.task_id !== null) {
@@ -190,17 +225,41 @@ export function readResumeState(
 		const has = (type: string) => own.some((event) => event.type === type);
 		// 空闲时记事件用的 run 没有 `task.started`
 		if (has("task.started") && !has("task.ended")) {
+			const subagents: LostSubagent[] = [];
+			for (const run of all) {
+				if (
+					run.task_id !== last.task_id ||
+					run.agent_id === null ||
+					run.parent_tool_call_id === undefined
+				) {
+					continue;
+				}
+				const child = events.filter((event) => event.run_id === run.run_id);
+				const started = child.find(({ type }) => type === "subagent.started");
+				if (
+					started === undefined ||
+					child.some(({ type }) => type === "subagent.ended")
+				) {
+					continue;
+				}
+				subagents.push({
+					agentId: run.agent_id,
+					name: checked(started, subagentStarted).name,
+					runId: run.run_id,
+					seq: Math.max(...child.map((event) => event.seq)),
+					toolCallId: run.parent_tool_call_id,
+					usage: recordedUsage(child),
+				});
+			}
 			interrupted = {
 				taskId: last.task_id,
 				runId: last.run_id,
 				seq: Math.max(...own.map((event) => event.seq)),
-				usage: own
-					.filter((event) => event.type === "message.completed")
-					.reduce(
-						(total, event) =>
-							addUsage(total, checked(event, messageCompleted).message.usage),
-						emptyUsage(),
-					),
+				// 子 agent 的用量算在所属的 task 里
+				usage: recordedUsage(
+					events.filter((event) => event.task_id === last.task_id),
+				),
+				subagents,
 				...danglingCalls(own),
 			};
 		}

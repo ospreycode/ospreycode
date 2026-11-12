@@ -16,6 +16,7 @@ import {
 	benchmarkReport,
 	type CodingBenchmarkOptions,
 	type CodingTrial,
+	codingPermissions,
 	codingRulesFile,
 	formatBenchmarkReport,
 	loadManifest,
@@ -129,6 +130,7 @@ test("一次运行的两条 pier 命令：运行 agent 不评分，再重放补�
 			modelHost: "api.anthropic.com",
 			credential: { id: "anthropic", variable: "EVAL_KEY" },
 			limits: { maxCostUsd: 2, maxRequests: "none", timeoutSec: 2700 },
+			permissions: codingPermissions,
 		},
 	});
 
@@ -169,6 +171,17 @@ test("一次运行的两条 pier 命令：运行 agent 不评分，再重放补�
 			"max_requests=none",
 			"--agent-kwarg",
 			"timeout_sec=2700",
+			"--agent-kwarg",
+			"sandbox_mode=danger-full-access",
+			"--agent-kwarg",
+			`rules_file=${codingRulesFile}`,
+			"--agent-kwarg",
+			"allowed_hosts=",
+			"--agent-kwarg",
+			"sandbox_container=no",
+			// 题目不要求提交
+			"--agent-kwarg",
+			"commit=no",
 			"--disable-verification",
 		],
 		regrade: [
@@ -277,6 +290,7 @@ describe("编码题的整条流程（本地夹具，不联网）", { timeout: 12
 				modelHost: "127.0.0.1",
 				credential: { id: "fake", variable: "EVAL_KEY" },
 				limits: { maxCostUsd: 1, maxRequests: 4, timeoutSec: 60 },
+				permissions: codingPermissions,
 			},
 			env: {
 				...dirs.env,
@@ -518,6 +532,15 @@ describe("编码题的整条流程（本地夹具，不联网）", { timeout: 12
 			],
 			missing: [],
 			overBudget: { cost: 0, requests: 2, duration: 0 },
+			// 没通过的 3 次：两次到了请求次数的上限，一次 task 正常完成但改错了
+			failureCauses: {
+				completed: 1,
+				budget_exceeded: 2,
+				failed: 0,
+				refused: 0,
+				cancelled: 0,
+				killed: 0,
+			},
 			measured: 6,
 			timed: 8,
 			denials: {
@@ -568,6 +591,9 @@ describe("编码题的整条流程（本地夹具，不联网）", { timeout: 12
 			"每次都通过 1 题，每次都不通过 1 题，有时通过 1 题",
 		);
 		expect(formatted).toContain("超出预算 2 次：费用 0，请求次数 2，时间 0");
+		expect(formatted).toContain(
+			"没通过的有效运行 3 次：task 正常完成但测试没过 1，超出预算 2，task 失败 0，模型拒绝 0，被取消 0，CLI 被强制结束 0",
+		);
 		expect(formatted).toContain(
 			"内置 forbidden 2 次（其中带 sudo 的 2 次），危险命令判断 0 次，prompt 规则 0 次，越界申请 0 次",
 		);

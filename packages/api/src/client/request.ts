@@ -10,6 +10,7 @@ import type {
 	StreamEvent,
 	Usage,
 } from "../protocol/index.js";
+import { authorize, CredentialFormatError } from "./auth.js";
 import type { CountOptions, TokenCount } from "./count.js";
 import { parseSse, type SseEvent } from "./sse.js";
 import type { StreamOptions } from "./stream.js";
@@ -17,7 +18,7 @@ import type { StreamOptions } from "./stream.js";
 /** 流在这么久没有数据时按网络中断处理。 */
 export const idleTimeoutMs = 300_000;
 
-/** 一次 HTTP 请求：请求体是已经拼好的 JSON 原文。 */
+/** 一次 HTTP 请求：请求体是已经拼好的 JSON 原文。认证的请求头不在这里，发出之前按模型条目加上。 */
 export interface HttpRequest {
 	url: string;
 	headers: Record<string, string>;
@@ -34,12 +35,23 @@ export interface StreamParser {
 	partial(stopReason: "error" | "cancelled"): AssistantMessage;
 }
 
-/** 按状态码和服务的错误码归类 HTTP 错误。 */
+/** 按状态码和服务的错误码归类 HTTP 错误。`retryAfter` 是服务建议的等待秒数（`retry-after` 的值）。 */
 export type ErrorClassifier = (
 	status: number,
 	body: string,
 	retryAfter: string | null,
 ) => ModelErrorInfo;
+
+/** 服务建议的等待秒数。Azure OpenAI 另给毫秒数的 `retry-after-ms`，有它时用它。 */
+function retryAfter(headers: Headers): string | null {
+	const ms = headers.get("retry-after-ms");
+	return ms === null ? headers.get("retry-after") : String(Number(ms) / 1000);
+}
+
+/** 凭据放不进请求（格式和条目的 `auth` 对不上）时的错误：和服务返回 401 归在同一类。 */
+function credentialFailure(error: CredentialFormatError): ModelErrorInfo {
+	return { category: "authentication", message: error.message };
+}
 
 /** 错误的说明。`fetch` 只报"fetch failed"，真正的原因（连接超时、连接被重置等）在 `cause` 里，一并写出。 */
 function describe(error: unknown): string {
@@ -57,6 +69,7 @@ function describe(error: unknown): string {
  * `end` 里，不抛出。只有转换模块的缺陷和没有列出的内容才抛出。
  */
 export async function* runStream(
+	entry: ModelEntry,
 	options: StreamOptions,
 	http: HttpRequest,
 	classify: ErrorClassifier,
@@ -75,11 +88,19 @@ export async function* runStream(
 		message: parser.partial("cancelled"),
 	});
 	try {
+		let headers: Record<string, string>;
+		try {
+			headers = authorize(entry, options.apiKey, http, new Date());
+		} catch (error) {
+			if (!(error instanceof CredentialFormatError)) throw error;
+			yield fail(credentialFailure(error));
+			return;
+		}
 		let response: Response;
 		try {
 			response = await options.fetch(http.url, {
 				method: "POST",
-				headers: http.headers,
+				headers,
 				body: http.body,
 				signal,
 			});
@@ -94,7 +115,7 @@ export async function* runStream(
 				classify(
 					response.status,
 					await response.text(),
-					response.headers.get("retry-after"),
+					retryAfter(response.headers),
 				),
 			);
 			return;
@@ -147,30 +168,39 @@ export async function* runStream(
 export const countTimeoutMs = 60_000;
 
 /**
- * 发出一次计数请求，读出响应里的 `input_tokens`。服务报错、网络中断、超时和取消都体现在结果里，
- * 不抛出。
+ * 发出一次计数请求，读出响应里的 token 数（`field`，各家的字段名不同）。服务报错、网络中断、
+ * 超时和取消都体现在结果里，不抛出。
  */
 export async function runCount(
+	entry: ModelEntry,
 	options: CountOptions,
 	http: HttpRequest,
 	classify: ErrorClassifier,
+	field = "input_tokens",
 ): Promise<TokenCount> {
 	const timeout = AbortSignal.timeout(countTimeoutMs);
 	const network = (message: string): TokenCount => ({
 		error: { category: "network", message },
 	});
+	let headers: Record<string, string>;
+	try {
+		headers = authorize(entry, options.apiKey, http, new Date());
+	} catch (error) {
+		if (!(error instanceof CredentialFormatError)) throw error;
+		return { error: credentialFailure(error) };
+	}
 	let status: number;
 	let body: string;
-	let retryAfter: string | null;
+	let wait: string | null;
 	try {
 		const response = await options.fetch(http.url, {
 			method: "POST",
-			headers: http.headers,
+			headers,
 			body: http.body,
 			signal: AbortSignal.any([options.signal, timeout]),
 		});
 		status = response.status;
-		retryAfter = response.headers.get("retry-after");
+		wait = retryAfter(response.headers);
 		body = await response.text();
 	} catch (error) {
 		if (options.signal.aborted) return { cancelled: true };
@@ -181,17 +211,17 @@ export async function runCount(
 		);
 	}
 	if (status < 200 || status >= 300) {
-		return { error: classify(status, body, retryAfter) };
+		return { error: classify(status, body, wait) };
 	}
 	let count: unknown;
 	try {
-		count = (JSON.parse(body) as { input_tokens?: unknown }).input_tokens;
+		count = (JSON.parse(body) as Record<string, unknown>)[field];
 	} catch {
 		// 中转服务和网关可能用 200 返回 HTML 一类的页面，和下面缺字段的情况一样处理
 		count = undefined;
 	}
 	if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
-		return network("计数接口的响应里没有 input_tokens");
+		return network(`计数接口的响应里没有 ${field}`);
 	}
 	return { input_tokens: count };
 }

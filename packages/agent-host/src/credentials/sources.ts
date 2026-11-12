@@ -3,10 +3,28 @@ import { isAbsolute } from "node:path";
 import { currentUid, isInside } from "../project/paths.js";
 
 /**
- * 凭据的来源：显式指定的文件或环境变量（`--credential-file`、`--credential-env` 和用户级配置的
- * `[credentials]`）。macOS 的钥匙串在 P1 加入。
+ * 输出凭据的命令：Host 不经 shell 运行 `command` 加 `args`，标准输出去掉首尾空白就是凭据。
+ * 只有模型服务的凭据能用这种来源。
  */
-export type CredentialSource = { file: string } | { env: string };
+export interface CommandSource {
+	/** 程序：绝对路径，或不带路径分隔符、按 Host 环境里的 `PATH` 查找的名字。 */
+	command: string;
+	args?: readonly string[];
+	/** 等程序结束的毫秒数，默认 5000。 */
+	timeout_ms?: number;
+	/** 结果在 Host 内存里用多久（毫秒），过了就重新运行，默认 300000；0 表示只在服务返回 401 之后重新运行。 */
+	refresh_interval_ms?: number;
+}
+
+/**
+ * 凭据的来源：显式指定的文件、环境变量（`--credential-file`、`--credential-env` 和用户级配置的
+ * `[credentials]`）或输出凭据的命令（用户级配置的 `[credentials]` 和 SDK 的 `credentials` 选项）。
+ * macOS 的钥匙串在 P1 加入。
+ */
+export type CredentialSource =
+	| { file: string }
+	| { env: string }
+	| CommandSource;
 
 /** 读不到凭据，或来源不满足要求。错误信息不含凭据本身。 */
 export class CredentialError extends Error {
@@ -28,9 +46,16 @@ export interface LoadedCredential {
 	value: string;
 	/** 凭据来自文件时重新读取文件：服务返回 401 时用新值重发一次。其他来源为空。 */
 	reread?: () => string;
+	/**
+	 * 凭据来自命令时重新运行命令：服务返回 401，或者过了 `staleAt` 时调用。运行不了时抛出
+	 * `CredentialError`。其他来源为空。
+	 */
+	rerun?: () => Promise<string>;
+	/** 凭据来自命令时，过了这个时刻（毫秒时间戳）先重新运行命令再用；`refresh_interval_ms` 为 0 时没有。 */
+	staleAt?: number;
 }
 
-/** 按来源读出一个凭据，文件来源附带重新读取的方法。 */
+/** 按来源读出一个凭据，文件来源附带重新读取的方法。命令来源见 `loadCommandCredential`。 */
 export function loadCredential(
 	id: string,
 	source: CredentialSource,
@@ -44,13 +69,19 @@ export function loadCredential(
 
 /**
  * 读出一个凭据，只保存在 Host 的内存里。文件要只对当前用户可读写、属于当前用户、不在工作区内；
- * macOS 上不接受环境变量来源：沙盒内能读到 Host 进程启动时的环境变量。
+ * macOS 上不接受环境变量来源：沙盒内能读到 Host 进程启动时的环境变量。命令来源在这里读不了，
+ * 抛出 `CredentialError`：只有模型服务的凭据由 Host 运行命令取得。
  */
 export function readCredential(
 	id: string,
 	source: CredentialSource,
 	context: CredentialContext,
 ): string {
+	if ("command" in source) {
+		throw new CredentialError(
+			`凭据 ${id} 的来源不能是命令：只有模型服务的凭据能用命令取得`,
+		);
+	}
 	if ("env" in source) {
 		if (context.platform === "darwin") {
 			throw new CredentialError(

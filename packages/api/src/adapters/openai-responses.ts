@@ -8,9 +8,14 @@ import {
 } from "../client/request.js";
 import type { SseEvent } from "../client/sse.js";
 import type { StreamOptions } from "../client/stream.js";
-import { type ModelEntry, resolveEffort } from "../models/entry.js";
+import {
+	type ModelEntry,
+	resolveEffort,
+	type ServerToolName,
+} from "../models/entry.js";
 import type {
 	AssistantContent,
+	ErrorCategory,
 	Message,
 	ModelErrorInfo,
 	ModelRequest,
@@ -32,6 +37,7 @@ import {
 	jsonObject,
 	messageHashInput,
 	renderPart,
+	sameService,
 	ToolNames,
 } from "./wire.js";
 
@@ -69,13 +75,51 @@ function toolOutput(entry: ModelEntry, content: readonly UserContent[]) {
 		: fitted.map(inputPart);
 }
 
+/** 服务端工具在 Responses 里的定义。 */
+const serverToolWire: Partial<Record<ServerToolName, string>> = {
+	web_search: '{"type":"web_search"}',
+};
+
+/** 服务端工具的 item 原样保存成不透明块，这里列出认识的类型。 */
+const opaqueItems = new Set(["web_search_call"]);
+
 function assistantItems(
 	entry: ModelEntry,
 	block: AssistantContent,
 	names: ToolNames,
 ): string[] {
 	switch (block.type) {
-		case "text":
+		case "text": {
+			const { citations } = block;
+			if (
+				citations !== undefined &&
+				sameService(entry, "openai.responses", citations.origin)
+			) {
+				// 引用按收到的原文拼回去，不经过解析
+				return [
+					jsonObject([
+						["type", '"message"'],
+						["role", '"assistant"'],
+						[
+							"content",
+							jsonArray([
+								jsonObject([
+									["type", '"output_text"'],
+									["text", JSON.stringify(block.text)],
+									["annotations", citations.raw],
+								]),
+							]),
+						],
+						["status", '"completed"'],
+						[
+							"phase",
+							block.phase === undefined
+								? undefined
+								: JSON.stringify(block.phase),
+						],
+					]),
+				];
+			}
 			return [
 				JSON.stringify({
 					type: "message",
@@ -85,12 +129,14 @@ function assistantItems(
 					...(block.phase === undefined ? {} : { phase: block.phase }),
 				}),
 			];
+		}
+		case "opaque":
+			return sameService(entry, "openai.responses", block.origin)
+				? [block.raw]
+				: [];
 		case "reasoning":
 			// 加密的推理内容只有产生它的服务能解密；同一服务上换模型时原样带回，由服务端略去读不了的
-			if (
-				block.origin.protocol !== "openai.responses" ||
-				block.origin.service !== entry.service
-			) {
+			if (!sameService(entry, "openai.responses", block.origin)) {
 				return [];
 			}
 			return [
@@ -160,7 +206,24 @@ function messageItems(
 }
 
 /** 拼请求体用到的、内部协议以外的东西。 */
-export type RequestContext = Pick<StreamOptions, "cacheKey" | "raws">;
+export type RequestContext = Pick<
+	StreamOptions,
+	"cacheKey" | "raws" | "serverTools"
+>;
+
+/** 这次请求启用的服务端工具的定义。启用了条目没有列出的工具是调用方的缺陷。 */
+function serverToolDefinitions(
+	entry: ModelEntry,
+	context: RequestContext,
+): string[] {
+	return (context.serverTools ?? []).map((name) => {
+		const wire = serverToolWire[name];
+		if (wire === undefined || entry.server_tools?.includes(name) !== true) {
+			throw new Error(`模型 ${entry.id} 没有服务端工具 ${name}`);
+		}
+		return wire;
+	});
+}
 
 /**
  * `count` 为真时拼的是计数接口的请求体：内容和 `responses.create` 的相同，只留计数接口接受的
@@ -219,18 +282,25 @@ function render(
 				() => messageItems(entry, message, names),
 			),
 		);
+	const serverTools = serverToolDefinitions(entry, context);
 	const tools =
-		request.tools.length === 0
+		request.tools.length === 0 && serverTools.length === 0
 			? undefined
 			: renderPart(
 					raws,
 					scope,
 					{
 						part: "tools",
-						content_sha256: contentSha256(entry, request.tools),
+						// 没有启用服务端工具时哈希和以前一样，已经保存的原文照用
+						content_sha256: contentSha256(
+							entry,
+							serverTools.length === 0
+								? request.tools
+								: { tools: request.tools, server_tools: context.serverTools },
+						),
 					},
-					() =>
-						request.tools.map((tool) =>
+					() => [
+						...request.tools.map((tool) =>
 							JSON.stringify({
 								type: "function",
 								name: names.wire(tool.name),
@@ -240,6 +310,8 @@ function render(
 								strict: false,
 							}),
 						),
+						...serverTools,
+					],
 				);
 	const effort = resolveEffort(entry, request.reasoning_effort);
 	const reasoning =
@@ -307,12 +379,49 @@ function count(value: unknown): number {
 	return typeof value === "number" ? value : 0;
 }
 
+/** `web_search_call` 的一行说明：工具名加搜索的关键词、打开的地址或在页面里找的内容。 */
+function webSearchSummary(action: Json | undefined): string {
+	const detail = (): string | undefined => {
+		switch (action?.type) {
+			case "search": {
+				const queries = Array.isArray(action.queries)
+					? action.queries
+					: typeof action.query === "string"
+						? [action.query]
+						: [];
+				return queries.length === 0
+					? undefined
+					: queries.map(String).join("; ");
+			}
+			case "open_page":
+				return typeof action.url === "string" ? action.url : undefined;
+			case "find_in_page":
+				return typeof action.url === "string"
+					? `${String(action.pattern)} @ ${action.url}`
+					: String(action.pattern);
+			default:
+				return undefined;
+		}
+	};
+	const text = detail();
+	return text === undefined ? "web_search" : `web_search: ${text}`;
+}
+
+/** Azure OpenAI 流里的错误用 `type` 说明相当于哪个状态码：429、500 和 403；`user_error` 按错误码归类。 */
+const azureErrorTypes: Record<string, ErrorCategory> = {
+	too_many_requests: "rate_limit",
+	server_error: "overloaded",
+	forbidden: "permission",
+};
+
 /** 把 Responses API 的流拼成内部协议的回复，回复里的 item 按收到的形式交给调用方保存。 */
 class ResponsesParser implements StreamParser {
 	#entry: ModelEntry;
 	#request: ModelRequest;
 	#options: StreamOptions;
 	#names: ToolNames;
+	/** 这次请求启用了服务端工具：没启用时响应里出现它们的 item 照旧报错。 */
+	#serverTools: boolean;
 	#model: string;
 	#started = false;
 	#content: AssistantContent[] = [];
@@ -334,6 +443,7 @@ class ResponsesParser implements StreamParser {
 			request.tools.map((tool) => tool.name),
 			nameLimit,
 		);
+		this.#serverTools = (options.serverTools ?? []).length > 0;
 		this.#model = entry.model;
 	}
 
@@ -380,11 +490,16 @@ class ResponsesParser implements StreamParser {
 					message: String(error?.message ?? "Responses API 报告请求失败"),
 				};
 			}
-			case "error":
+			case "error": {
+				// OpenAI 把字段平铺在事件上；Azure OpenAI 包在 `error` 对象里，`type` 相当于状态码
+				const error = (payload.error as Json | undefined) ?? payload;
 				return {
-					category: openaiCodeCategory(payload.code),
-					message: String(payload.message),
+					category:
+						azureErrorTypes[String(error.type)] ??
+						openaiCodeCategory(error.code),
+					message: String(error.message),
 				};
+			}
 			default:
 				// 内容部分的开始和结束、整段文字的 done、中转服务加的 metadata 等，不带新的内容
 				return [];
@@ -433,6 +548,16 @@ class ResponsesParser implements StreamParser {
 				return [{ type: "tool_call_start", index, call_id: callId, name }];
 			}
 			default:
+				if (this.#serverTools && opaqueItems.has(String(item.type))) {
+					// 完整的 item 在 output_item.done 里，这里先占住位置
+					this.#content.push({
+						type: "opaque",
+						kind: String(item.type),
+						raw: JSON.stringify(item),
+						origin: this.#origin(),
+					});
+					return [];
+				}
 				throw new Error(
 					`Responses API 返回了没有列出的 item：${String(item.type)}`,
 				);
@@ -499,7 +624,8 @@ class ResponsesParser implements StreamParser {
 				return events;
 			}
 			case "text": {
-				const text = (item.content as Json[])
+				const parts = item.content as Json[];
+				const text = parts
 					.map((part) => {
 						if (part.type === "output_text") return String(part.text);
 						if (part.type === "refusal") return String(part.refusal);
@@ -508,13 +634,33 @@ class ResponsesParser implements StreamParser {
 						);
 					})
 					.join("");
+				// 引用的位置是按整段文字算的：只有一段文字时才能和内部的文本块对上
+				const annotations =
+					parts.length === 1 ? (parts[0]?.annotations as unknown[]) : [];
 				this.#content[index] = {
 					type: "text",
 					text,
 					...(typeof item.phase === "string" ? { phase: item.phase } : {}),
+					...(Array.isArray(annotations) && annotations.length > 0
+						? {
+								citations: {
+									raw: JSON.stringify(annotations),
+									origin: this.#origin(),
+								},
+							}
+						: {}),
 				};
 				return events;
 			}
+			case "opaque":
+				this.#content[index] = {
+					type: "opaque",
+					kind: block.kind,
+					summary: webSearchSummary(item.action as Json | undefined),
+					raw: JSON.stringify(item),
+					origin: block.origin,
+				};
+				return events;
 			case "tool_call":
 				this.#content[index] = { ...block, arguments: String(item.arguments) };
 				return [...events, { type: "tool_call_end", index }];
@@ -540,6 +686,17 @@ class ResponsesParser implements StreamParser {
 					(usage.output_tokens_details as Json | undefined)?.reasoning_tokens,
 				),
 			};
+		}
+		// 计费的搜索次数在 tool_usage 里，不按 web_search_call 的个数算：打开网页不算搜索
+		const searches = count(
+			(
+				(response.tool_usage as Json | undefined)?.web_search as
+					| Json
+					| undefined
+			)?.num_requests,
+		);
+		if (searches > 0) {
+			this.#usage = { ...this.#usage, server_tools: { web_search: searches } };
 		}
 		const incomplete = response.incomplete_details as Json | null;
 		this.#final = {
@@ -627,13 +784,13 @@ export function streamOpenAIResponses(
 	options: StreamOptions,
 ): AsyncGenerator<StreamEvent> {
 	return runStream(
+		entry,
 		options,
 		{
 			url: `${entry.base_url}/responses`,
 			headers: {
 				"content-type": "application/json",
 				accept: "text/event-stream",
-				authorization: `Bearer ${options.apiKey}`,
 			},
 			body: render(entry, request, options),
 		},
@@ -649,13 +806,11 @@ export function countOpenAIResponses(
 	options: CountOptions,
 ): Promise<TokenCount> {
 	return runCount(
+		entry,
 		options,
 		{
 			url: `${entry.base_url}/responses/input_tokens`,
-			headers: {
-				"content-type": "application/json",
-				authorization: `Bearer ${options.apiKey}`,
-			},
+			headers: { "content-type": "application/json" },
 			body: render(entry, request, options, true),
 		},
 		classifyOpenAIError,

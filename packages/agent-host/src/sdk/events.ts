@@ -35,6 +35,8 @@ import type {
 	ProcessStarted,
 	ReasoningEffortChanged,
 	SandboxModeChanged,
+	SubagentEnded,
+	SubagentStarted,
 	TaskOutcome,
 	TaskSource,
 } from "../sessions/events.js";
@@ -258,6 +260,27 @@ export interface BackgroundEndedEvent
 	type: "background.ended";
 }
 
+/**
+ * `subagent.started`：一个子 agent 开始工作。它的 `agent_id`、`run_id` 是子 agent 自己的，
+ * `task_id` 是启动它的那个 task；谁启动的它在这个 run 的 `run.started` 里。
+ */
+export interface SubagentStartedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		SubagentStarted {
+	type: "subagent.started";
+}
+
+/** `subagent.ended`：这个子 agent 结束了，带它自己的用量。 */
+export interface SubagentEndedEvent
+	extends EventBase,
+		TaskScope,
+		Stored,
+		SubagentEnded {
+	type: "subagent.ended";
+}
+
 /** `background.notification`：后台命令产生了一条通知。`task_id` 的含义同 `background.ended`。 */
 export interface BackgroundNotificationEvent
 	extends EventBase,
@@ -462,6 +485,8 @@ export type HostEvent =
 	| BackgroundEndedEvent
 	| BackgroundNotificationEvent
 	| BackgroundDeliveredEvent
+	| SubagentStartedEvent
+	| SubagentEndedEvent
 	| ProcessStartedEvent
 	| ProcessExitedEvent
 	| SandboxModeChangedEvent

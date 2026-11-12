@@ -7,7 +7,7 @@
 # 退出码：
 #   0   agent 运行过，结果在 $OSPREY_LOGS 里（exit-code、events.jsonl、stderr.log、model.patch）
 #   70  开始前的检查没过：环境故障，agent 没有运行，原因在 $OSPREY_LOGS/environment-failure.txt
-#   71  导不出补丁（题目的仓库被改坏了）
+#   71  导不出补丁，或者做不了收尾的提交（题目的仓库被改坏了）
 set -euo pipefail
 
 : "${OSPREY_CLI:?要给出 CLI 的可执行文件}"
@@ -15,6 +15,7 @@ set -euo pipefail
 : "${OSPREY_LOGS:?要给出放结果的目录}"
 : "${OSPREY_INSTRUCTION:?要给出题目说明的文件}"
 : "${OSPREY_MODEL:?要给出模型}"
+: "${OSPREY_SANDBOX:?要给出沙盒模式}"
 : "${OSPREY_RULES:?要给出权限规则文件}"
 : "${OSPREY_CREDENTIAL_OPTION:?要给出 --credential-env 或 --credential-file}"
 : "${OSPREY_CREDENTIAL:?要给出凭据的来源}"
@@ -27,6 +28,21 @@ set -euo pipefail
 : "${OSPREY_FORBIDDEN_COMMIT?要给出 OSPREY_FORBIDDEN_COMMIT}"
 # 必须访问不到的 https 地址，可以为空（本地夹具没有网络隔离）
 : "${OSPREY_BLOCKED_URL?要给出 OSPREY_BLOCKED_URL}"
+# yes 或 no：运行 agent 之前要不要探测沙盒在这个环境里是否管用（开关沙盒的对比实验两组都探测）
+: "${OSPREY_SANDBOX_PROBE:?要给出 OSPREY_SANDBOX_PROBE}"
+# yes 或 no：CLI 结束后要不要把没提交的改动提交到当前分支（DeepSWE 只给已提交的改动计分）
+: "${OSPREY_COMMIT:?要给出 OSPREY_COMMIT}"
+
+# 写成别的值不能当成 no：该探测的没探测、该提交的没提交，结果看上去照样正常
+for name in OSPREY_SANDBOX_PROBE OSPREY_COMMIT; do
+	case "${!name}" in
+	yes | no) ;;
+	*)
+		echo "$name 要是 yes 或 no" >&2
+		exit 1
+		;;
+	esac
+done
 
 mkdir -p "$OSPREY_LOGS"
 
@@ -71,6 +87,29 @@ if [ -n "$OSPREY_BLOCKED_URL" ]; then
 	fi
 fi
 
+if [ "$OSPREY_SANDBOX_PROBE" = yes ]; then
+	: "${OSPREY_BLOCKED_URL:?探测沙盒要给出一个必须访问不到的地址}"
+	sandboxed() {
+		"$OSPREY_CLI" sandbox --permissions workspace-write -- "$@" \
+			>>"$OSPREY_LOGS/sandbox-probe.log" 2>&1
+	}
+	outside="$(dirname "$OSPREY_WORKSPACE")/.osprey-sandbox-probe-$$"
+	# 这条命令只从用户级配置里取模型，没有选用模型、缺少 bubblewrap 之类的原因都先在这里报出来
+	if ! sandboxed true; then
+		environment_failure "沙盒启动不了：$(tail -n 1 "$OSPREY_LOGS/sandbox-probe.log")"
+	fi
+	if ! sandboxed sh -c 'touch .osprey-sandbox-probe && rm .osprey-sandbox-probe'; then
+		environment_failure "沙盒里写不进工作区"
+	fi
+	if sandboxed touch "$outside" || [ -e "$outside" ]; then
+		rm -f "$outside"
+		environment_failure "沙盒里写得进工作区之外的 $outside"
+	fi
+	if sandboxed curl -sS -o /dev/null --max-time 15 --noproxy '*' "$OSPREY_BLOCKED_URL"; then
+		environment_failure "沙盒里不经代理访问到了 $OSPREY_BLOCKED_URL"
+	fi
+fi
+
 # 开始和结束时各给整个工作区建一个 tree，补丁是两者之差：不依赖仓库开始时是否干净，
 # agent 提交过、换过分支也一样。用单独的 index 文件，不动仓库自己的 index。
 snapshot() {
@@ -88,7 +127,7 @@ set +e
 "$OSPREY_CLI" exec - \
 	--cd "$OSPREY_WORKSPACE" \
 	--model "$OSPREY_MODEL" \
-	--sandbox danger-full-access \
+	--sandbox "$OSPREY_SANDBOX" \
 	--rules "$OSPREY_RULES" \
 	"$OSPREY_CREDENTIAL_OPTION" "$OSPREY_CREDENTIAL" \
 	--json \
@@ -123,4 +162,16 @@ if ! end_tree=$(snapshot) ||
 	! git diff --binary "$start_tree" "$end_tree" >"$OSPREY_LOGS/model.patch"; then
 	echo "导不出补丁" >&2
 	exit 71
+fi
+
+if [ "$OSPREY_COMMIT" = yes ]; then
+	# 用固定的身份，跳过仓库的 hooks 和签名：题目的仓库里可能配了它们
+	if ! git add -A ||
+		! { git diff --cached --quiet ||
+			git -c user.name="Osprey Code" -c user.email="osprey-code@localhost" \
+				-c commit.gpgsign=false commit --quiet --no-verify \
+				-m "Commit the changes left uncommitted at the end of the run"; }; then
+		echo "提交不了收尾的改动" >&2
+		exit 71
+	fi
 fi

@@ -16,7 +16,55 @@ export const pierAdapterDirectory = asset("pier");
 /** 编码能力评测用的权限规则文件，适配经 `--rules` 传给 CLI。 */
 export const codingRulesFile = asset("coding-rules.toml");
 
-/** 任务容器里的 agent 怎么安装、用哪个模型、上限是多少。 */
+/** 开关沙盒的对比实验用的权限规则文件：`rm` 之外预先放行 `packageRegistryHosts`。 */
+export const sandboxComparisonRulesFile = asset(
+	"sandbox-comparison-rules.toml",
+);
+
+/** 开关沙盒的对比实验里任务容器和沙盒都放行的包仓库域名：npm、PyPI 和 Go 模块。 */
+export const packageRegistryHosts = [
+	"registry.npmjs.org",
+	"pypi.org",
+	"files.pythonhosted.org",
+	"proxy.golang.org",
+	"sum.golang.org",
+] as const;
+
+/** agent 在任务容器里的权限。审批策略固定是 CLI 非交互模式的 `never`。 */
+export interface PermissionSettings {
+	sandboxMode: "danger-full-access" | "workspace-write";
+	/** 经 `--rules` 传给 CLI 的权限规则文件。 */
+	rulesFile: string;
+	/** 模型服务之外任务容器另外放行的域名。 */
+	allowedHosts: readonly string[];
+	/**
+	 * 任务容器要不要按开沙盒来准备：加上沙盒要的安全选项，安装 bubblewrap、socat 和 ripgrep，
+	 * 运行 agent 之前探测沙盒管不管用。开关沙盒的对比实验两组都是 `true`，容器的配置才相同。
+	 */
+	sandboxContainer: boolean;
+}
+
+/** 编码能力评测的权限：不启用系统隔离，只放行 `rm`，任务容器只访问得到模型服务。 */
+export const codingPermissions: PermissionSettings = {
+	sandboxMode: "danger-full-access",
+	rulesFile: codingRulesFile,
+	allowedHosts: [],
+	sandboxContainer: false,
+};
+
+/** 开关沙盒的对比实验里一组的权限：两组只差沙盒模式。 */
+export function sandboxComparisonPermissions(
+	sandboxMode: PermissionSettings["sandboxMode"],
+): PermissionSettings {
+	return {
+		sandboxMode,
+		rulesFile: sandboxComparisonRulesFile,
+		allowedHosts: packageRegistryHosts,
+		sandboxContainer: true,
+	};
+}
+
+/** 任务容器里的 agent 怎么安装、用哪个模型、权限和上限是多少。 */
 export interface AgentSettings {
 	/** 模型清单里的名字，或 `configFile` 里登记的模型。 */
 	model: string;
@@ -27,7 +75,8 @@ export interface AgentSettings {
 	/** 模型服务的凭据：凭据 ID，和运行 pier 的环境里存着密钥的环境变量名。 */
 	credential: { id: string; variable: string };
 	limits: RunLimits;
-	/** 放进任务容器的用户级 `config.toml`，用来登记模型清单之外的模型。 */
+	permissions: PermissionSettings;
+	/** 放进任务容器的用户级 `config.toml`：登记模型清单之外的模型，或者打开可选的工具。 */
 	configFile?: string;
 }
 
@@ -60,21 +109,20 @@ export interface PierCommands {
 	regrade: string[];
 }
 
-/**
- * 一次运行的两条 pier 命令。每道题重复运行几次就调用几次：每次是单独的一对 job，
- * 各次的成功率才能分开算。
- */
-export function pierCommands(run: PierRun): PierCommands {
-	const { agent } = run;
-	const agentName = `${run.name}-run${run.run}`;
-	const regradeName = `${agentName}-regrade`;
-	const agentJob = join(run.jobs, agentName);
-	const job = (tasks: string, name: string) => [
+/** 开沙盒的任务容器用适配里的环境类，它在 Pier 的 docker 环境上加了安全选项。 */
+const sandboxEnvironment = "osprey_pier:SandboxDockerEnvironment";
+
+function job(
+	run: { jobs: string; concurrency: number },
+	tasks: string,
+	name: string,
+	environment: readonly string[],
+): string[] {
+	return [
 		"run",
 		"--path",
 		tasks,
-		"--env",
-		"docker",
+		...environment,
 		"--n-attempts",
 		"1",
 		"--n-concurrent",
@@ -85,6 +133,11 @@ export function pierCommands(run: PierRun): PierCommands {
 		name,
 		"--yes",
 	];
+}
+
+/** 运行 agent 的参数。`commit` 是 CLI 结束后要不要把没提交的改动提交到当前分支。 */
+function agentArguments(agent: AgentSettings, commit: boolean): string[] {
+	const { permissions } = agent;
 	const kwargs = {
 		cli_packages: agent.cliPackages.join(" "),
 		model_host: agent.modelHost,
@@ -92,32 +145,92 @@ export function pierCommands(run: PierRun): PierCommands {
 		max_cost_usd: agent.limits.maxCostUsd,
 		max_requests: agent.limits.maxRequests,
 		timeout_sec: agent.limits.timeoutSec,
+		sandbox_mode: permissions.sandboxMode,
+		rules_file: permissions.rulesFile,
+		allowed_hosts: permissions.allowedHosts.join(" "),
+		sandbox_container: permissions.sandboxContainer ? "yes" : "no",
+		commit: commit ? "yes" : "no",
 		...(agent.configFile === undefined
 			? {}
 			: { config_file: agent.configFile }),
 	};
+	return [
+		"--agent-import-path",
+		"osprey_pier:OspreyCode",
+		"--model",
+		agent.model,
+		...Object.entries(kwargs).flatMap(([key, value]) => [
+			"--agent-kwarg",
+			`${key}=${value}`,
+		]),
+	];
+}
+
+function agentEnvironment(agent: AgentSettings): string[] {
+	return agent.permissions.sandboxContainer
+		? ["--environment-import-path", sandboxEnvironment]
+		: ["--env", "docker"];
+}
+
+/**
+ * SWE-bench Pro V2 一次运行的两条 pier 命令。每道题重复运行几次就调用几次：每次是单独的一对
+ * job，各次的成功率才能分开算。
+ */
+export function pierCommands(run: PierRun): PierCommands {
+	const { agent } = run;
+	const agentName = `${run.name}-run${run.run}`;
+	const regradeName = `${agentName}-regrade`;
+	const agentJob = join(run.jobs, agentName);
 	return {
 		agentJob,
 		regradeJob: join(run.jobs, regradeName),
 		agent: [
-			...job(run.agentTasks, agentName),
-			"--agent-import-path",
-			"osprey_pier:OspreyCode",
-			"--model",
-			agent.model,
-			...Object.entries(kwargs).flatMap(([key, value]) => [
-				"--agent-kwarg",
-				`${key}=${value}`,
-			]),
+			...job(run, run.agentTasks, agentName, agentEnvironment(agent)),
+			// 题目不要求提交：补丁是工作区前后两个 tree 之差
+			...agentArguments(agent, false),
 			// 评分放在下一遍：agent 用过的容器可能被改过，不在里面跑测试
 			"--disable-verification",
 		],
 		regrade: [
-			...job(run.regradeTasks, regradeName),
+			// 评分的容器里不运行 agent，用不着沙盒的安全选项
+			...job(run, run.regradeTasks, regradeName, ["--env", "docker"]),
 			"--agent-import-path",
 			"osprey_pier:PatchReplay",
 			"--agent-kwarg",
 			`source_job=${agentJob}`,
+		],
+	};
+}
+
+/** DeepSWE 一次运行要给出的内容。 */
+export interface SinglePassRun {
+	/** 任务目录（`prepareDeepSwe` 的 `directory`）。 */
+	tasks: string;
+	/** 放 job 的目录。 */
+	jobs: string;
+	/** 这批运行的名字，job 的名字由它得出。 */
+	name: string;
+	/** 第几次运行，从 1 开始。 */
+	run: number;
+	/** 同时运行几道题。 */
+	concurrency: number;
+	agent: AgentSettings;
+}
+
+/**
+ * DeepSWE 一次运行的 pier 命令和它的 job 目录：运行 agent 之后由 Pier 在单独的环境里评分，
+ * 只有一遍。题目只给已提交的改动计分，所以让适配在 CLI 结束后提交。
+ */
+export function singlePassCommand(run: SinglePassRun): {
+	job: string;
+	args: string[];
+} {
+	const name = `${run.name}-run${run.run}`;
+	return {
+		job: join(run.jobs, name),
+		args: [
+			...job(run, run.tasks, name, agentEnvironment(run.agent)),
+			...agentArguments(run.agent, true),
 		],
 	};
 }

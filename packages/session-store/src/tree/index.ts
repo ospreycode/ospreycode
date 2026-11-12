@@ -18,8 +18,9 @@ export interface Position {
 
 /**
  * 一个 run 在会话树上的记录。重启、恢复、回退和分叉都是"从某个位置开始一个新的 run"。
- * 子 agent 的 run 另带父 agent 和启动它的工具调用。不属于任何 task 的 run 不进入会话树的路径，
- * 也不能作为别的 run 的 `base`。
+ * 子 agent 的 run 另带父 agent 和启动它的工具调用，两个字段一起出现，`base` 为空。不属于任何 task
+ * 的 run 和子 agent 的 run 都不进入会话树的路径，不能作为别的 run 的 `base`；子 agent 的 run 里的
+ * 事件写入时也不移动 session 的当前位置。
  */
 export interface RunRecord {
 	run_id: string;

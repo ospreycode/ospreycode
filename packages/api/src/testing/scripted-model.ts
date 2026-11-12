@@ -46,6 +46,7 @@ function deltas(index: number, block: AssistantContent): StreamEvent[] {
 				{ type: "tool_call_end", index },
 			];
 		case "fallback":
+		case "opaque":
 			return [];
 	}
 }

@@ -1,4 +1,4 @@
-import type { BudgetLimit } from "@ospreycode/agent-host";
+import type { BudgetLimit, TaskOutcome } from "@ospreycode/agent-host";
 import type { CodingTrial, Denials } from "../traces/coding-trials.js";
 
 /** 报告里的一道题：按它的仓库、语言和所属的部分分组。 */
@@ -64,6 +64,12 @@ export interface TaskRuns extends Rate {
 	missing: number;
 }
 
+/**
+ * 没通过的有效运行按 CLI 的结果分开：主任务以哪种结果结束。`killed` 是 CLI 被强制结束、没有结果；
+ * `completed` 是 task 正常完成但测试没过。
+ */
+export type FailureCauses = Record<TaskOutcome | "killed", number>;
+
 /** 编码 benchmark 的报告。 */
 export interface BenchmarkReport {
 	conditions: BenchmarkConditions;
@@ -85,8 +91,9 @@ export interface BenchmarkReport {
 	environmentFailures: { task: string; run: number; failure: string }[];
 	/** 清单里有、结果里没有的运行。 */
 	missing: { task: string; run: number }[];
-	/** 超出预算的次数，按超出的是哪一项分开。 */
+	/** 超出预算的次数，按超出的是哪一项分开；通过了的运行也算。 */
 	overBudget: Record<BudgetLimit, number>;
+	failureCauses: FailureCauses;
 	/** 有用量的运行的费用合计（不只是通过的）；有运行的模型没有价格时为空。 */
 	costUsd: number | undefined;
 	/** 有用量的运行的 token 合计。 */
@@ -179,6 +186,18 @@ export function benchmarkReport(
 		sum(trials.map((trial) => trial.denials[key]));
 	const exceeded = (limit: BudgetLimit) =>
 		trials.filter((trial) => trial.exceeded === limit).length;
+	const failureCauses: FailureCauses = {
+		completed: 0,
+		failed: 0,
+		budget_exceeded: 0,
+		cancelled: 0,
+		refused: 0,
+		killed: 0,
+	};
+	for (const trial of trials) {
+		if (trial.status === "failed")
+			failureCauses[trial.outcome ?? "killed"] += 1;
+	}
 
 	return {
 		conditions,
@@ -215,6 +234,7 @@ export function benchmarkReport(
 			requests: exceeded("requests"),
 			duration: exceeded("duration"),
 		},
+		failureCauses,
 		costUsd: costs.every((cost) => cost !== undefined)
 			? sum(costs as number[])
 			: undefined,
@@ -239,42 +259,13 @@ export function benchmarkReport(
 	};
 }
 
-function percent({ passed, valid }: Rate): string {
-	return valid === 0
-		? "没有有效的运行"
-		: `${((passed / valid) * 100).toFixed(1)}%（${passed}/${valid}）`;
-}
-
 function limit(value: number | "none", unit: string): string {
 	return value === "none" ? "不限" : `${value} ${unit}`;
 }
 
-/** 把报告写成给人看的文本。 */
-export function formatBenchmarkReport(report: BenchmarkReport): string {
-	const { conditions, overall, stability, overBudget, denials } = report;
-	const total = report.tasks * report.runs;
-	const rates = report.perRun
-		.filter((run) => run.valid > 0)
-		.map((run) => run.passed / run.valid);
-	const range =
-		rates.length === 0
-			? "没有有效的运行"
-			: `${(Math.min(...rates) * 100).toFixed(1)}% 到 ${(Math.max(...rates) * 100).toFixed(1)}%`;
-	const cost =
-		report.costUsd === undefined
-			? "未知（模型没有价格）"
-			: `${report.costUsd.toFixed(4)} 美元，平均每次 ${(report.measured === 0 ? 0 : report.costUsd / report.measured).toFixed(4)} 美元`;
-	const minutes = (milliseconds: number) => (milliseconds / 60000).toFixed(1);
-	const group = (title: string, rows: readonly GroupRate[]) => [
-		`${title}：`,
-		...rows.map((row) => `- ${row.name}：${percent(row)}`),
-	];
-	const { tokens } = report;
+/** 实验条件的各行，权限规则文件的全文在最后。对比实验的报告也用它。 */
+export function conditionLines(conditions: BenchmarkConditions): string[] {
 	return [
-		`# ${conditions.benchmark}`,
-		"",
-		"## 实验条件",
-		"",
 		`- 数据：${conditions.dataset}`,
 		`- 运行器：${conditions.runner}；任务环境的操作系统：${conditions.os}`,
 		`- 模型：${conditions.model}（${conditions.protocol}）`,
@@ -288,6 +279,74 @@ export function formatBenchmarkReport(report: BenchmarkReport): string {
 		"```toml",
 		conditions.rules.trimEnd(),
 		"```",
+	];
+}
+
+/**
+ * 一批运行的失败原因和开销各占一行：失败原因、超出预算、费用、token、时间和被拒的工具调用。
+ * 对比实验的报告每组各用一次。
+ */
+export function costLines(
+	report: Pick<
+		BenchmarkReport,
+		| "failureCauses"
+		| "overBudget"
+		| "costUsd"
+		| "measured"
+		| "tokens"
+		| "durationMs"
+		| "timed"
+		| "denials"
+	>,
+): string[] {
+	const { failureCauses, overBudget, denials, tokens } = report;
+	const cost =
+		report.costUsd === undefined
+			? "未知（模型没有价格）"
+			: `${report.costUsd.toFixed(4)} 美元，平均每次 ${(report.measured === 0 ? 0 : report.costUsd / report.measured).toFixed(4)} 美元`;
+	const minutes = (milliseconds: number) => (milliseconds / 60000).toFixed(1);
+	const failed = Object.values(failureCauses).reduce(
+		(total, count) => total + count,
+		0,
+	);
+	return [
+		`- 没通过的有效运行 ${failed} 次：task 正常完成但测试没过 ${failureCauses.completed}，超出预算 ${failureCauses.budget_exceeded}，task 失败 ${failureCauses.failed}，模型拒绝 ${failureCauses.refused}，被取消 ${failureCauses.cancelled}，CLI 被强制结束 ${failureCauses.killed}`,
+		`- 超出预算 ${overBudget.cost + overBudget.requests + overBudget.duration} 次：费用 ${overBudget.cost}，请求次数 ${overBudget.requests}，时间 ${overBudget.duration}`,
+		`- 费用（${report.measured} 次有用量的运行，不只是通过的）：${cost}`,
+		`- token：输入 ${tokens.input}，缓存读取 ${tokens.cache_read}，缓存写入 ${tokens.cache_write}，输出 ${tokens.output}`,
+		`- agent 运行时间（${report.timed} 次）：共 ${minutes(report.durationMs)} 分钟，平均每次 ${report.timed === 0 ? "0.0" : minutes(report.durationMs / report.timed)} 分钟`,
+		`- 被拒的工具调用：内置 forbidden ${denials.forbidden} 次（其中带 sudo 的 ${denials.sudo} 次），危险命令判断 ${denials.dangerous} 次，prompt 规则 ${denials.prompt} 次，越界申请 ${denials.escalation} 次，MCP ${denials.mcp} 次，其他 ${denials.other} 次`,
+	];
+}
+
+/** 成功率写成百分数，后面带通过的次数和有效的次数。 */
+export function percent({ passed, valid }: Rate): string {
+	return valid === 0
+		? "没有有效的运行"
+		: `${((passed / valid) * 100).toFixed(1)}%（${passed}/${valid}）`;
+}
+
+/** 把报告写成给人看的文本。 */
+export function formatBenchmarkReport(report: BenchmarkReport): string {
+	const { conditions, overall, stability } = report;
+	const total = report.tasks * report.runs;
+	const rates = report.perRun
+		.filter((run) => run.valid > 0)
+		.map((run) => run.passed / run.valid);
+	const range =
+		rates.length === 0
+			? "没有有效的运行"
+			: `${(Math.min(...rates) * 100).toFixed(1)}% 到 ${(Math.max(...rates) * 100).toFixed(1)}%`;
+	const group = (title: string, rows: readonly GroupRate[]) => [
+		`${title}：`,
+		...rows.map((row) => `- ${row.name}：${percent(row)}`),
+	];
+	return [
+		`# ${conditions.benchmark}`,
+		"",
+		"## 实验条件",
+		"",
+		...conditionLines(conditions),
 		"",
 		"## 结果",
 		"",
@@ -295,11 +354,7 @@ export function formatBenchmarkReport(report: BenchmarkReport): string {
 		`- ${report.tasks} 道题各运行 ${report.runs} 次，共 ${total} 次：环境故障 ${report.environmentFailures.length} 次，没有运行 ${report.missing.length} 次`,
 		`- 各次运行的成功率：${report.perRun.map(percent).join("，")}；范围 ${range}`,
 		`- 每次都通过 ${stability.always} 题，每次都不通过 ${stability.never} 题，有时通过 ${stability.mixed} 题`,
-		`- 超出预算 ${overBudget.cost + overBudget.requests + overBudget.duration} 次：费用 ${overBudget.cost}，请求次数 ${overBudget.requests}，时间 ${overBudget.duration}`,
-		`- 费用（${report.measured} 次有用量的运行，不只是通过的）：${cost}`,
-		`- token：输入 ${tokens.input}，缓存读取 ${tokens.cache_read}，缓存写入 ${tokens.cache_write}，输出 ${tokens.output}`,
-		`- agent 运行时间（${report.timed} 次）：共 ${minutes(report.durationMs)} 分钟，平均每次 ${report.timed === 0 ? "0.0" : minutes(report.durationMs / report.timed)} 分钟`,
-		`- 被拒的工具调用：内置 forbidden ${denials.forbidden} 次（其中带 sudo 的 ${denials.sudo} 次），危险命令判断 ${denials.dangerous} 次，prompt 规则 ${denials.prompt} 次，越界申请 ${denials.escalation} 次，MCP ${denials.mcp} 次，其他 ${denials.other} 次`,
+		...costLines(report),
 		"",
 		...group("按题目所属的部分", report.bySplit),
 		"",

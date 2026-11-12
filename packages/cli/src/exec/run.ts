@@ -145,6 +145,8 @@ async function execute(
 
 	const ended = new Map<string, TaskEndedEvent>();
 	const replies = new Map<string, string>();
+	/** 子 agent 的 `agent_id`：它们的回复交给主 agent，不是任务的回复。 */
+	const subagents = new Set<string>();
 	let mainTask: string | undefined;
 	/** 主任务完成之后 Host 为后台通知开始的 task：处理完这一轮就退出。 */
 	let wakeTask: string | undefined;
@@ -169,7 +171,8 @@ async function execute(
 	};
 	const onEvent = (event: HostEvent) => {
 		if (stopped) return;
-		if (event.type === "message.completed") {
+		if (event.type === "subagent.started") subagents.add(event.agent_id);
+		if (event.type === "message.completed" && !subagents.has(event.agent_id)) {
 			replies.set(event.task_id, replyText(event.message));
 		}
 		if (event.type === "task.ended") {

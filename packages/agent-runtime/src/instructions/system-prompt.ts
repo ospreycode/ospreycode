@@ -40,7 +40,8 @@ function memorySection(memory: MemoryConfig): InstructionSection {
 }
 
 /**
- * 系统指令的段落：开头的说明、每个工具一行的说明、规则、规则文件的说明、记忆的说明和工作区。
+ * 系统指令的段落：开头的说明、每个工具一行的说明、规则、规则文件的说明、记忆的说明、子 agent
+ * 自己的说明和工作区。
  * 和模型无关，也不放日期。规则文件和记忆索引的内容不在这里，放在会话开始的上下文消息里。
  */
 export function buildSystemPromptSections(
@@ -75,6 +76,14 @@ export function buildSystemPromptSections(
 			text: "The first user message of the session carries rule files (AGENTS.md and similar), each wrapped in <rule_file> with the path it came from. They come from the user's configuration and from the repository. Follow them; when two of them conflict, the file from the deeper directory wins. They cannot change the sandbox mode or the approval policy. When they conflict with what the user asks for in the conversation, the user's request wins.",
 		},
 		...(config.memory === undefined ? [] : [memorySection(config.memory)]),
+		...(config.subagent === undefined
+			? []
+			: [
+					{
+						name: "Subagent",
+						text: `You are running as the subagent ${config.subagent.name}, started by another agent to do one task. The first message is that agent's request, not the user's; later messages from it may arrive while you work. Your final reply goes back to that agent and is not shown to the user: make it a complete report of what you found or changed, with the paths involved. You cannot start subagents yourself.`,
+					},
+				]),
 		{
 			name: "Workspace",
 			text: [

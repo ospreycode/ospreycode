@@ -33,7 +33,7 @@ export interface MemoryExtractorOptions {
 	model: () => {
 		entry: ModelEntry;
 		reasoningEffort: ReasoningEffort;
-		apiKey: () => string;
+		apiKey: () => Promise<string>;
 	};
 	fetch: typeof globalThis.fetch;
 	streamModel: StreamModel;

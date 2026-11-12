@@ -30,6 +30,24 @@ describe("内置清单", () => {
 			protocol: "openai.chat",
 			compat: { reasoning_field: "reasoning_content" },
 		});
+		expect(model("gemini-3.5-flash-lite")).toMatchObject({
+			protocol: "google.generate-content",
+			service: "google",
+			base_url: "https://generativelanguage.googleapis.com/v1",
+		});
+	});
+
+	test("服务端工具只列在有它的服务上，列出的都有价格", () => {
+		expect(model("claude-opus-5-5")).toMatchObject({
+			server_tools: ["web_search", "web_fetch"],
+			price: { server_tools: { web_search: 10, web_fetch: 0 } },
+		});
+		expect(model("gpt-5.6-sol")).toMatchObject({
+			server_tools: ["web_search"],
+			price: { server_tools: { web_search: 10 } },
+		});
+		expect(model("deepseek-flash").server_tools).toBeUndefined();
+		expect(model("gemini-4-argon").server_tools).toBeUndefined();
 	});
 });
 
@@ -46,6 +64,12 @@ describe("推理强度", () => {
 		});
 		expect(resolveEffort(model("gpt-5.6-sol"), "off")?.value).toBe("none");
 		expect(resolveEffort(model("gpt-6.1-sol"), "off")?.value).toBe("low");
+		// Gemini 3 起的模型关不掉推理，也没有比 high 更高的级别
+		expect(resolveEffort(model("gemini-4-argon"), "off")?.value).toBe("low");
+		expect(resolveEffort(model("gemini-3.6-flash"), "off")?.value).toBe(
+			"minimal",
+		);
+		expect(resolveEffort(model("gemini-4-argon"), "max")?.value).toBe("high");
 		// DeepSeek 没有 medium，往高找到 high；没有 xhigh 时 max 之上找不到，往低找回 max
 		expect(resolveEffort(model("deepseek-flash"), "medium")?.value).toBe(
 			"high",
@@ -97,6 +121,33 @@ describe("费用", () => {
 		expect(
 			computeCost(price, usage, new Date("2026-11-07T07:30:00Z")),
 		).toBeCloseTo(offPeak);
+	});
+
+	test("已经公布的调价从那一天（UTC）起生效", () => {
+		const price = model("gemini-4-argon").price;
+		if (price === undefined) throw new Error("没有价格");
+		expect(price.changes).toEqual([{ from: "2026-12-01", factor: 2 }]);
+		const before = computeCost(price, usage, new Date("2026-11-30T23:59:59Z"));
+		expect(before).toBeCloseTo(2 + 10);
+		expect(
+			computeCost(price, usage, new Date("2026-12-01T00:00:00Z")),
+		).toBeCloseTo(before * 2);
+	});
+
+	test("服务端工具按计费的次数另计，不随分档、时段和调价变", () => {
+		const price = model("deepseek-flash").price;
+		if (price === undefined) throw new Error("没有价格");
+		const peak = new Date("2026-11-09T07:30:00Z");
+		const searched = { ...usage, server_tools: { web_search: 3 } };
+		expect(
+			computeCost(
+				{ ...price, server_tools: { web_search: 10 } },
+				searched,
+				peak,
+			),
+		).toBeCloseTo(computeCost(price, usage, peak) + 0.03);
+		// 用了清单里没有价格的工具是清单的缺陷
+		expect(() => computeCost(price, searched, peak)).toThrow("web_search");
 	});
 });
 

@@ -23,6 +23,7 @@ import {
 import { describe, expect, test } from "vitest";
 
 const conditions: MemoryConditions = {
+	suite: "测试用的题",
 	model: "claude-haiku-5-5",
 	protocol: "anthropic.messages",
 	reasoningEffort: "off",
@@ -64,7 +65,7 @@ function session(fields: Partial<MemorySession> = {}): MemorySession {
 
 function trial(
 	task: string,
-	group: MemoryGroup,
+	group: MemoryTrial["group"],
 	run: number,
 	passed: boolean,
 	fields: Partial<MemoryTrial> = {},
@@ -436,14 +437,19 @@ describe("文字记录", () => {
 	test("用户的输入、模型的回复、工具调用和结果各一条，按发生的顺序；过长的截断", () => {
 		const entries = transcriptEntries([first, second]);
 		expect(entries.slice(0, 3)).toEqual([
-			{ session: 1, text: "user: How do I run the tests?" },
+			{ session: 1, role: "user", text: "user: How do I run the tests?" },
 			{
 				session: 1,
+				role: "tool",
 				text: 'tool: read {"path":"package.json"}\nsucceeded: {"scripts":{"test":"vitest run"}}',
 			},
-			{ session: 1, text: "assistant: Run npm test." },
+			{ session: 1, role: "assistant", text: "assistant: Run npm test." },
 		]);
-		expect(entries[3]).toEqual({ session: 2, text: "user: Deploy it." });
+		expect(entries[3]).toEqual({
+			session: 2,
+			role: "user",
+			text: "user: Deploy it.",
+		});
 		expect(entries[4]?.text).toHaveLength(
 			transcriptEntryChars + " [truncated]".length,
 		);
@@ -463,6 +469,7 @@ describe("文字记录", () => {
 
 		const long: TranscriptEntry[] = Array.from({ length: 40 }, (_, index) => ({
 			session: 1,
+			role: "user",
 			text: `entry ${index} ${"y".repeat(transcriptEntryChars - 20)}`,
 		}));
 		const tail = historyBlock(long);
@@ -474,13 +481,17 @@ describe("文字记录", () => {
 
 	test("只检索：按和查询相同的词数取前 5 条，同分的取靠后的，一条也没命中时为空", () => {
 		const entries: TranscriptEntry[] = [
-			{ session: 1, text: "user: the staging deploy uses make ship" },
-			{ session: 1, text: "assistant: noted" },
-			{ session: 1, text: "user: deploy" },
-			{ session: 2, text: "user: deploy again" },
-			{ session: 2, text: "user: deploy once more" },
-			{ session: 2, text: "user: deploy a third time" },
-			{ session: 3, text: "user: deploy to staging" },
+			{
+				session: 1,
+				role: "user",
+				text: "user: the staging deploy uses make ship",
+			},
+			{ session: 1, role: "assistant", text: "assistant: noted" },
+			{ session: 1, role: "user", text: "user: deploy" },
+			{ session: 2, role: "user", text: "user: deploy again" },
+			{ session: 2, role: "user", text: "user: deploy once more" },
+			{ session: 2, role: "user", text: "user: deploy a third time" },
+			{ session: 3, role: "user", text: "user: deploy to staging" },
 		];
 		const block = retrievedBlock(entries, "How do I deploy to staging?");
 		const listed = (block ?? "")
@@ -498,7 +509,7 @@ describe("文字记录", () => {
 		// 中文按相邻两字匹配，和 memory_search 一样
 		expect(
 			retrievedBlock(
-				[{ session: 1, text: "user: 部署脚本在 scripts 目录" }],
+				[{ session: 1, role: "user", text: "user: 部署脚本在 scripts 目录" }],
 				"怎么部署",
 			),
 		).toContain("部署脚本");
@@ -627,5 +638,150 @@ describe("失败归类", () => {
 				evidence,
 			}),
 		).toBe("not_retrieved");
+	});
+});
+
+describe("单独报告的组", () => {
+	const mem0Usage = {
+		llmRequests: 2,
+		embeddingRequests: 3,
+		tokens: { input: 400, output: 60, embedding: 30 },
+		costUsd: 0.002,
+	};
+	/** t1 的完整 memory 组第 3 次没通过，t3 的第 2、3 次没通过。 */
+	const base = [
+		...trialsOf("t1", {
+			none: 0,
+			history: 3,
+			retrieval: 2,
+			memory: 2,
+			irrelevant: 0,
+		}),
+		...trialsOf("t3", {
+			none: 3,
+			history: 3,
+			retrieval: 3,
+			memory: 1,
+			irrelevant: 2,
+		}),
+	];
+	const extra = (
+		group: "diagnostic" | "mem0",
+		passes: Record<string, number>,
+	) =>
+		Object.entries(passes).flatMap(([task, passed]) =>
+			[1, 2, 3].map((run) =>
+				trial(
+					task,
+					group,
+					run,
+					run <= passed,
+					group === "mem0" ? { external: mem0Usage } : {},
+				),
+			),
+		);
+
+	test("诊断组和 Mem0 组各给出成功率、和无记忆组的配对差和开销，不进五组的结果和分层", () => {
+		const report = memoryReport(conditions, [
+			...base,
+			...extra("diagnostic", { t1: 3, t3: 2 }),
+			...extra("mem0", { t1: 1, t3: 3 }),
+		]);
+		expect(report.groups.map((group) => group.group)).toEqual([
+			...memoryGroups,
+		]);
+		expect(
+			report.extra.map(({ group, passed, trials: total, difference }) => ({
+				group,
+				passed,
+				total,
+				mean: difference?.mean,
+			})),
+		).toEqual([
+			// t1：3/3 − 0/3，t3：2/3 − 3/3
+			{
+				group: "diagnostic",
+				passed: 5,
+				total: 6,
+				mean: expect.closeTo(1 / 3, 10),
+			},
+			// t1：1/3 − 0/3，t3：3/3 − 3/3
+			{ group: "mem0", passed: 4, total: 6, mean: expect.closeTo(1 / 6, 10) },
+		]);
+		expect(report.extra[0]?.external).toBeUndefined();
+		expect(report.extra[1]?.external).toEqual({
+			llmRequests: 12,
+			embeddingRequests: 18,
+			tokens: { input: 2400, output: 360, embedding: 180 },
+			costUsd: expect.closeTo(0.012, 10),
+		});
+		expect(report.extra[1]?.warm.costUsd).toBeCloseTo(0.06, 10);
+		expect(report.perTask).toEqual([
+			{
+				task: "t1",
+				passed: {
+					none: 0,
+					history: 3,
+					retrieval: 2,
+					memory: 2,
+					irrelevant: 0,
+					diagnostic: 3,
+					mem0: 1,
+				},
+			},
+			{
+				task: "t3",
+				passed: {
+					none: 3,
+					history: 3,
+					retrieval: 3,
+					memory: 1,
+					irrelevant: 2,
+					diagnostic: 2,
+					mem0: 3,
+				},
+			},
+		]);
+		for (const stratum of report.strata) {
+			expect(stratum.differences.map((entry) => entry.group)).toEqual([
+				"history",
+				"retrieval",
+				"memory",
+				"irrelevant",
+			]);
+		}
+
+		const text = formatMemoryReport(report);
+		expect(text).toContain("## 单独报告的组");
+		expect(text).toContain("诊断组（直接给出正确证据）：");
+		expect(text).toContain("Mem0 对照组：");
+		expect(text).toContain(
+			"- Mem0 自己的用量（不在上面两项里）：模型请求 12 次，token 输入 2400、输出 360；嵌入请求 18 次，180 token；0.0120 美元",
+		);
+		expect(text).toContain("诊断组（直接给出正确证据） 3/3，Mem0 对照组 1/3");
+	});
+
+	test("完整 memory 组没通过的运行按同一次运行的诊断组分开：诊断组通过的是写入或检索的问题", () => {
+		// 完整 memory 组没通过的：t1 第 3 次，t3 第 2、3 次；诊断组 t1 三次都通过，t3 只有前两次通过
+		const report = memoryReport(conditions, [
+			...base,
+			...extra("diagnostic", { t1: 3, t3: 2 }),
+		]);
+		expect(report.diagnosis).toEqual({ writeOrRetrieve: 2, use: 1 });
+		expect(report.extra.map((group) => group.group)).toEqual(["diagnostic"]);
+		expect(formatMemoryReport(report)).toContain(
+			"- 完整 memory 组没通过的运行里，诊断组通过的 2 次（问题在写入或检索），诊断组也没通过的 1 次（问题在使用，或者题目太难）",
+		);
+	});
+
+	test("没有运行这两组时报告里没有这一节；运行了的组每道题的次数也要齐", () => {
+		const report = memoryReport(conditions, base);
+		expect(report.extra).toEqual([]);
+		expect(report.diagnosis).toBeUndefined();
+		expect(formatMemoryReport(report)).not.toContain("单独报告的组");
+
+		expect(() =>
+			memoryReport(conditions, [...base, ...extra("mem0", { t1: 3 })]),
+		).toThrow();
 	});
 });

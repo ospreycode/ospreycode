@@ -22,6 +22,7 @@ import type {
 	ModelRequestResult,
 	PendingInput,
 	StatusResult,
+	SubagentEndedParams,
 	TaskEndParams,
 	TaskStartParams,
 } from "../channel/protocol.js";
@@ -67,11 +68,16 @@ import {
 	renderSkillsUpdate,
 } from "../instructions/skills-context.js";
 import {
+	renderSubagentInstructions,
+	renderSubagents,
+} from "../instructions/subagents-context.js";
+import {
 	buildSystemPromptSections,
 	diffSystemPromptSections,
 	renderSystemPrompt,
 } from "../instructions/system-prompt.js";
 import type { ToolExecutor } from "../tool-executor/executor.js";
+import { RunningSubagents } from "../tools/subagents.js";
 
 /** 限流和服务过载时最多重试的次数。 */
 const maxRetries = 3;
@@ -204,11 +210,18 @@ export class AgentLoop {
 	#loadedSkills: Map<string, string>;
 	/** 恢复后最后一轮还没做完的工具调用，下一个 task 开始时先做完。 */
 	#pending: ResumedState["pending"];
+	/** 正在运行的子 agent：模型给出最终回复时还有，task 就先不结束。 */
+	#subagents: RunningSubagents;
+	/** 有子 agent 自己结束了，它的结果还在 Host 的通知队列里，没有交给模型。 */
+	#subagentResult = false;
+	/** 在等子 agent 结束：有输入可取或被取消时叫醒。 */
+	#wake: (() => void) | undefined;
 
 	/**
 	 * `ruleFiles` 是启动时读到的规则文件。`resumed` 是重启后重建的状态：有它时不重新生成开头的
 	 * 系统指令和上下文消息，只把当前的段落和规则文件同记录下来的比较，变化在下一次模型请求之前追加。
 	 * `changedMemories` 是记忆索引里引用的文件已经改动的条目，开头的上下文消息里给它们加上标记。
+	 * `subagents` 是正在运行的子 agent 的集合，和子 agent 的工具共用同一个。
 	 */
 	constructor(
 		channel: RuntimeChannel,
@@ -218,7 +231,9 @@ export class AgentLoop {
 		ruleFiles: readonly RuleFile[],
 		resumed?: ResumedState,
 		changedMemories: ReadonlySet<string> = new Set(),
+		subagents: RunningSubagents = new RunningSubagents(),
 	) {
+		this.#subagents = subagents;
 		this.#channel = channel;
 		this.#config = config;
 		this.#registry = registry;
@@ -267,8 +282,9 @@ export class AgentLoop {
 		recorded: RecordedInstructions;
 	} {
 		const sections = this.#sections();
-		const { memory } = this.#config;
+		const { memory, subagent } = this.#config;
 		const skills = this.#config.skills ?? [];
+		const subagents = this.#config.subagents ?? [];
 		return {
 			recorded: {
 				sections,
@@ -291,6 +307,14 @@ export class AgentLoop {
 							? undefined
 							: renderMemoryIndex(memory, changedMemories),
 						skills.length === 0 ? undefined : renderSkills(skills),
+						subagent?.instructions !== undefined
+							? renderSubagentInstructions({
+									...subagent,
+									instructions: subagent.instructions,
+								})
+							: subagents.length === 0
+								? undefined
+								: renderSubagents(subagents),
 					),
 				),
 			],
@@ -313,11 +337,21 @@ export class AgentLoop {
 	/** Host 有 steering 或后台通知等待插入：下一次模型请求之前取出。 */
 	inputAvailable(): void {
 		this.#inputAvailable = true;
+		this.#wake?.();
+	}
+
+	/** 一个子 agent 自己结束了：它的结果已经在 Host 的通知队列里，和别的通知一起取出。 */
+	subagentEnded(ended: SubagentEndedParams): void {
+		this.#subagents.ended(ended.agent_id);
+		this.#subagentResult = true;
+		this.#inputAvailable = true;
+		this.#wake?.();
 	}
 
 	/** 中断当前的 run；runtime 随后报告 task 以 `cancelled` 结束。 */
 	cancel(): void {
 		this.#task?.abort();
+		this.#wake?.();
 	}
 
 	/** 当前在做什么。 */
@@ -425,6 +459,9 @@ export class AgentLoop {
 		}
 		const end = await this.#runTurns(controller.signal);
 		this.#state = "idle";
+		// 完成时已经没有子 agent 在运行；以别的结果结束时 Host 把剩下的都停掉，不再发结束通知
+		this.#subagents.clear();
+		this.#subagentResult = false;
 		return controller.signal.aborted ? { outcome: "cancelled" } : end;
 	}
 
@@ -486,6 +523,8 @@ export class AgentLoop {
 			if (isCancellation(error)) return false;
 			throw error;
 		}
+		// 通知队列整个取走了：子 agent 的结果都在里面
+		this.#subagentResult = false;
 		if (inputs.length === 0) return false;
 		const last = this.#history.at(-1);
 		const message = userMessage(
@@ -581,6 +620,26 @@ export class AgentLoop {
 		return true;
 	}
 
+	/**
+	 * 模型给出最终回复时还有子 agent 在运行，或者它们的结果还没交给模型：task 不结束，等到有输入
+	 * 可取（子 agent 的结果，或用户的 steering）就接在历史后面，返回 true，由调用方再请求模型。
+	 * 没有要等的，或者 run 被取消时返回 false。
+	 */
+	async #awaitSubagents(signal: AbortSignal): Promise<boolean> {
+		while (!signal.aborted && (this.#subagents.any || this.#subagentResult)) {
+			if (this.#inputAvailable) {
+				if (await this.#takeInputs()) return true;
+				continue;
+			}
+			this.#state = "subagents";
+			await new Promise<void>((resolve) => {
+				this.#wake = resolve;
+			});
+			this.#wake = undefined;
+		}
+		return false;
+	}
+
 	async #runTurns(signal: AbortSignal): Promise<TaskEndParams> {
 		let prefixRetried = false;
 		let stopContinuations = 0;
@@ -668,6 +727,7 @@ export class AgentLoop {
 				case "pause_turn":
 					break;
 				case "end_turn":
+					if (await this.#awaitSubagents(signal)) break;
 					if (await this.#stopHooks(message, stopContinuations)) {
 						stopContinuations += 1;
 						break;

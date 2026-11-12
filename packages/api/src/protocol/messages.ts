@@ -2,11 +2,12 @@ import type { ReasoningEffort } from "./request.js";
 import type { StopReason } from "./stream.js";
 import type { Usage } from "./usage.js";
 
-/** 首批支持的模型协议，名字写在模型清单里。 */
+/** 支持的模型协议，名字写在模型清单里。 */
 export type ProtocolName =
 	| "openai.chat"
 	| "openai.responses"
-	| "anthropic.messages";
+	| "anthropic.messages"
+	| "google.generate-content";
 
 /** 一段协议专有内容的来源，换模型或协议时据此决定能不能原样带回。 */
 export interface Origin {
@@ -17,12 +18,24 @@ export interface Origin {
 	model: string;
 }
 
+/**
+ * 一段文字的引用（服务端工具搜到或读到的来源）：Anthropic 文本块上的 `citations`，
+ * OpenAI Responses `output_text` 上的 `annotations`。其他包不解释它。
+ */
+export interface Citations {
+	/** 原协议里引用数组的 JSON 原文，里面的加密字段要原样带回。 */
+	raw: string;
+	origin: Origin;
+}
+
 /** 文本块。 */
 export interface TextBlock {
 	type: "text";
 	text: string;
 	/** OpenAI Responses 写在 assistant 消息上的 `phase`，只带回同一协议，转换到其他协议时去掉。 */
 	phase?: string;
+	/** 模型回复里这段文字的引用，只带回同一协议和服务。 */
+	citations?: Citations;
 }
 
 /** 图片块，保存实际发送的字节：重新编码较早的图片会让之后的推理内容失效。 */
@@ -72,6 +85,22 @@ export interface FallbackBlock {
 	origin: Origin;
 }
 
+/**
+ * 只原样往返的内容块：服务端工具的调用和结果（Anthropic 的 `server_tool_use`、
+ * `web_search_tool_result`、`web_fetch_tool_result`，OpenAI Responses 的 `web_search_call`）。
+ * 留在原位，只发回同一协议和服务；其他包不解释 `raw`，不为它执行工具，也不回工具结果。
+ */
+export interface OpaqueBlock {
+	type: "opaque";
+	/** 这个块在原协议里的类型。 */
+	kind: string;
+	/** 给人看的一行说明，如搜索的关键词或读取的地址。 */
+	summary?: string;
+	/** 这个块在原协议里的 JSON 原文。 */
+	raw: string;
+	origin: Origin;
+}
+
 /** user 消息和工具结果里可以放的内容块。 */
 export type UserContent = TextBlock | ImageBlock;
 
@@ -80,7 +109,8 @@ export type AssistantContent =
 	| TextBlock
 	| ReasoningBlock
 	| ToolCallBlock
-	| FallbackBlock;
+	| FallbackBlock
+	| OpaqueBlock;
 
 /**
  * system 级的指令：会话的第一条消息是系统指令，之后出现的是会话中追加的指令

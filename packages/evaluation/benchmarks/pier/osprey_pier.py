@@ -6,6 +6,7 @@
   运行 CLI 的非交互模式、导出补丁），结束后从 CLI 的事件流里取 token 用量和费用。
 - ``PatchReplay``：把上一遍导出的补丁打到干净的镜像上，之后由题目自己的测试评分。
   评分不在 agent 用过的容器里做：它可能改过测试工具、留下进程。
+- ``SandboxDockerEnvironment``：给任务容器加上开沙盒要的安全选项，开关沙盒的对比实验用。
 """
 
 from __future__ import annotations
@@ -17,13 +18,17 @@ from pathlib import Path
 from pier.agents.base import BaseAgent
 from pier.agents.installed.base import BaseInstalledAgent, NonZeroAgentExitCodeError
 from pier.environments.base import BaseEnvironment
+from pier.environments.docker.docker import DockerEnvironment
 from pier.models.agent.context import AgentContext
 from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.network import NetworkAllowlist
 
 HERE = Path(__file__).resolve().parent
 RUN_SCRIPT = HERE / "run-agent.sh"
-RULES = HERE.parent / "coding-rules.toml"
+SANDBOX_COMPOSE = HERE / "sandbox-compose.yaml"
+SANDBOX_MODES = ("danger-full-access", "workspace-write")
+# sandbox-runtime 在 Linux 上要的三样
+SANDBOX_PACKAGES = "bubblewrap socat ripgrep"
 
 # CLI 要求的最低 Node 版本。装在单独的目录里、不进 PATH：题目的测试用镜像自带的 Node。
 NODE_VERSION = "24.15.0"
@@ -39,6 +44,12 @@ ENVIRONMENT_FAILURE = 70
 
 class EnvironmentCheckError(RuntimeError):
     """环境故障：agent 没有运行，或者补丁没法重放。Pier 记下这个异常后不再评分。"""
+
+
+def yes_or_no(name: str, value: str) -> bool:
+    if value not in ("yes", "no"):
+        raise ValueError(f"{name} 要写 yes 或 no")
+    return value == "yes"
 
 
 def fix_commit(task_name: str) -> str:
@@ -57,7 +68,16 @@ class OspreyCode(BaseInstalledAgent):
     - ``model_host``：模型服务的域名，agent 阶段只放行它
     - ``credential``：``<凭据 ID>=<环境变量名>``，密钥从运行 pier 的环境变量里读
     - ``max_cost_usd``、``max_requests``、``timeout_sec``：每个 run 的上限，前两项可以写 ``none``
-    - ``config_file``（可选）：放进容器里的用户级 ``config.toml``，用来登记模型清单之外的模型
+    - ``sandbox_mode``：``danger-full-access`` 或 ``workspace-write``
+    - ``rules_file``：经 ``--rules`` 传给 CLI 的权限规则文件
+    - ``allowed_hosts``：模型服务之外另外放行的域名，用空格分开，可以为空
+    - ``sandbox_container``：``yes`` 或 ``no``。任务容器要不要按开沙盒来准备：安装 bubblewrap、
+      socat 和 ripgrep，运行 agent 之前探测沙盒管不管用。开关沙盒的对比实验两组都写 ``yes``，
+      同时用 ``--environment-import-path osprey_pier:SandboxDockerEnvironment``
+    - ``commit``：``yes`` 或 ``no``。CLI 结束后要不要把没提交的改动提交到当前分支（DeepSWE）
+    - ``config_file``（可选）：放进容器里的用户级 ``config.toml``，用来登记模型清单之外的模型。
+      ``sandbox_container`` 是 ``yes`` 时必须给出，并在里面选好模型：探测沙盒用的
+      ``ospreycode sandbox`` 只从配置里取模型
     """
 
     def __init__(
@@ -69,6 +89,11 @@ class OspreyCode(BaseInstalledAgent):
         max_cost_usd: float | str,
         max_requests: int | str,
         timeout_sec: int,
+        sandbox_mode: str,
+        rules_file: str,
+        allowed_hosts: str,
+        sandbox_container: str,
+        commit: str,
         config_file: str | None = None,
         **kwargs,
     ):
@@ -87,7 +112,21 @@ class OspreyCode(BaseInstalledAgent):
         self._max_cost_usd = str(max_cost_usd)
         self._max_requests = str(max_requests)
         self._timeout_sec = int(timeout_sec)
+        if sandbox_mode not in SANDBOX_MODES:
+            raise ValueError(f"sandbox_mode 要是 {'、'.join(SANDBOX_MODES)} 之一")
+        self._sandbox_mode = sandbox_mode
+        self._rules_file = Path(rules_file)
+        if not self._rules_file.is_file():
+            raise ValueError(f"权限规则文件 {rules_file} 不存在")
+        self._allowed_hosts = str(allowed_hosts).split()
+        self._sandbox_container = yes_or_no("sandbox_container", sandbox_container)
+        self._commit = yes_or_no("commit", commit)
         self._config_file = Path(config_file) if config_file else None
+        if self._sandbox_container and self._config_file is None:
+            raise ValueError(
+                "sandbox_container 是 yes 时要给出 config_file，里面选好模型："
+                "ospreycode sandbox 只从配置里取模型"
+            )
 
     @staticmethod
     def name() -> str:
@@ -101,6 +140,13 @@ class OspreyCode(BaseInstalledAgent):
         tarball = (
             f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-linux-x64.tar.gz"
         )
+        sandbox_steps = [
+            InstallStep(
+                user="root",
+                env={"DEBIAN_FRONTEND": "noninteractive"},
+                run=f"apt-get update && apt-get install -y {SANDBOX_PACKAGES}",
+            )
+        ]
         return AgentInstallSpec(
             agent_name=self.name(),
             version=self._version,
@@ -113,6 +159,7 @@ class OspreyCode(BaseInstalledAgent):
                         "(apt-get update && apt-get install -y curl git ca-certificates)"
                     ),
                 ),
+                *(sandbox_steps if self._sandbox_container else []),
                 InstallStep(
                     user="root",
                     run=(
@@ -131,7 +178,7 @@ class OspreyCode(BaseInstalledAgent):
         )
 
     def network_allowlist(self) -> NetworkAllowlist:
-        return NetworkAllowlist(domains=[self._model_host])
+        return NetworkAllowlist(domains=[self._model_host, *self._allowed_hosts])
 
     async def run(
         self,
@@ -144,7 +191,7 @@ class OspreyCode(BaseInstalledAgent):
         instruction_file.write_text(instruction)
         uploads = {
             RUN_SCRIPT: f"{STAGE}/run-agent.sh",
-            RULES: f"{STAGE}/rules.toml",
+            self._rules_file: f"{STAGE}/rules.toml",
             instruction_file: f"{STAGE}/instruction.md",
         }
         if self._config_file is not None:
@@ -167,6 +214,7 @@ class OspreyCode(BaseInstalledAgent):
             "OSPREY_LOGS": str(environment.env_paths.agent_dir),
             "OSPREY_INSTRUCTION": f"{STAGE}/instruction.md",
             "OSPREY_MODEL": self.model_name,
+            "OSPREY_SANDBOX": self._sandbox_mode,
             "OSPREY_RULES": f"{STAGE}/rules.toml",
             "OSPREY_CREDENTIAL_OPTION": "--credential-env",
             "OSPREY_CREDENTIAL": f"{self._credential_id}={self._credential_variable}",
@@ -178,6 +226,8 @@ class OspreyCode(BaseInstalledAgent):
             ),
             "OSPREY_FORBIDDEN_COMMIT": fix_commit(environment.environment_name),
             "OSPREY_BLOCKED_URL": BLOCKED_URL,
+            "OSPREY_SANDBOX_PROBE": "yes" if self._sandbox_container else "no",
+            "OSPREY_COMMIT": "yes" if self._commit else "no",
             self._credential_variable: self._get_env(self._credential_variable),
         }
         # 不指定目录：在镜像的工作目录里运行，题目的仓库就在那里
@@ -274,3 +324,15 @@ class PatchReplay(BaseAgent):
                 f"{trial.name} 的补丁在干净的镜像上打不上："
                 f"{(result.stderr or '').strip()[-2000:]}"
             )
+
+
+class SandboxDockerEnvironment(DockerEnvironment):
+    """任务容器加上开沙盒要的安全选项，其余和 Pier 的 docker 环境相同。
+
+    Pier 不能给任务容器加安全选项，所以在它的 compose 文件之后再追加一个。用
+    ``--environment-import-path osprey_pier:SandboxDockerEnvironment`` 加载，代替 ``--env docker``。
+    """
+
+    @property
+    def _docker_compose_paths(self) -> list[Path]:
+        return [*super()._docker_compose_paths, SANDBOX_COMPOSE]

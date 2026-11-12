@@ -23,7 +23,7 @@ import type { ProcessEvent } from "../sessions/events.js";
 import type { SandboxedRunner } from "../workspace/git.js";
 import type { ExtensionSandboxes } from "./extension-sandbox.js";
 import { runGit } from "./git-runner.js";
-import type { Placeholders } from "./placeholders.js";
+import type { PlaceholderRegistry } from "./placeholders.js";
 import type { ProcessTracker } from "./registry.js";
 
 /** agent 进程的收尾进程管道所在的文件描述符：fd 3 是通道。 */
@@ -145,7 +145,7 @@ export interface SandboxedSessionOptions {
 	/** Host 环境里的 `SSH_AUTH_SOCK`：模型申请符号 `ssh-agent` 时换成它。 */
 	sshAuthSock?: string;
 	/** Linux 上受保护路径的占位登记表。 */
-	placeholders: Placeholders;
+	placeholders: PlaceholderRegistry;
 	/** 不影响继续运行的问题：辅助进程退出了，扫描受保护的名字超时了。 */
 	onWarning: (message: string) => void;
 	/** 随 session 存在的两个辅助进程启动和退出时调用，记成进程事件。 */

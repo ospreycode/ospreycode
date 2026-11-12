@@ -3,6 +3,8 @@ import {
 	ModelConfigError,
 	type ModelFields,
 	parseModelFields,
+	type ServerToolName,
+	serverToolNames,
 } from "@ospreycode/api";
 import type { ReasoningEffort } from "@ospreycode/api/protocol";
 import {
@@ -17,7 +19,10 @@ import {
 	type PermissionProfile,
 	parsePermissionProfile,
 } from "@ospreycode/sandbox";
-import type { CredentialSource } from "../credentials/sources.js";
+import type {
+	CommandSource,
+	CredentialSource,
+} from "../credentials/sources.js";
 import { hostSetVariables } from "../processes/environment.js";
 import { isInside } from "../project/paths.js";
 import { joinKey, KeyError } from "./errors.js";
@@ -70,9 +75,30 @@ export interface ConfigLayer {
 	proxy?: string;
 	/** 可选工具的开关，键是工具名。 */
 	tools?: Record<string, boolean>;
+	/** `[server_tools.<服务名>]`：模型服务自带的服务端工具的开关，键是服务名，再是工具名。 */
+	server_tools?: Record<string, Partial<Record<ServerToolName, boolean>>>;
 	ui?: UiLayer;
 	/** session 记录保存的天数，从最后一次写入算起；只认用户级配置。 */
 	session_retention_days?: number;
+	/** `[agents.<名字>]`：子 agent 的定义，键是名字。 */
+	agents?: Record<string, AgentLayer>;
+}
+
+/** 一个子 agent 的定义。模型和工具的名字在合并各层之后再核对。 */
+export interface AgentLayer {
+	/** 给主 agent 看的用途。 */
+	description: string;
+	/** 给子 agent 自己的补充说明。 */
+	instructions?: string;
+	/** 模型清单里的 ID；仓库配置里写的忽略。 */
+	model?: string;
+	reasoning_effort?: ReasoningEffort;
+	/** 只能写 `read-only`：定义只能在 session 的沙盒模式之上收紧。 */
+	sandbox_mode?: "read-only";
+	/** 启用的内置工具。 */
+	tools?: string[];
+	/** `isolated` 的在自己的工作区里运行（worker）。 */
+	workspace?: "shared" | "isolated";
 }
 
 /** 在授权服务器预先注册的 OAuth 客户端。 */
@@ -113,8 +139,12 @@ export const keyClasses: Readonly<Record<keyof ConfigLayer, KeyClass>> = {
 	mcp_startup_timeout_sec: "user_only",
 	proxy: "user_only",
 	tools: "normal",
+	// 打开之后模型能把对话里的内容发到模型服务之外：仓库配置只能关闭
+	server_tools: "tighten",
 	ui: "normal",
 	session_retention_days: "user_only",
+	// 仓库配置只能新增定义，其中的 `model` 忽略；和用户级同名的在合并时忽略
+	agents: "tighten",
 };
 
 const variableName = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -322,6 +352,55 @@ function models(value: unknown, key: string): Record<string, ModelFields> {
 	return result;
 }
 
+/** 输出凭据的命令：程序加参数数组，不经 shell；两个时间都是毫秒。 */
+function commandSource(
+	fields: Record<string, unknown>,
+	key: string,
+): CommandSource {
+	const result: CommandSource = { command: "" };
+	for (const [name, item] of Object.entries(fields)) {
+		const itemKey = joinKey(key, name);
+		switch (name) {
+			case "command": {
+				const program = string(item, itemKey);
+				// 相对路径会按 Host 根目录解析，和用户在自己的 shell 里看到的不一样
+				if (/[/\\]/.test(program) && !isAbsolute(program)) {
+					throw new KeyError(
+						itemKey,
+						"要是绝对路径，或者不带路径分隔符、按 PATH 查找的程序名",
+					);
+				}
+				result.command = program;
+				break;
+			}
+			case "args":
+				if (
+					!Array.isArray(item) ||
+					item.some((arg) => typeof arg !== "string")
+				) {
+					throw new KeyError(itemKey, "要是字符串的数组");
+				}
+				result.args = item;
+				break;
+			case "timeout_ms":
+				if (!Number.isSafeInteger(item) || (item as number) < 1) {
+					throw new KeyError(itemKey, "要是正整数（毫秒）");
+				}
+				result.timeout_ms = item as number;
+				break;
+			case "refresh_interval_ms":
+				if (!Number.isSafeInteger(item) || (item as number) < 0) {
+					throw new KeyError(itemKey, "要是不小于 0 的整数（毫秒）");
+				}
+				result.refresh_interval_ms = item as number;
+				break;
+			default:
+				throw new KeyError(itemKey, "不认识的键");
+		}
+	}
+	return result;
+}
+
 function credentials(
 	value: unknown,
 	key: string,
@@ -331,11 +410,15 @@ function credentials(
 	for (const [id, source] of Object.entries(table(value, key))) {
 		const itemKey = joinKey(key, id);
 		const fields = table(source, itemKey);
+		if (fields.command !== undefined) {
+			result[id] = commandSource(fields, itemKey);
+			continue;
+		}
 		const names = Object.keys(fields);
 		if (names.length !== 1 || (names[0] !== "file" && names[0] !== "env")) {
 			throw new KeyError(
 				itemKey,
-				'要写成 { file = "<路径>" } 或 { env = "<变量名>" }',
+				'要写成 { file = "<路径>" }、{ env = "<变量名>" } 或 { command = "<程序>", args = ["<参数>"] }',
 			);
 		}
 		if (fields.file !== undefined) {
@@ -373,6 +456,33 @@ function tools(
 			throw new KeyError(itemKey, "要是 true（启用）或 false（不启用）");
 		}
 		result[name] = enabled;
+	}
+	return result;
+}
+
+function serverTools(
+	value: unknown,
+	key: string,
+): Record<string, Partial<Record<ServerToolName, boolean>>> {
+	const result: Record<string, Partial<Record<ServerToolName, boolean>>> = {};
+	for (const [service, switches] of Object.entries(table(value, key))) {
+		const serviceKey = joinKey(key, service);
+		const enabled: Partial<Record<ServerToolName, boolean>> = {};
+		for (const [name, item] of Object.entries(table(switches, serviceKey))) {
+			const itemKey = joinKey(serviceKey, name);
+			const tool = serverToolNames.find((known) => known === name);
+			if (tool === undefined) {
+				throw new KeyError(
+					itemKey,
+					`不是服务端工具：可以开关的有 ${serverToolNames.join("、")}`,
+				);
+			}
+			if (typeof item !== "boolean") {
+				throw new KeyError(itemKey, "要是 true（启用）或 false（不启用）");
+			}
+			enabled[tool] = item;
+		}
+		result[service] = enabled;
 	}
 	return result;
 }
@@ -473,6 +583,72 @@ function startupTimeout(value: unknown, key: string): number {
 	return value as number;
 }
 
+const agentName = /^[a-z][a-z0-9_-]*$/;
+
+/**
+ * 子 agent 的定义。仓库配置里的 `model` 不校验，列进 `ignored`：选用哪个模型只认用户级配置。
+ */
+function agents(
+	value: unknown,
+	key: string,
+	kind: LayerContext["kind"],
+	ignored: string[],
+): Record<string, AgentLayer> {
+	const result: Record<string, AgentLayer> = {};
+	for (const [name, definition] of Object.entries(table(value, key))) {
+		const itemKey = joinKey(key, name);
+		if (!agentName.test(name)) {
+			throw new KeyError(
+				itemKey,
+				"名字只能用小写字母、数字、下划线和连字符，以字母开头",
+			);
+		}
+		const fields = table(definition, itemKey);
+		const agent: AgentLayer = {
+			description: string(fields.description, joinKey(itemKey, "description")),
+		};
+		for (const [field, item] of Object.entries(fields)) {
+			const fieldKey = joinKey(itemKey, field);
+			switch (field) {
+				case "description":
+					break;
+				case "instructions":
+					agent.instructions = string(item, fieldKey);
+					break;
+				case "model":
+					if (kind === "repo") ignored.push(fieldKey);
+					else agent.model = string(item, fieldKey);
+					break;
+				case "reasoning_effort":
+					agent.reasoning_effort = oneOf(item, fieldKey, reasoningEfforts);
+					break;
+				case "sandbox_mode":
+					agent.sandbox_mode = oneOf(item, fieldKey, ["read-only"] as const);
+					break;
+				case "tools":
+					if (
+						!Array.isArray(item) ||
+						item.some((tool) => typeof tool !== "string")
+					) {
+						throw new KeyError(fieldKey, "要是工具名的数组");
+					}
+					agent.tools = item;
+					break;
+				case "workspace":
+					agent.workspace = oneOf(item, fieldKey, [
+						"shared",
+						"isolated",
+					] as const);
+					break;
+				default:
+					throw new KeyError(fieldKey, "不认识的键");
+			}
+		}
+		result[name] = agent;
+	}
+	return result;
+}
+
 /** 最小为 1 天，没有 0 或"永久"这类特殊值：清理因此不会碰 24 小时内写过的 session。 */
 function retentionDays(value: unknown, key: string): number {
 	if (!Number.isSafeInteger(value) || (value as number) < 1) {
@@ -562,11 +738,17 @@ export function parseConfigTable(
 			case "tools":
 				layer.tools = tools(value, key, context.optionalTools);
 				break;
+			case "server_tools":
+				layer.server_tools = serverTools(value, key);
+				break;
 			case "ui":
 				layer.ui = ui(value, key);
 				break;
 			case "session_retention_days":
 				layer.session_retention_days = retentionDays(value, key);
+				break;
+			case "agents":
+				layer.agents = agents(value, key, context.kind, ignored);
 				break;
 		}
 	}
@@ -582,13 +764,20 @@ export function checkStartupLayer(layer: ConfigLayer): ConfigLayer {
 			}
 		}
 	}
+	const startupCredentials: Record<string, CredentialSource> = {};
 	for (const [id, source] of Object.entries(layer.credentials ?? {})) {
+		const key = joinKey("credentials", id);
 		if ("file" in source && !isAbsolute(source.file)) {
-			throw new KeyError(joinKey("credentials", id), "凭据文件要写绝对路径");
+			throw new KeyError(key, "凭据文件要写绝对路径");
 		}
+		startupCredentials[id] =
+			"command" in source ? commandSource({ ...source }, key) : source;
 	}
 	return {
 		...layer,
+		...(layer.credentials === undefined
+			? {}
+			: { credentials: startupCredentials }),
 		...(layer.models === undefined
 			? {}
 			: { models: models(layer.models, "models") }),

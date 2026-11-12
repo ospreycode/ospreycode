@@ -19,6 +19,7 @@ npm install @ospreycode/agent-runtime
 - 工具调用的格式：工具声明 `ToolSpec`、工具结果 `ToolResult`，以及 Host 写入 session 记录的工具调用事件。
 - `toolRegistry`：runtime 提供的全部工具的声明，默认启用的在前，可选的 `grep`（按行搜索文件内容）和 `ls`（列出目录下的一层）在后。`read`、`edit`、`write`、`grep` 和 `ls` 由 runtime 在 agent 沙盒里执行，先向 Host 登记；`shell` 交给 Host 执行。Host 在启动配置里选择启用哪些。
 - `memoryToolRegistry`：长期记忆的三个工具 `memory_propose`、`memory_search`、`memory_read` 的声明。runtime 不持有记忆库：工具先向 Host 登记，再经通道的 `memory/propose`、`memory/search`、`memory/read` 提交候选或取内容。生效记忆的索引由 Host 放在启动配置的 `memory` 里（`MemoryConfig`），runtime 把它放进会话开始的上下文消息。
+- `subagentToolRegistry`：子 agent 的三个工具 `spawn_agent`、`send_message`、`interrupt_agent` 的声明，启动配置里有子 agent 的定义（`subagents`）时 Host 才启用。子 agent 由 Host 另起 agent 进程运行：工具先向 Host 登记，再经通道的 `subagent/start`、`subagent/send`、`subagent/stop` 执行；子 agent 自己结束时 Host 发 `subagent/ended`，结果作为通知在下一次模型请求之前插入，还有子 agent 在运行时 task 不结束。
 
 通道上每条消息是一行 JSON，只按字节 0x0A 分帧：
 

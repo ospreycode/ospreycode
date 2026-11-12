@@ -8,7 +8,11 @@ import {
 	testRunLimits,
 	throwIfTransient,
 } from "../../../scripts/model-test.js";
-import { prepareDataset, runCodingBenchmark } from "../src/index.js";
+import {
+	codingPermissions,
+	prepareDataset,
+	runCodingBenchmark,
+} from "../src/index.js";
 import {
 	type CodingDirectories,
 	codingDirectories,
@@ -86,6 +90,7 @@ max_output_tokens = 2000
 				maxRequests: testRunLimits.maxRequests,
 				timeoutSec: testRunLimits.maxDurationMs / 1000,
 			},
+			permissions: codingPermissions,
 		},
 		env: {
 			...dirs.env,

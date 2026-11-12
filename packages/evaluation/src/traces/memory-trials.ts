@@ -17,6 +17,9 @@ export const retrievedEntries = 5;
 export interface TranscriptEntry {
 	/** 第几个学习会话，从 1 开始。 */
 	session: number;
+	/** 用户的输入、模型的回复，还是一次工具调用和它的结果。 */
+	role: "user" | "assistant" | "tool";
+	/** 以 `<role>: ` 开头的文字。 */
 	text: string;
 }
 
@@ -48,15 +51,15 @@ export function transcriptEntries(
 	return sessions.flatMap((events, index) => {
 		const calls = new Map<string, string>();
 		return events.flatMap((event): TranscriptEntry[] => {
-			const entry = (text: string) => [
-				{ session: index + 1, text: clip(text) },
+			const entry = (role: TranscriptEntry["role"], text: string) => [
+				{ session: index + 1, role, text: clip(`${role}: ${text}`) },
 			];
 			if (event.type === "task.started") {
-				return entry(`user: ${blocksText(event.input)}`);
+				return entry("user", blocksText(event.input));
 			}
 			if (event.type === "message.completed") {
 				const text = blocksText(event.message.content);
-				return text === "" ? [] : entry(`assistant: ${text}`);
+				return text === "" ? [] : entry("assistant", text);
 			}
 			if (event.type === "tool_call.started") {
 				calls.set(event.tool_call_id, `${event.name} ${event.arguments}`);
@@ -68,7 +71,8 @@ export function transcriptEntries(
 					throw new Error(`工具调用 ${event.tool_call_id} 没有开始的事件`);
 				}
 				return entry(
-					`tool: ${call}\n${event.result.status}: ${blocksText(event.result.content)}`,
+					"tool",
+					`${call}\n${event.result.status}: ${blocksText(event.result.content)}`,
 				);
 			}
 			return [];
@@ -130,6 +134,30 @@ export function retrievedBlock(
 		"earlier_sessions",
 		"Excerpts from earlier sessions in this project that match this request. They may be out of date.",
 		top.map(({ entry }) => `[session ${entry.session}] ${entry.text}`),
+	);
+}
+
+/** 诊断组放在检验会话输入前面的内容：题目作者写的正确证据。 */
+export function factsBlock(facts: string): string {
+	return block(
+		"known_facts",
+		"Facts established in earlier sessions. They are correct and current.",
+		[facts],
+	);
+}
+
+/**
+ * 外部记忆系统对照组放在检验会话输入前面的内容：它检索到的记忆，按它给的顺序。和只检索组用同样的
+ * 标签和说明，两组只差内容是谁提炼和检索的。一条也没有时为空。
+ */
+export function externalMemoryBlock(
+	memories: readonly string[],
+): string | undefined {
+	if (memories.length === 0) return undefined;
+	return block(
+		"earlier_sessions",
+		"Memories from earlier sessions in this project that match this request. They may be out of date.",
+		memories.map((memory) => `- ${memory}`),
 	);
 }
 

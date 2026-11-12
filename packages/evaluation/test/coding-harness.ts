@@ -28,6 +28,11 @@ export const fixtureTasks = fileURLToPath(
 	new URL("./fixtures/coding-tasks", import.meta.url),
 );
 
+/** DeepSWE 格式的夹具题目所在的目录，每道题一个子目录。 */
+export const deepSweFixtureTasks = fileURLToPath(
+	new URL("./fixtures/deep-swe-tasks", import.meta.url),
+);
+
 /** 一次测试用的目录和程序。 */
 export interface CodingDirectories {
 	base: string;
@@ -102,18 +107,35 @@ export function git(
 	).trim();
 }
 
+function checkoutOf(
+	dirs: CodingDirectories,
+	name: string,
+	tasks: string,
+	tasksPath: string,
+): { checkout: string; commit: string } {
+	const checkout = join(dirs.base, name);
+	mkdirSync(checkout);
+	cpSync(tasks, join(checkout, tasksPath), { recursive: true });
+	git(dirs, checkout, "init", "-q", "-b", "main");
+	git(dirs, checkout, "add", "-A");
+	git(dirs, checkout, "commit", "-q", "-m", "tasks");
+	return { checkout, commit: git(dirs, checkout, "rev-parse", "HEAD") };
+}
+
 /** 题目仓库的检出：夹具题目放在 `v2/tasks` 下，提交一次。返回检出的目录和它的 commit。 */
 export function fixtureCheckout(dirs: CodingDirectories): {
 	checkout: string;
 	commit: string;
 } {
-	const checkout = join(dirs.base, "checkout");
-	mkdirSync(join(checkout, "v2"), { recursive: true });
-	cpSync(fixtureTasks, join(checkout, "v2", "tasks"), { recursive: true });
-	git(dirs, checkout, "init", "-q", "-b", "main");
-	git(dirs, checkout, "add", "-A");
-	git(dirs, checkout, "commit", "-q", "-m", "tasks");
-	return { checkout, commit: git(dirs, checkout, "rev-parse", "HEAD") };
+	return checkoutOf(dirs, "checkout", fixtureTasks, join("v2", "tasks"));
+}
+
+/** DeepSWE 题目仓库的检出：夹具题目放在 `tasks` 下，提交一次。 */
+export function deepSweCheckout(dirs: CodingDirectories): {
+	checkout: string;
+	commit: string;
+} {
+	return checkoutOf(dirs, "deep-swe-checkout", deepSweFixtureTasks, "tasks");
 }
 
 /** 模型的一次回应：一段文字，或者调用一次 shell 工具（`rest` 是 `command` 之外的参数）。 */
@@ -133,6 +155,8 @@ export interface FakeModel {
 	config: string;
 	/** 收到的每次请求里的消息，按收到的顺序。 */
 	requests: ChatMessage[][];
+	/** 收到的每次请求里声明的工具名，和 `requests` 一一对应。 */
+	tools: string[][];
 	close(): Promise<void>;
 }
 
@@ -188,16 +212,19 @@ export async function fakeModel(
 	script: (messages: ChatMessage[]) => ModelReply,
 ): Promise<FakeModel> {
 	const requests: ChatMessage[][] = [];
+	const tools: string[][] = [];
 	const server = createServer((request, response) => {
 		void (async () => {
 			const body = JSON.parse(await text(request)) as {
 				messages: ChatMessage[];
+				tools?: { function: { name: string } }[];
 			};
 			if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
 				response.writeHead(404).end();
 				return;
 			}
 			requests.push(body.messages);
+			tools.push((body.tools ?? []).map((tool) => tool.function.name));
 			response
 				.writeHead(200, { "content-type": "text/event-stream" })
 				.end(
@@ -234,6 +261,7 @@ cache_read = 0.1
 cache_write = 1.25
 `,
 		requests,
+		tools,
 		close: async () => {
 			server.closeAllConnections();
 			server.close();

@@ -10,7 +10,7 @@ import type { CredentialStore } from "./store.js";
 
 /** 查看凭据状态时的启动参数。 */
 export interface CredentialStatusOptions {
-	/** 启动参数指定的凭据来源（`--credential-file`、`--credential-env`），键是凭据的 ID。 */
+	/** 启动参数指定的凭据来源（`--credential-file`、`--credential-env`，SDK 还能传命令），键是凭据的 ID。 */
 	credentials?: Readonly<Record<string, CredentialSource>>;
 }
 
@@ -27,6 +27,15 @@ export interface CredentialStatus {
 	file?: string;
 	/** 来源是环境变量时的变量名。 */
 	env?: string;
+	/** 来源是命令时的程序；参数里可能有账号和项目，不列出。 */
+	command?: string;
+}
+
+/** 来源里能列出来的部分。 */
+function described(
+	source: CredentialSource,
+): Pick<CredentialStatus, "file" | "env" | "command"> {
+	return "command" in source ? { command: source.command } : source;
 }
 
 /**
@@ -96,10 +105,12 @@ export async function credentialStatus(
 	]);
 	const status = async (id: string): Promise<CredentialStatus> => {
 		const startup = options.credentials?.[id];
-		if (startup !== undefined) return { id, source: "startup", ...startup };
+		if (startup !== undefined) {
+			return { id, source: "startup", ...described(startup) };
+		}
 		const configured = user.credentials?.[id];
 		if (configured !== undefined) {
-			return { id, source: "user_config", ...configured };
+			return { id, source: "user_config", ...described(configured) };
 		}
 		return (await host.store?.get(id)) === undefined
 			? { id }

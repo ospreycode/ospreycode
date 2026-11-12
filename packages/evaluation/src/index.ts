@@ -1,11 +1,49 @@
 export {
+	ablationArms,
+	ablationTools,
+	type CliVersion,
+	sandboxArms,
+	sandboxComparisonManifest,
+	sandboxComparisonTasksPerLanguage,
+	versionArms,
+} from "./benchmarks/comparisons.js";
+export {
+	type DeepSweDataset,
+	type DeepSweLanguage,
+	type DeepSweManifest,
+	type DeepSwePrepareOptions,
+	type DeepSweSource,
+	type DeepSweTask,
+	deepSweLanguages,
+	loadDeepSweManifest,
+	prepareDeepSwe,
+	splitDeepSwe,
+} from "./benchmarks/deep-swe.js";
+export {
+	evidenceIds,
+	type LongMemEvalDocument,
+	type LongMemEvalQuestion,
+	type LongMemEvalSession,
+	type LongMemEvalTurn,
+	loadLongMemEval,
+	longMemEvalData,
+	longMemEvalDocuments,
+} from "./benchmarks/longmemeval.js";
+export {
 	type AgentSettings,
+	codingPermissions,
 	codingRulesFile,
+	type PermissionSettings,
 	type PierCommands,
 	type PierRun,
+	packageRegistryHosts,
 	pierAdapterDirectory,
 	pierCommands,
 	pierVersion,
+	type SinglePassRun,
+	sandboxComparisonPermissions,
+	sandboxComparisonRulesFile,
+	singlePassCommand,
 } from "./benchmarks/pier.js";
 export {
 	type BenchmarkManifest,
@@ -29,6 +67,7 @@ export {
 	type BenchmarkReport,
 	type BenchmarkTask,
 	benchmarkReport,
+	type FailureCauses,
 	formatBenchmarkReport,
 	type GroupRate,
 	type Rate,
@@ -36,8 +75,16 @@ export {
 	type TaskRuns,
 } from "./reports/benchmark.js";
 export {
+	type ArmReport,
+	type BaselineComparison,
+	type ComparisonReport,
+	comparisonReport,
+	formatComparisonReport,
+} from "./reports/comparison.js";
+export {
 	bootstrapResamples,
 	bootstrapSeed,
+	type Diagnosis,
 	formatMemoryReport,
 	type GroupResult,
 	type MemoryConditions,
@@ -52,6 +99,19 @@ export {
 	type Stratum,
 } from "./reports/memory.js";
 export {
+	formatRetrievalReport,
+	type MetricsByCutoff,
+	type RetrievalConditions,
+	type RetrievalCutoff,
+	type RetrievalLevels,
+	type RetrievalMetrics,
+	type RetrievalReport,
+	type RetrievalTypeResult,
+	retrievalCutoffs,
+	retrievalMetrics,
+	retrievalReport,
+} from "./reports/retrieval.js";
+export {
 	type DecisionMismatches,
 	formatSandboxReport,
 	type OverheadEntry,
@@ -65,10 +125,27 @@ export {
 	summarize,
 } from "./reports/summary.js";
 export {
+	type ArmTrials,
 	type CodingBenchmarkOptions,
+	type CodingComparisonOptions,
+	type ComparisonArm,
 	runCodingBenchmark,
+	runCodingComparison,
 } from "./runners/coding-benchmark.js";
 export {
+	type Mem0Message,
+	type Mem0Options,
+	type Mem0Session,
+	type Mem0Usage,
+	mem0BatchChars,
+	mem0Batches,
+	mem0Bridge,
+	mem0Version,
+	startMem0,
+} from "./runners/mem0.js";
+export {
+	type ExtraMemoryGroup,
+	extraMemoryGroups,
 	type MaintenanceSession,
 	type MemoryExperimentOptions,
 	type MemoryGroup,
@@ -80,6 +157,11 @@ export {
 	type ProbeCounters,
 	runMemoryExperiment,
 } from "./runners/memory-experiment.js";
+export {
+	type QuestionRanking,
+	type RetrievalRun,
+	rankLongMemEval,
+} from "./runners/retrieval.js";
 export {
 	credentialMarker,
 	type PreparedCase,
@@ -107,7 +189,14 @@ export {
 	type ScenarioResult,
 	type ScenarioRun,
 } from "./runners/scenario.js";
-export { memorySmokeTasks } from "./suites/memory.js";
+export {
+	type MemoryScenario,
+	type MemoryScenarioKind,
+	memoryScenarioKinds,
+	memoryScenarioSet,
+	memoryScenarios,
+	memorySmokeTasks,
+} from "./suites/memory.js";
 export { p0Scenarios } from "./suites/p0.js";
 export type {
 	DecisionCase,
@@ -127,12 +216,15 @@ export {
 	type Denials,
 	type RunJobs,
 	readRun,
+	readSinglePassRun,
 	type TrialMeasurements,
 	type TrialStatus,
 } from "./traces/coding-trials.js";
 export {
 	classifyFailure,
+	externalMemoryBlock,
 	type FailureEvidence,
+	factsBlock,
 	historyBlock,
 	historyChars,
 	type MemoryFailure,

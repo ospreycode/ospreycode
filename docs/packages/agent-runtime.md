@@ -35,11 +35,11 @@ agent-runtime/
 | `task/start` | Host → runtime，通知 | 开始新的 task，带输入（`InputContent[]`：文字、`@` 提及的路径和附带图片的引用，提及和图片由 runtime 展开，见[上下文](#上下文)）；用户输入、follow-up 和后台通知开始的 task 都由 Host 发起。`message_id` 是 Host 给放这次输入的那条 user 消息分配的编号，runtime 照用：Host 把它记在 `task.started` 里，按事件脱敏靠它找到输入在消息里的那一份。`kind: "compact"` 表示用户发起的压缩，输入为空、不带 `message_id`：runtime 只压缩上下文，不请求模型做别的，压缩完报告 task 结束 | P0 |
 | `task/end` | runtime → Host，请求 | 报告 task 结束；Host 还有待插入的输入时回复继续，runtime 取出后接着请求模型 | P0 |
 | `run/cancel` | Host → runtime，请求 | 中断当前 run（见 agent-host 的 [task 的开始、结束和取消](agent-host.md#task-的开始结束和取消)） | P0 |
-| `status` | Host → runtime，请求 | 查询 runtime 当前在做什么：等待模型、执行哪些工具调用、空闲 | P0 |
+| `status` | Host → runtime，请求 | 查询 runtime 当前在做什么：等待模型、执行哪些工具调用、等子 agent 结束、空闲 | P0 |
 | `model/request` | runtime → Host，流式请求 | 内部协议的模型请求，消息里的图片只带引用（见[消息格式](#消息格式)）；流式事件以 `model/event` 通知返回，最终响应是这次回复，带停止原因和用量，模型出错时另带错误类别（见 api 的[在系统中的位置](api.md#在系统中的位置)） | P0 |
 | `model/count_tokens` | runtime → Host，请求 | token 计数（见 api 的 [token 计数](api.md#token-计数)）：`{request}` 和 `model/request` 的 `request` 相同，图片同样只带引用；响应是 `{input_tokens}`，计数接口出错时是 `{error}`（和模型请求相同的错误类别）。用 `openai.chat` 的模型没有计数接口，对它请求按协议错误处理 | P3 |
 | `tool_call/run` | runtime → Host，流式请求 | Host 代为执行的工具：shell（含后台命令的启动、查询、写入和停止）、MCP 工具、越界动作。编辑工具的目标在可写范围之外时带上 `file_edits`（runtime 组装好的文件改动申请）。第一条通知 `tool_call/started` 带 Host 分配的 `tool_call_id`，随后是输出通知 `tool_call/output`，最终响应是结果；Permission 的判断和询问都在其中完成 | P0 |
-| `tool_call/register` | runtime → Host，请求 | 登记 runtime 一侧执行的工具调用（文件工具、`skill_load`、`memory_*`），返回 `tool_call_id` 和决定；`skill_load`、`memory_*` 登记后再用下面的 `skill/load`、`memory/*` 取内容 | P0 |
+| `tool_call/register` | runtime → Host，请求 | 登记 runtime 一侧执行的工具调用（文件工具、`skill_load`、`memory_*`、子 agent 的三个工具），返回 `tool_call_id` 和决定；`skill_load`、`memory_*` 和子 agent 的工具登记后再用下面的 `skill/load`、`memory/*`、`subagent/*` 完成 | P0 |
 | `tool_call/complete` | runtime → Host，请求 | 提交用 `tool_call/register` 登记的调用的结果。工具调用前后的 hooks 补充了信息时，响应带 `result`，runtime 把它当作这次调用的结果交给模型；没有时用自己提交的那份 | P0 |
 | `input/available` | Host → runtime，通知 | 有 steering 或后台命令的通知等待插入 | P1 |
 | `input/take` | runtime → Host，请求 | 在插入时机取出待插入的 steering 和通知（见[运行中的用户输入](#运行中的用户输入)） | P1 |
@@ -51,8 +51,10 @@ agent-runtime/
 | `hooks/run` | runtime → Host，请求 | 运行"上下文压缩前"和"任务结束时"的 hooks，等回复后再继续（见 agent-host 的 [Hooks](agent-host.md#hooks)）。`Stop` 带模型最后一条回复的文字和这个 task 里已经接着做了几轮；两种都带 `message_id`：hooks 的原因（`Stop`）或补充的信息（`PreCompact`）交给模型时 runtime 放它的那条 user 消息的编号，Host 记进 `hooks.ran`，按事件脱敏靠它对上两份。响应是 `{blocked, reason, additional_context}`。`Stop` 被 block 时 runtime 把原因作为一条标明来源的 user 消息接在历史后面，再请求模型，一个 task 里最多 8 轮；run 已经取消时不再接着做 | P2 |
 | `skill/load` | runtime → Host，请求 | 读取 skill 的完整内容，Host 核对内容哈希后返回：`{loaded: true, content}`（正文已经包上名字和目录），没有这个 skill 或内容没有获准时是 `{loaded: false, reason}`，原因作为工具结果交给模型 | P2 |
 | `memory/search`、`memory/read`、`memory/propose` | runtime → Host，请求 | 检索、读取和提议记忆（见 [memory](memory.md)）。`memory_search` 和 `memory_read` 发出的 `memory/search`、`memory/read` 带着那次工具调用的 `tool_call_id`，Host 记进 `memory.retrieved`，按事件脱敏时查询随调用的参数一起覆盖；自动注入的检索没有工具调用，不带 | P3 |
-| `subagent/start`、`subagent/send`、`subagent/stop` | runtime → Host，请求 | 启动子 agent、发送输入、停止（见[子 agent](#子-agent)） | P5 |
-| `subagent/ended` | Host → runtime，通知 | 子 agent 结束 | P5 |
+| `subagent/start` | runtime → Host，请求 | 启动一个子 agent（见[子 agent](#子-agent)）：`{tool_call_id, agent, prompt}`，`agent` 是定义的名字，`prompt` 是交给它的任务。子 agent 进程握手完成、任务交给它之后就响应 `{started: true, agent_id}`，不等它做完；在自己的工作区里运行的另带 `workspace`。启动不了时是 `{started: false, reason}`，原因作为工具结果交给模型 | P5 |
+| `subagent/send` | runtime → Host，请求 | 给运行中的子 agent 发一条输入：`{tool_call_id, agent_id, input}`，作为 steering 在它下一次模型请求之前插入。响应是 `{sent: true}`；它已经结束时是 `{sent: false, reason}` | P5 |
+| `subagent/stop` | runtime → Host，请求 | 停止一个子 agent：`{tool_call_id, agent_id}`，Host 取消它的 run，等它结束后响应 `{stopped: true}`；它已经结束时是 `{stopped: false, reason}`。被停止的子 agent 不再发结束通知 | P5 |
+| `subagent/ended` | Host → runtime，通知 | 子 agent 自己结束了（完成、失败或进程异常退出）：`{agent_id}`。它的结果已经排进 Host 的通知队列，runtime 用 `input/take` 取出 | P5 |
 | `cancel` | 双向，通知 | 取消对方的某个请求 | P0 |
 
 后台命令的输出由模型用读文件工具从输出文件读取（见[后台命令](#后台命令)），不另设操作。
@@ -90,6 +92,7 @@ runtime 在沙盒里读不到用户级配置，启用哪些扩展也由 Host 决
 - 启用的 MCP 工具：名称带 Host 分配的标签前缀，声明由 Host 给出（见 agent-host 的[所有扩展共同遵守](agent-host.md#所有扩展共同遵守)）。
 - `stop_hooks`：这个 session 配了 `Stop` hooks 时为真，模型给出最终回复后才经 `hooks/run` 请求；没配时省一次往返。
 - `pre_compact_hooks`：这个 session 配了 `PreCompact` hooks 时为真，runtime 压缩上下文之前才经 `hooks/run` 请求；没配时省一次往返。
+- `subagents`（P5）：可以启动的子 agent 的定义（名字、说明、是不是在自己的工作区里运行）；有定义时启用的工具里才有子 agent 的三个工具。`subagent`（P5）：这个进程自己是子 agent 时带它的定义（名字和可选的 `instructions`），这时没有 `subagents`、`resume`、记忆和两个 hooks 标记。
 - 生效记忆的索引（P3，不超过 2,500 token，见 memory 的[检索](memory.md#检索)）；评测用的记忆选项（写入策略、记忆注入方式），只能由 Host SDK 的调用方在创建 session 时传入，CLI 和配置文件都不能设置（见 memory 的[评测](memory.md#评测)）。
 
 每个 run 的费用、请求次数和时间上限不交给 runtime，只由 Host 执行（见 agent-host 的[预算](agent-host.md#预算)）。
@@ -103,7 +106,7 @@ runtime 在沙盒里读不到用户级配置，启用哪些扩展也由 Host 决
 | P1 | 默认启用 `read`、`edit`、`write`、`shell`（含放到后台、查询、写 stdin、停止、监视；后台命令的输出用 `read` 从输出文件读取）和 `request_permissions`；可选 `grep`、`ls` |
 | P2 | `skill_load`，以及 MCP 工具 |
 | P3 | `memory_propose`、`memory_search`、`memory_read`，只给主 agent |
-| P5 | 子 agent 的启动、发送输入、停止 |
+| P5 | `spawn_agent`、`send_message`、`interrupt_agent`（子 agent 的启动、发送输入、停止），配置里有子 agent 的定义时才启用，只给主 agent |
 
 - 所有模型用同一套工具，工具的声明和说明不随模型改变，只有发出请求时的写法按模型配置变化（例如是否用 strict 模式）。
 - 读文件、编辑和搜索由 runtime 在 agent 沙盒里直接执行；shell 和 MCP 工具由 Host 执行。用读文件工具直接读 `SKILL.md` 不算加载 skill：只有 `skill_load` 经 Host 核对哈希。
@@ -119,7 +122,7 @@ runtime 在沙盒里读不到用户级配置，启用哪些扩展也由 Host 决
   - **不搜的文件**：开头 8 KiB 里有 NUL 字节的按二进制文件跳过（和 `read` 的判断相同）；不跟随符号链接（会走出搜索的目录或成环），不搜管道、设备这类特殊文件；超过 10 MiB 的文本文件不搜（文件整个读进内存再按行匹配，和快照的单个文件上限相同）。太大的文件和读不了的文件、目录（没有权限、被沙盒拦下）在结果末尾列出路径和原因，最多列 10 个，其余只给个数，模型可以改用 shell。`path` 本身不存在、读不了、是二进制文件、太大，或者既不是文件也不是目录时，这次调用失败；`pattern` 或 `glob` 写错时也失败，原因交给模型。
   - 搜索可以被取消：每进一个目录、每读一个文件之前检查一次，取消后结果记为已取消。正则在一行上回溯很久时 agent 进程不响应取消，按取消超时处理（见 agent-host 的[进程形态和通信](agent-host.md#进程形态和通信)）。
 - `ls` 列出一个目录下的一层，参数只有可选的 `path`（默认工作区根）。每行一个名字，按名字排序，子目录以 `/` 结尾，符号链接以 `@` 结尾（照 `ls -F`；`grep` 不跟随符号链接，模型要看得出哪些是链接），包括隐藏文件，不应用忽略规则：问的是目录里有什么。超过 `read` 的单次上限（2000 行或 50 KiB）时只给前一段，写明总数并让模型用 shell 看其余的。`@` 提及目录时给的列表是同一实现。
-- 不提供联网读取网页的工具：模型用 shell 里的 `curl` 等命令，域名照样经代理审批，专门的工具不多出能力。模型服务自带的联网搜索由模型服务向第三方发请求，不经过沙盒和代理：P5 之前不提供；提供后默认关闭，只能在用户级配置里按服务打开，仓库配置只能关闭，按次计费并计入 run 的费用上限，评测中始终关闭。
+- 不提供联网读取网页的工具：模型用 shell 里的 `curl` 等命令，域名照样经代理审批，专门的工具不多出能力。模型服务自带的联网搜索由模型服务向第三方发请求，不经过沙盒和代理：默认关闭，只能在用户级配置里按服务打开（`[server_tools.<服务名>]`，见 agent-host 的[配置项](agent-host.md#配置项)），仓库配置只能关闭，按次计费并计入 run 的费用上限，评测中始终关闭。它们不在 runtime 的工具表里：定义由 Host 的模型代理加进请求，调用和结果作为不透明块留在回复里原样带回，runtime 不执行也不解释（见 api 的[服务端工具](api.md#服务端工具)）。
 
 ### 声明和调度
 
@@ -204,7 +207,7 @@ task 运行时，用户的输入分两种：steering 并入当前 task；follow-
   - Host 记下的 `message.sent`（发给过模型的 system、user 和工具结果消息，见 agent-host 的 [agent 进程的重启](agent-host.md#agent-进程的重启)）原样放回。模型的回复里，被取消的、出错时什么都没收到的和撞上上下文窗口被截断的（`context_window_exceeded`）不放回，流中途出错的放回并整条作废，和 loop 运行时的处理相同。
   - 最后一条回复的工具调用还没有把结果发给模型时（上一个进程在这之前结束了），作废的调用不管，其余的分两种情况。登记过的调用都有结果：是 agent 进程被结束，Host 结束 run 时已经给登记过的调用补了结果，这里取 Host 记下的结果，没来得及登记的记成取消。有登记过却没有结果的调用：是 Host 被中断、恢复时留下来要重新执行的，这一轮在下一个 task 开始时做完（见 agent-host 的[中断后的恢复](agent-host.md#中断后的恢复)）。
   - 已经告诉模型的系统指令段落和规则文件取最后一条 `instructions.recorded`，loop 拿当前的和它比较，只追加变化（见下文的系统指令）。路径上没有发给过模型的消息时按新会话开始。读取记录不重建，重启后清空（见[工具执行](#工具执行)）。
-  - 路径上有被脱敏覆盖的事件时（带 Host 定义的可选标记 `redacted: true`，结构不变、内容是占位，见 agent-host 的[按事件脱敏](agent-host.md#按事件脱敏)；runtime 信任 Host 给的事件，只读这个标记）：从它起，回复里的推理块都作废，它们是对着原来的历史生成的，模型服务核对不上。被覆盖的 `context.compacted` 是一次作废的压缩，摘要是照着被覆盖的内容写的：历史不换成它的 `messages`，接着用压缩之前累积的历史，要摘要的那条消息和摘要的回复去掉，它的 `messages` 之后随请求记的副本照样不放回；它的 `instructions` 和 `loaded_skills` 不取，之后到下一次有效的压缩为止的 `instructions.recorded` 也不取（都建立在它那一份上，恢复后变化的补丁可能再追加一次，但不会漏）；它之后的回复不当估算上下文的锚点（用量是对着压缩后的上下文数的），历史超过阈值时 loop 在下一次请求前照常重新压缩。被覆盖的 `skill_load` 调用不算已加载。
+  - 路径上有被脱敏覆盖的事件时（带 Host 定义的可选标记 `redacted: true`，结构不变、内容是占位，见 agent-host 的[按事件脱敏](agent-host.md#按事件脱敏)；runtime 信任 Host 给的事件，只读这个标记）：从它起，回复里的推理块都作废，它们是对着原来的历史生成的，模型服务核对不上。被覆盖的回复里服务端工具的不透明块也作废（原文已经换成占位），没被覆盖的回复里的留着：它们只和自己的调用、结果成对，不依赖前面的历史。被覆盖的 `context.compacted` 是一次作废的压缩，摘要是照着被覆盖的内容写的：历史不换成它的 `messages`，接着用压缩之前累积的历史，要摘要的那条消息和摘要的回复去掉，它的 `messages` 之后随请求记的副本照样不放回；它的 `instructions` 和 `loaded_skills` 不取，之后到下一次有效的压缩为止的 `instructions.recorded` 也不取（都建立在它那一份上，恢复后变化的补丁可能再追加一次，但不会漏）；它之后的回复不当估算上下文的锚点（用量是对着压缩后的上下文数的），历史超过阈值时 loop 在下一次请求前照常重新压缩。被覆盖的 `skill_load` 调用不算已加载。
 - **展开提及**（`context/mentions.ts`）：`task/start` 和 `input/take` 给的输入里 `@` 提及的路径，在这条输入作为 user 消息进入历史时读取，这时 task 已经可以取消。读取用 `read` 工具的同一实现和同一份读取记录，格式见 agent-host 的[提及文件和附件](agent-host.md#提及文件和附件)。
 - **附带的图片**在同一时机展开：输入里是 `{type: "image_ref", sha256, bytes}`，runtime 用 `blob/read` 取来原始字节，交给 `context/image.ts` 的 `scaleImage` 变成图片块；`read` 读到的图片也用它。在上限内的图片原样使用、不重新编码，只解码一次确认没有坏（文件头对、内容坏掉的图片发给模型后，带着它的每次请求都会被拒绝）；超过的解码后缩小，JPEG 先按 EXIF 方向转正（重新编码会丢掉方向），先编码成 PNG，放不进字节上限再用 JPEG（质量 85、70、55、40）并逐级缩小，照 pi 的 image-resize。不是 PNG、JPEG、GIF、WebP，解不开，或像素数超过 1.28 亿（解码后每像素 4 字节，WASM 的内存只有 4 GB）时，在原位置用一行文字写明原因。上限的取值见 agent-host 的[提及文件和附件](agent-host.md#提及文件和附件)。
 - 项目规则文件和各类扩展按 agent-host 的[扩展的管理和信任](agent-host.md#扩展的管理和信任)接入，不能扩大权限。
@@ -242,6 +245,19 @@ task 运行时，用户的输入分两种：steering 并入当前 task；follow-
 - 标识从 P0 起就有：`agent_id`（主 agent 也有），子 agent 另带 `parent_agent_id` 和启动它的 `parent_tool_call_id`（见 agent-host 的[标识](agent-host.md#标识)），P5 加入时原有接口不变。
 - 父 agent 用的通道操作只有启动、发送输入、停止三个请求和一个结束通知（对应 Codex 的 `spawn_agent`、`send_message`、`interrupt_agent` 和 `wait_agent`）。嵌套只有一层，子 agent 不能再启动子 agent；每个 run 同时最多 6 个子 agent。
 
+子 agent 的定义、权限、预算和记录在 Host 一侧，见 agent-host 的[子 agent 和多 worker](agent-host.md#子-agent-和多-worker)。runtime 这一侧的决定：
+
+- **三个工具**：`spawn_agent {agent, prompt}`、`send_message {agent_id, message}`、`interrupt_agent {agent_id}`，名字照 Codex。它们和 `skill_load` 一样由 runtime 登记（`tool_call/register`），获准后经 `subagent/*` 请求 Host 完成：工具调用的记录、hooks 和恢复时的处理都沿用已有的一套。中断后恢复时，没有结果的这三种调用由 Host 直接记成 `interrupted`，不重新执行也不询问：子 agent 不恢复（见 agent-host 的[中断后的恢复](agent-host.md#中断后的恢复)）。
+- **不等待的启动**：`spawn_agent` 在子 agent 开始工作后就返回它的 `agent_id`，模型可以在同一轮里启动多个，再接着做自己的事：等到做完才返回的话，几个子 agent 只能一个一个地跑。
+- **不设等待工具**：子 agent 的结果由 Host 排进后台通知的队列，和后台命令的通知一样在下一次模型请求之前插入（见[运行中的用户输入](#运行中的用户输入)），带同样的固定前缀：插入的位置、记录和恢复沿用通知已有的机制，模型也不用轮询。
+- **task 不在子 agent 运行时结束**：模型给出最终回复时还有子 agent 在运行，或者它们的结果还没交给模型，runtime 不报告 task 结束，等到有结果可取（或用户有 steering）就插入并再请求模型；这之后才运行"任务结束时"的 hooks。子 agent 属于这个 task，task 先结束的话它们的结果没有 task 可交。
+- **定义的列表**放在会话开始的上下文消息里的 `<subagents>`，子 agent 自己的 `instructions` 放在它的上下文消息里的 `<subagent_instructions>`，都是 user 角色：定义可以来自仓库，和规则文件、skills 列表同样对待。子 agent 的系统指令多一段，说明它的最终回复交给启动它的 agent、不是给用户看的。session 恢复后定义变了不另发更新说明：`spawn_agent` 用了不存在的名字时，结果里列出当前的定义。
+- 取消、失败或以其他结果结束的 task，Host 在结束时停掉剩下的子 agent（见 agent-host 的 [task 的开始、结束和取消](agent-host.md#task-的开始结束和取消)），runtime 随之清空自己记的运行中的子 agent。
+
 ## 多 worker
 
 多 worker 在 P5 和子 agent 用同一套机制交付，不另建一套执行系统。runtime 决定任务怎么拆分和分配，Host 负责创建每个 worker 的工作区、通过 sandbox 启动进程；每个 worker 使用自己的工作区。worktree 只能把代码修改分开，git 元数据、共享的缓存和合并冲突不在它的范围内。
+
+- worker 就是定义里写了 `workspace = "isolated"` 的子 agent：模型用同样的 `spawn_agent` 启动它，拆分和分配由模型在提示里完成，runtime 不另设调度。
+- `spawn_agent` 的结果和结束通知里都带 worker 的工作区路径。主 agent 的沙盒可以读它、不能写它；合并（含解决冲突）由主 agent 用自己的工具在自己的工作区里做，Host 不自动合并：合并哪些改动、冲突怎么解决是任务的一部分。
+- 工作区怎么创建、放在哪里、什么时候删除，见 agent-host 的[子 agent 和多 worker](agent-host.md#子-agent-和多-worker)。

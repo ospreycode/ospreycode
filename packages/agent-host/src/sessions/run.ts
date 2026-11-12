@@ -22,13 +22,32 @@ export function addUsage(total: Usage, usage: Usage): Usage {
 	if (known(total) && known(usage)) {
 		sum.cost_usd = (total.cost_usd ?? 0) + (usage.cost_usd ?? 0);
 	}
+	if (total.server_tools !== undefined || usage.server_tools !== undefined) {
+		const calls = { ...total.server_tools };
+		for (const [name, count] of Object.entries(usage.server_tools ?? {})) {
+			calls[name] = (calls[name] ?? 0) + count;
+		}
+		sum.server_tools = calls;
+	}
 	return sum;
+}
+
+/** 子 agent 的 run 是谁启动的。 */
+export interface SubagentOrigin {
+	/** 这个子 agent 的标识。 */
+	agentId: string;
+	/** 启动它的 run：两者属于同一个 task，共用一份额度。 */
+	parent: Run;
+	/** 启动它的那次 `spawn_agent` 调用。 */
+	toolCallId: string;
 }
 
 /** 正在进行的 run：task 的一次执行。task 和 run 的标识都由 Host 生成。 */
 export class Run {
 	readonly taskId: string;
 	readonly runId: string;
+	/** 子 agent 的 run 才有。 */
+	readonly subagent: SubagentOrigin | undefined;
 	/** Host 取消这个 run 时中止，进行中的模型请求、命令和询问都跟着结束。 */
 	controller = new AbortController();
 	usage = emptyUsage();
@@ -54,6 +73,8 @@ export class Run {
 	/** 放这个 task 的输入的那条 user 消息的编号；压缩的 task 和恢复后接着写的 run 没有。 */
 	inputMessageId: string | undefined;
 	readonly budget: RunBudget;
+	/** 超出上限后正在问用户要不要追加额度：父 run 和它的子 agent 同时超出时只问一次。 */
+	extending: Promise<boolean> | undefined;
 	/** 因为超出这一项上限而停止：task 以 `budget_exceeded` 结束。 */
 	exceeded: BudgetLimit | undefined;
 	/** 非交互运行的时间上限到时停止 run 的计时器。 */
@@ -64,16 +85,25 @@ export class Run {
 
 	/**
 	 * `interrupted` 是恢复 session 时上次中断的那个 run：Host 在它里面接着写收尾的事件，序号从
-	 * 记录里最后一个事件之后接着编。
+	 * 记录里最后一个事件之后接着编。`subagent` 给出时这是子 agent 的 run：和父 run 同一个 task，
+	 * 模型请求计入父 run 的额度。
 	 */
 	constructor(
 		limits: RunLimits,
 		interrupted?: { taskId: string; runId: string; seq: number },
+		subagent?: SubagentOrigin,
 	) {
-		this.budget = new RunBudget(limits);
-		this.taskId = interrupted?.taskId ?? newId();
+		this.subagent = subagent;
+		this.budget = subagent?.parent.budget ?? new RunBudget(limits);
+		this.taskId = interrupted?.taskId ?? subagent?.parent.taskId ?? newId();
 		this.runId = interrupted?.runId ?? newId();
 		this.#seq = interrupted?.seq ?? 0;
+	}
+
+	/** 记下一次模型请求的用量；子 agent 的同时加进父 run 的合计。 */
+	spend(usage: Usage): void {
+		this.usage = addUsage(this.usage, usage);
+		this.subagent?.parent.spend(usage);
 	}
 
 	/** Host 已经取消了这个 run：之后除了 `task/end`，runtime 的请求都以 `no_active_task` 拒绝。 */

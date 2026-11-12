@@ -1,0 +1,8 @@
+# 开沙盒的任务容器要的安全选项，由 osprey_pier.SandboxDockerEnvironment 追加在 Pier 的 compose
+# 文件之后。完整模式的沙盒要新挂载 proc，前两项之外还要 systempaths=unconfined。
+services:
+  main:
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined

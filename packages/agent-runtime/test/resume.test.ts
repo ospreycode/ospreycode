@@ -370,6 +370,43 @@ describe("路径上有被 Host 按事件脱敏覆盖的事件", () => {
 		);
 	});
 
+	test("被覆盖的回复里服务端工具的不透明块也作废，没被覆盖的回复里的留着", () => {
+		const origin = {
+			protocol: "anthropic.messages",
+			service: "test",
+			model: "test-model",
+		} as const;
+		const search = (raw: string) =>
+			({
+				type: "opaque",
+				kind: "web_search_tool_result",
+				raw,
+				origin,
+			}) as const;
+		const state = rebuildState([
+			event("instructions.recorded", instructions),
+			sent(user("u1", "第一个问题")),
+			// 被覆盖的回复：不透明块还占着原来的位置，原文是占位
+			event("message.completed", {
+				redacted: true,
+				message: assistant(
+					"a1",
+					[search("{}"), { type: "text", text: "[REDACTED]" }],
+					"end_turn",
+				),
+			}),
+			sent(user("u2", "第二个问题")),
+			completed(
+				assistant(
+					"a2",
+					[search('{"type":"web_search_tool_result"}'), answer],
+					"end_turn",
+				),
+			),
+		]);
+		expect(state?.invalidated).toEqual(new Map([["a1", new Set([0])]]));
+	});
+
 	test("被覆盖的压缩作废：历史接着用压缩之前的，摘要的请求和回复去掉，压缩后消息的副本照样跳过，不取它的系统指令", () => {
 		const regenerated: RecordedInstructions = {
 			sections: [{ name: "intro", text: "regenerated" }],

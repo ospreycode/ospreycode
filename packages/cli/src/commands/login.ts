@@ -120,7 +120,9 @@ export async function runLoginStatus(
 				? `（文件 ${status.file}）`
 				: status.env !== undefined
 					? `（环境变量 ${status.env}）`
-					: "";
+					: status.command !== undefined
+						? `（命令 ${status.command}）`
+						: "";
 		const source = {
 			startup: "启动参数",
 			user_config: "用户级配置",

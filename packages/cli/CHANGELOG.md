@@ -42,6 +42,11 @@
   - 交互模式回答 MCP server 的提问（elicitation）：在输入框的位置显示成表单，逐项填写并校验，提交之前核对一遍；可以拒绝，Esc 是不回答，面板出现时没有选中的选项。本地 MCP server 访问没有放行的域名时按 server 询问（允许这一次、这个 session 内允许、保存为规则、拒绝）。调用 MCP 工具、skill 的内容在确认之后变了，也在输入框的位置询问。
   - hooks 的结果显示在对话区：给用户的话、拦下输入的原因、对工具结果的反馈、要求模型接着做的原因。被 `UserPromptSubmit` 的 hook 拦下的输入（包括运行中发的 steering 和 follow-up）不排队，回到输入框里供修改。`exec` 的文本输出把它们写到 stderr；`UserPromptSubmit` 的 hook 拦下输入或 `SessionStart` 的 hook 阻止打开 session 时只写原因，退出码 1。
   - 仓库自带的扩展没有确认或内容变了时不启用，交互模式和 `exec` 各提示一行。
+- 子 agent 和多 worker（用户级或仓库的 `config.toml` 里有 `[agents.<名字>]` 的定义时才有）：
+  - 交互模式里每个子 agent 在对话区占一条，随进展原地更新（名字、模型、工具调用的次数和最近一次调用），结束后换成结果、用量和费用，worker 另写它自己的工作区；它的回复和工具调用不逐条显示。子 agent 发起的询问在面板标题里写明是哪个子 agent 的。
+  - `exec` 的文本输出：子 agent 的开始、结束和它的工具调用各在 stderr 写一行，stdout 仍然只有主 agent 最后一条回复。`--json` 多了 `subagent.started`、`subagent.ended`，子 agent 的事件带它自己的 `agent_id`。
+- 模型服务自带的服务端工具（用户级配置的 `[server_tools.<服务名>]` 打开，见 `@ospreycode/agent-host`）：交互模式在回复结束时为模型服务一侧执行的每次联网搜索和网页读取各显示一行（如 `web_search: node lts`），按次计费的费用算进 task 结束时显示的费用；`exec --json` 的 `message.completed` 里带着它们的 `opaque` 块。
+- `login status` 列出来源是命令的凭据（用户级配置 `[credentials]` 里的 `{ command = …, args = […] }`）时显示程序名，不显示参数。
 
 ### Fixed
 

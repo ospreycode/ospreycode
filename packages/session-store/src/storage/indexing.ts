@@ -30,6 +30,7 @@ import {
 import {
 	insertRun,
 	inTree,
+	isSubagentRun,
 	movePosition,
 	setCurrentPosition,
 } from "../tree/paths.js";
@@ -119,7 +120,14 @@ function runRecord(event: StoredEvent): RunRecord {
 			data.run_id === event.run_id &&
 			data.task_id === event.task_id &&
 			data.agent_id === event.agent_id &&
-			isOptionalPosition(data.base),
+			isOptionalPosition(data.base) &&
+			// 子 agent 的 run 两个父字段都要有，属于 task，不接在会话树的任何位置之后
+			(data.parent_agent_id === undefined
+				? data.parent_tool_call_id === undefined
+				: typeof data.parent_agent_id === "string" &&
+					typeof data.parent_tool_call_id === "string" &&
+					data.task_id !== null &&
+					data.base === null),
 	);
 	return record;
 }
@@ -209,7 +217,11 @@ export function indexEvent(db: DatabaseSync, event: StoredEvent): void {
 			);
 			break;
 	}
-	if (event.task_id !== null) {
+	// 子 agent 的 run 不在会话树的路径上：它的事件和父 run 的交错写入，不移动当前位置
+	if (
+		event.task_id !== null &&
+		!isSubagentRun(db, event.session_id, event.run_id)
+	) {
 		setCurrentPosition(db, event.session_id, {
 			run_id: event.run_id,
 			seq: event.seq,

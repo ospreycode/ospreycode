@@ -640,6 +640,8 @@ describe("取消和退出", () => {
 		await terminal.press(key.enter);
 		await terminal.waitFor("第二个任务做完了");
 		expect(server.requests).toHaveLength(2);
+		// 回复的文字先于任务结束显示出来：这时按 Ctrl+C 取消的是还没结束的任务，要等到空闲
+		await terminal.waitForVisible("Enter 发送");
 
 		await terminal.press(key.ctrlC);
 		await terminal.waitForVisible("再按一次 Ctrl+C 退出");

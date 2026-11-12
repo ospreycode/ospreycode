@@ -9,12 +9,14 @@ import {
 	type ReceivedImages,
 	type RuntimeRequests,
 } from "@ospreycode/agent-runtime";
-import type {
-	CountTokens,
-	ModelEntry,
-	RawPart,
-	StreamModel,
-	TokenCount,
+import {
+	type CountTokens,
+	credentialSecrets,
+	type ModelEntry,
+	type RawPart,
+	type ServerToolName,
+	type StreamModel,
+	type TokenCount,
 } from "@ospreycode/api";
 import type {
 	AssistantMessage,
@@ -23,10 +25,14 @@ import type {
 	ModelRequest,
 	ReasoningEffort,
 } from "@ospreycode/api/protocol";
-import type { LoadedCredential } from "../credentials/sources.js";
+import { currentCredential } from "../credentials/command.js";
+import {
+	CredentialError,
+	type LoadedCredential,
+} from "../credentials/sources.js";
 import type { EventSink } from "../sessions/emitter.js";
 import type { RecordedModel } from "../sessions/history.js";
-import { addUsage, emptyUsage, type Run } from "../sessions/run.js";
+import { emptyUsage, type Run } from "../sessions/run.js";
 import { RawCache } from "./raws.js";
 
 /** 模型代理用到的依赖。 */
@@ -52,11 +58,15 @@ export interface ModelProxyOptions {
 	admit: (run: Run) => Promise<boolean>;
 	/** 恢复和分叉时，路径上最后一次请求用的模型和推理强度：这次用的不同就记一条变更。 */
 	recorded?: RecordedModel;
+	/** 用户级配置按服务打开的服务端工具（`[server_tools.<服务名>]`），键是服务名。 */
+	serverTools: Readonly<Record<string, readonly ServerToolName[]>>;
 }
 
 interface Attempt {
 	message: AssistantMessage | undefined;
 	error: ModelErrorInfo | undefined;
+	/** 请求发出去了：没取到凭据的不算。 */
+	sent: boolean;
 }
 
 /** 发给模型的请求：通道上的引用已经换回图片。 */
@@ -175,12 +185,13 @@ export class ModelProxy {
 		const signal = AbortSignal.any([context.signal, run.signal]);
 		const sent = { message_id: params.message_id, request };
 		let attempt = await this.#attempt(model, sent, context, run, signal);
-		// 凭据来自文件时，用户可能刚换了密钥：重新读取一次，值变了才重发
-		if (attempt.error?.category === "authentication" && credential.reread) {
-			const fresh = credential.reread();
-			if (fresh !== credential.value) {
+		if (attempt.sent && attempt.error?.category === "authentication") {
+			// 凭据来自文件时用户可能刚换了密钥，来自命令时令牌可能提前失效：重新取一次，值变了才重发
+			const fresh = await this.#renewed(model);
+			if (typeof fresh !== "string") {
+				attempt = { ...attempt, error: fresh };
+			} else if (fresh !== credential.value) {
 				credential.value = fresh;
-				this.#options.onSecret(fresh);
 				attempt = await this.#attempt(model, sent, context, run, signal);
 			}
 		}
@@ -188,7 +199,7 @@ export class ModelProxy {
 		if (message === undefined) {
 			throw new Error("模型的流没有以 end 结束");
 		}
-		run.usage = addUsage(run.usage, message.usage);
+		run.spend(message.usage);
 		this.#recorded.add(message.message_id);
 		events.stored(run, { type: "message.completed", message });
 		if (message.stop_reason === "cancelled") {
@@ -231,6 +242,14 @@ export class ModelProxy {
 			...params.request,
 			messages: images.restore(params.request.messages),
 		};
+		const apiKey = await orAuthenticationError(
+			currentCredential(model.credential),
+		);
+		if (typeof apiKey !== "string") {
+			return {
+				error: { ...apiKey, message: this.#options.scrub(apiKey.message) },
+			};
+		}
 		if (!(await this.#options.admit(run))) {
 			throw new ChannelRequestError("cancelled", "超出了这个 run 的上限");
 		}
@@ -238,7 +257,7 @@ export class ModelProxy {
 		let result: TokenCount;
 		try {
 			result = await this.#options.countTokens(model.entry, request, {
-				apiKey: model.credential.value,
+				apiKey,
 				fetch: this.#options.fetch,
 				signal: AbortSignal.any([signal, run.signal]),
 				raws: this.#raws.store((part) =>
@@ -275,27 +294,38 @@ export class ModelProxy {
 		signal: AbortSignal,
 	): Promise<Attempt> {
 		const { events } = this.#options;
+		// 取不到凭据的请求没有发出，不占请求次数
+		const apiKey = await orAuthenticationError(currentCredential(credential));
+		if (typeof apiKey !== "string") {
+			return {
+				message: emptyReply(entry, params),
+				error: apiKey,
+				sent: false,
+			};
+		}
 		if (!(await this.#options.admit(run))) {
 			throw new ChannelRequestError("cancelled", "超出了这个 run 的上限");
 		}
 		run.budget.count();
 		try {
+			const serverTools = this.#serverTools(entry);
 			for await (const event of this.#options.streamModel(
 				entry,
 				params.request,
 				{
 					messageId: params.message_id,
-					apiKey: credential.value,
+					apiKey,
 					fetch: this.#options.fetch,
 					signal,
 					cacheKey: this.#options.sessionId,
+					...(serverTools.length === 0 ? {} : { serverTools }),
 					raws: this.#raws.store((part) =>
 						events.protocolRaw(run, part, partImages(params.request, part)),
 					),
 				},
 			)) {
 				if (event.type === "end") {
-					return { message: event.message, error: event.error };
+					return { message: event.message, error: event.error, sent: true };
 				}
 				events.streaming(run, {
 					type: "model.delta",
@@ -312,9 +342,47 @@ export class ModelProxy {
 					category: "invalid_request",
 					message: thrown instanceof Error ? thrown.message : String(thrown),
 				},
+				sent: true,
 			};
 		}
-		return { message: undefined, error: undefined };
+		return { message: undefined, error: undefined, sent: true };
+	}
+
+	/** 这次请求启用的服务端工具：用户按服务打开的，并且模型条目列出了的。 */
+	#serverTools(entry: ModelEntry): ServerToolName[] {
+		const enabled = this.#options.serverTools[entry.service] ?? [];
+		return (entry.server_tools ?? []).filter((name) => enabled.includes(name));
+	}
+
+	/**
+	 * 服务说凭据不对之后重新取一次：文件来源重新读文件，命令来源重新运行命令，其他来源还是原来的值。
+	 * 命令运行不了时给出认证失败的错误。
+	 */
+	async #renewed({
+		entry,
+		credential,
+	}: AllowedModel): Promise<string | ModelErrorInfo> {
+		if (credential.reread !== undefined) {
+			const fresh = credential.reread();
+			for (const secret of credentialSecrets(entry, fresh)) {
+				this.#options.onSecret(secret);
+			}
+			return fresh;
+		}
+		if (credential.rerun === undefined) return credential.value;
+		return orAuthenticationError(credential.rerun());
+	}
+}
+
+/** 输出凭据的命令运行不了时，这次请求按认证失败结束，不让 agent 进程跟着出错。 */
+async function orAuthenticationError(
+	value: Promise<string>,
+): Promise<string | ModelErrorInfo> {
+	try {
+		return await value;
+	} catch (error) {
+		if (!(error instanceof CredentialError)) throw error;
+		return { category: "authentication", message: error.message };
 	}
 }
 

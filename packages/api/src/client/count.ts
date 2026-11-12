@@ -1,4 +1,5 @@
 import { countAnthropicMessages } from "../adapters/anthropic-messages.js";
+import { countGoogleGenerateContent } from "../adapters/google-generate-content.js";
 import { countOpenAIResponses } from "../adapters/openai-responses.js";
 import type { ModelEntry } from "../models/entry.js";
 import type { ModelErrorInfo, ModelRequest } from "../protocol/index.js";
@@ -6,7 +7,7 @@ import type { RawStore } from "./raw.js";
 
 /** 数一次请求的输入 token 时，内部协议以外的部分：凭据、`fetch` 和取消都由调用方给出。 */
 export interface CountOptions {
-	/** 服务的 API key。`api` 不读取凭据文件或环境变量。 */
+	/** 服务的凭据，和 `StreamOptions.apiKey` 相同。 */
 	apiKey: string;
 	/** 发请求用的 `fetch`，代理由它决定。 */
 	fetch: typeof globalThis.fetch;
@@ -42,6 +43,8 @@ export const countTokens: CountTokens = async (entry, request, options) => {
 			return countAnthropicMessages(entry, request, options);
 		case "openai.responses":
 			return countOpenAIResponses(entry, request, options);
+		case "google.generate-content":
+			return countGoogleGenerateContent(entry, request, options);
 		case "openai.chat":
 			throw new Error(`${entry.id} 用的 openai.chat 没有 token 计数接口`);
 	}

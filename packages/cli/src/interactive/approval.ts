@@ -138,6 +138,19 @@ function budgetLine(
 	}
 }
 
+/** 询问来自子 agent 时，在标题前写明是哪一个。 */
+export function attributed(
+	description: ApprovalDescription,
+	subagent: string | undefined,
+): ApprovalDescription {
+	return subagent === undefined
+		? description
+		: {
+				...description,
+				title: `子 agent ${sanitize(subagent)} · ${description.title}`,
+			};
+}
+
 /**
  * 询问的具体内容。`commandOf` 给出一次工具调用的参数要点：网络访问的询问用它说明是哪条命令
  * 发起的连接。

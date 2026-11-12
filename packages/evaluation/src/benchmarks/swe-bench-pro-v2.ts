@@ -1,14 +1,17 @@
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-	cpSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	checkCheckout,
+	digest,
+	oneOf,
+	ranked,
+	record,
+	replaceOnce,
+	requireOnce,
+	rewrite,
+	text,
+} from "./dataset.js";
 
 /** 题目所在仓库的主要语言。 */
 export type Language = "go" | "python" | "javascript" | "typescript";
@@ -75,22 +78,6 @@ export interface Selection {
 	holdoutRepositories: Record<(typeof holdoutLanguages)[number], string>;
 	/** 先开发题后保留题，各自按 id 排序。 */
 	tasks: SelectedTask[];
-}
-
-/** 由种子和名字得到的排序键：同样的种子每次得到同样的顺序，换种子就换一批题。 */
-function rank(seed: string, key: string): string {
-	return createHash("sha256").update(`${seed}:${key}`).digest("hex");
-}
-
-function ranked<T>(
-	items: readonly T[],
-	seed: string,
-	key: (item: T) => string,
-) {
-	return items
-		.map((item) => ({ item, order: rank(seed, key(item)) }))
-		.sort((a, b) => (a.order < b.order ? -1 : 1))
-		.map(({ item }) => item);
 }
 
 /** 按权重分配名额：先取整数部分，余下的名额给小数部分最大的，相同时靠前的优先。 */
@@ -240,32 +227,6 @@ export function loadTaskIds(): { all: string[]; hard: string[] } {
 	return { all: lines("task-ids.txt"), hard: lines("hard51-ids.txt") };
 }
 
-function text(record: Record<string, unknown>, key: string): string {
-	const value = record[key];
-	if (typeof value !== "string" || value === "") {
-		throw new Error(`manifest.json 的 ${key} 要是非空的字符串`);
-	}
-	return value;
-}
-
-function record(value: unknown, what: string): Record<string, unknown> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		throw new Error(`manifest.json 的 ${what} 要是对象`);
-	}
-	return value as Record<string, unknown>;
-}
-
-function oneOf<T extends string>(
-	value: string,
-	choices: readonly T[],
-	key: string,
-): T {
-	if (!(choices as readonly string[]).includes(value)) {
-		throw new Error(`manifest.json 的 ${key} 不能是 ${value}`);
-	}
-	return value as T;
-}
-
 /** 读入并检查随代码提交的题目清单。 */
 export function loadManifest(): BenchmarkManifest {
 	const root = record(
@@ -292,12 +253,7 @@ export function loadManifest(): BenchmarkManifest {
 		},
 		tasks: tasks.map((value, index) => {
 			const task = record(value, `tasks[${index}]`);
-			const imageDigest = text(task, "image_digest");
-			if (!/^sha256:[0-9a-f]{64}$/.test(imageDigest)) {
-				throw new Error(
-					`manifest.json 的 tasks[${index}].image_digest 不是 digest`,
-				);
-			}
+			const imageDigest = digest(task, `tasks[${index}]`);
 			return {
 				id: text(task, "id"),
 				repository: text(task, "repository"),
@@ -334,29 +290,6 @@ export interface PreparedDataset {
 	tasks: string[];
 }
 
-function requireOnce(content: string, fragment: string, where: string): void {
-	const count = content.split(fragment).length - 1;
-	if (count !== 1) {
-		throw new Error(
-			`${where} 里应当正好有一处 ${JSON.stringify(fragment)}，实际有 ${count} 处`,
-		);
-	}
-}
-
-function replaceOnce(
-	content: string,
-	from: string,
-	to: string,
-	where: string,
-): string {
-	requireOnce(content, from, where);
-	return content.replace(from, () => to);
-}
-
-function rewrite(path: string, edit: (content: string) => string): void {
-	writeFileSync(path, edit(readFileSync(path, "utf8")));
-}
-
 /**
  * 从题目仓库的检出里取出清单选中的题，写成 Pier 能运行的两份任务目录。
  *
@@ -367,15 +300,7 @@ function rewrite(path: string, edit: (content: string) => string): void {
  */
 export function prepareDataset(options: PrepareOptions): PreparedDataset {
 	const { manifest, checkout, output } = options;
-	const git = (...args: string[]) =>
-		execFileSync("git", ["-C", checkout, ...args], { encoding: "utf8" }).trim();
-	const head = git("rev-parse", "HEAD");
-	if (head !== manifest.commit) {
-		throw new Error(`${checkout} 在 ${head}，清单固定的是 ${manifest.commit}`);
-	}
-	if (git("status", "--porcelain", "--", manifest.tasksPath) !== "") {
-		throw new Error(`${checkout} 的 ${manifest.tasksPath} 里有没提交的改动`);
-	}
+	checkCheckout(checkout, manifest);
 	if (existsSync(output)) throw new Error(`输出目录已经存在：${output}`);
 
 	const tasks = manifest.tasks.filter((task) => task.split === options.split);

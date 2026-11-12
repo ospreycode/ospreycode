@@ -1,0 +1,6 @@
+data: {"candidates":[{"content":{"parts":[{"text":"AI learns patterns"}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":8,"totalTokenCount":8},"modelVersion":"gemini-3.8-flash","responseId":"xgitaOb2G5Kkz7IPrL7RmQk"}
+
+data: {"candidates":[{"content":{"parts":[{"text":" from data."}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":7,"thoughtsTokenCount":127,"totalTokenCount":142},"modelVersion":"gemini-3.8-flash","responseId":"xgitaOb2G5Kkz7IPrL7RmQk"}
+
+data: {"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"U2lnbmF0dXJlX0M="}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":7,"thoughtsTokenCount":127,"totalTokenCount":142},"modelVersion":"gemini-3.8-flash","responseId":"xgitaOb2G5Kkz7IPrL7RmQk"}
+

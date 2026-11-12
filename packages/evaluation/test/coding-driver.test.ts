@@ -76,6 +76,7 @@ async function drive(
 			OSPREY_LOGS: logs,
 			OSPREY_INSTRUCTION: instruction,
 			OSPREY_MODEL: "fake",
+			OSPREY_SANDBOX: "danger-full-access",
 			OSPREY_RULES: codingRulesFile,
 			OSPREY_CREDENTIAL_OPTION: "--credential-file",
 			OSPREY_CREDENTIAL: `fake=${dirs.credentialFile}`,
@@ -85,6 +86,8 @@ async function drive(
 			OSPREY_HIDDEN_PATHS: `${join(dirs.base, "tests")} ${join(dirs.base, "solution")}`,
 			OSPREY_FORBIDDEN_COMMIT: "0123456789abcdef0123456789abcdef01234567",
 			OSPREY_BLOCKED_URL: "",
+			OSPREY_SANDBOX_PROBE: "no",
+			OSPREY_COMMIT: "no",
 			...overrides,
 		}).filter((entry): entry is [string, string] => entry[1] !== undefined),
 	);
@@ -272,11 +275,73 @@ describe("run-agent.sh", { timeout: 60_000 }, () => {
 		const workspace = repository("workspace");
 		await startModel(() => ({ text: "done" }));
 
-		for (const name of ["OSPREY_MAX_REQUESTS", "OSPREY_BLOCKED_URL"]) {
+		for (const name of [
+			"OSPREY_MAX_REQUESTS",
+			"OSPREY_BLOCKED_URL",
+			"OSPREY_SANDBOX",
+			"OSPREY_SANDBOX_PROBE",
+			"OSPREY_COMMIT",
+		]) {
 			const result = await drive(workspace, { [name]: undefined });
 			expect(result.code).toBe(1);
 			expect(result.stderr).toContain(name);
 		}
 		expect(model?.requests).toEqual([]);
+	});
+
+	test("要写 yes 或 no 的变量写成别的值就报错", async () => {
+		const workspace = repository("workspace");
+		await startModel(() => ({ text: "done" }));
+
+		for (const name of ["OSPREY_SANDBOX_PROBE", "OSPREY_COMMIT"]) {
+			const result = await drive(workspace, { [name]: "true" });
+			expect(result.code).toBe(1);
+			expect(result.stderr).toContain(`${name} 要是 yes 或 no`);
+		}
+		expect(model?.requests).toEqual([]);
+	});
+
+	test("要求收尾提交时，没提交的改动提交到当前分支，不运行仓库的 hooks；补丁照样导出", async () => {
+		const workspace = repository("workspace");
+		// 会拦下每一次提交的 hook：收尾的提交要跳过它
+		const hook = join(workspace, ".git", "hooks", "pre-commit");
+		mkdirSync(join(workspace, ".git", "hooks"), { recursive: true });
+		writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+		await startModel((first) =>
+			first
+				? {
+						shell:
+							"git checkout -q -b work && printf 'echo hello\\n' > greet.sh && printf 'usage\\n' > usage.txt",
+					}
+				: { text: "done" },
+		);
+		const base = git(workspace, "rev-parse", "HEAD");
+
+		const result = await drive(workspace, { OSPREY_COMMIT: "yes" });
+
+		expect(result.stderr).toBe("");
+		expect(result.code).toBe(0);
+		expect(git(workspace, "status", "--porcelain")).toBe("");
+		expect(git(workspace, "rev-parse", "--abbrev-ref", "HEAD")).toBe("work");
+		expect(git(workspace, "log", "--format=%an <%ae>", `${base}..HEAD`)).toBe(
+			"Osprey Code <osprey-code@localhost>",
+		);
+		expect(
+			git(workspace, "diff", "--name-only", base, "HEAD").split("\n"),
+		).toEqual(["greet.sh", "usage.txt"]);
+		expect(readFileSync(join(result.logs, "model.patch"), "utf8")).toContain(
+			"usage.txt",
+		);
+	});
+
+	test("要求收尾提交、agent 什么都没改时不多出提交", async () => {
+		const workspace = repository("workspace");
+		await startModel(() => ({ text: "nothing to do" }));
+		const base = git(workspace, "rev-parse", "HEAD");
+
+		const result = await drive(workspace, { OSPREY_COMMIT: "yes" });
+
+		expect(result.code).toBe(0);
+		expect(git(workspace, "rev-parse", "HEAD")).toBe(base);
 	});
 });

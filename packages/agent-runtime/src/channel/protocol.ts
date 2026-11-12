@@ -85,6 +85,21 @@ export interface McpToolInfo {
 	concurrent: boolean;
 }
 
+/** 可以启动的一个子 agent 的定义：模型用 `spawn_agent` 按名字启动它。 */
+export interface SubagentInfo {
+	name: string;
+	description: string;
+	/** 在自己的工作区里运行（worker）：它的改动不在主 agent 的工作区里，要主 agent 合并。 */
+	isolated: boolean;
+}
+
+/** 这个进程自己是子 agent 时，它的定义。 */
+export interface SubagentRole {
+	name: string;
+	/** 定义里给它的补充说明，放进会话开始的上下文消息。 */
+	instructions?: string;
+}
+
 /** `initialize` 的参数：agent 进程报告 `agent-runtime` 的包版本，和 Host 依赖的版本不同就停止。 */
 export interface InitializeParams {
 	version: string;
@@ -115,6 +130,13 @@ export interface AgentConfig {
 	stop_hooks?: boolean;
 	/** 这个 session 配了"上下文压缩前"的 hooks：压缩之前先经 `hooks/run` 运行它们。 */
 	pre_compact_hooks?: boolean;
+	/**
+	 * 可以启动的子 agent 的定义；有它们时 `tools` 里有 `spawn_agent`、`send_message` 和
+	 * `interrupt_agent`。
+	 */
+	subagents?: SubagentInfo[];
+	/** 这个进程是子 agent：没有 `subagents`、`resume`、`memory` 和两个 hooks 标记。 */
+	subagent?: SubagentRole;
 	/** 当前日期，`YYYY-MM-DD`。 */
 	date: string;
 	/** 操作系统的说明，如 `macOS 26.1 (arm64)`。 */
@@ -202,9 +224,9 @@ export interface InputTakeResult {
 	inputs: PendingInput[];
 }
 
-/** `status` 的响应：runtime 当前在做什么。 */
+/** `status` 的响应：runtime 当前在做什么。`subagents` 是模型已经给出回复、在等子 agent 结束。 */
 export interface StatusResult {
-	state: "idle" | "model" | "tools";
+	state: "idle" | "model" | "tools" | "subagents";
 	/** 正在执行的工具调用。 */
 	tool_call_ids: string[];
 }
@@ -506,6 +528,57 @@ export interface HooksRunResult {
 	additional_context?: string;
 }
 
+/** `subagent/start` 的参数：`spawn_agent` 登记获准之后启动一个子 agent。 */
+export interface SubagentStartParams {
+	/** 发起的那次 `spawn_agent` 调用：Host 把它记成子 agent 的 `parent_tool_call_id`。 */
+	tool_call_id: string;
+	/** 子 agent 定义的名字，和 `subagents` 列表里的一致。 */
+	agent: string;
+	/** 交给子 agent 的任务。 */
+	prompt: string;
+}
+
+/**
+ * `subagent/start` 的响应：子 agent 开始工作后就返回，不等它做完。`workspace` 是在自己的工作区里
+ * 运行的子 agent 的工作区路径。启动不了时是交给模型的原因。
+ */
+export type SubagentStartResult =
+	| { started: true; agent_id: string; workspace?: string }
+	| { started: false; reason: string };
+
+/** `subagent/send` 的参数：给运行中的子 agent 发一条输入，在它下一次模型请求之前插入。 */
+export interface SubagentSendParams {
+	/** 发起的那次 `send_message` 调用。 */
+	tool_call_id: string;
+	agent_id: string;
+	input: string;
+}
+
+/** `subagent/send` 的响应：子 agent 已经结束时是交给模型的原因。 */
+export type SubagentSendResult =
+	| { sent: true }
+	| { sent: false; reason: string };
+
+/** `subagent/stop` 的参数：停止一个运行中的子 agent。 */
+export interface SubagentStopParams {
+	/** 发起的那次 `interrupt_agent` 调用。 */
+	tool_call_id: string;
+	agent_id: string;
+}
+
+/** `subagent/stop` 的响应：子 agent 结束之后才返回；它已经结束时是交给模型的原因。 */
+export type SubagentStopResult =
+	| { stopped: true }
+	| { stopped: false; reason: string };
+
+/**
+ * `subagent/ended` 的参数：这个子 agent 自己结束了。它的结果已经排进 Host 的通知队列，
+ * runtime 用 `input/take` 取出。
+ */
+export interface SubagentEndedParams {
+	agent_id: string;
+}
+
 /** `cancel` 的参数：取消自己发出、对方还在处理的请求。 */
 export interface CancelParams {
 	request_id: number;
@@ -600,6 +673,21 @@ export interface RuntimeRequests {
 		result: HooksRunResult;
 		stream: never;
 	};
+	"subagent/start": {
+		params: SubagentStartParams;
+		result: SubagentStartResult;
+		stream: never;
+	};
+	"subagent/send": {
+		params: SubagentSendParams;
+		result: SubagentSendResult;
+		stream: never;
+	};
+	"subagent/stop": {
+		params: SubagentStopParams;
+		result: SubagentStopResult;
+		stream: never;
+	};
 }
 
 /** Host 发给 runtime 的请求。 */
@@ -619,6 +707,8 @@ export interface HostNotifications {
 	"task/start": TaskStartParams;
 	/** 有 steering 或后台命令的通知等待插入：runtime 在下一次模型请求之前用 `input/take` 取出。 */
 	"input/available": Empty;
+	/** 一个子 agent 自己结束了，结果在待插入的通知里。 */
+	"subagent/ended": SubagentEndedParams;
 }
 
 /** Host 发给 runtime 的流式通知的方法名。 */

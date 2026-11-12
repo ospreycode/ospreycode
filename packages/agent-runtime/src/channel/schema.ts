@@ -16,6 +16,7 @@ const ProtocolName = Type.Union([
 	Type.Literal("openai.chat"),
 	Type.Literal("openai.responses"),
 	Type.Literal("anthropic.messages"),
+	Type.Literal("google.generate-content"),
 ]);
 
 const ReasoningEffort = Type.Union([
@@ -38,6 +39,20 @@ const TextBlock = Type.Object(
 		type: Type.Literal("text"),
 		text: Type.String(),
 		phase: Type.Optional(Type.String()),
+		citations: Type.Optional(
+			Type.Object({ raw: Type.String(), origin: Origin }, closed),
+		),
+	},
+	closed,
+);
+
+const OpaqueBlock = Type.Object(
+	{
+		type: Type.Literal("opaque"),
+		kind: Type.String(),
+		summary: Type.Optional(Type.String()),
+		raw: Type.String(),
+		origin: Origin,
 	},
 	closed,
 );
@@ -108,6 +123,7 @@ const Usage = Type.Object(
 		cache_write: Count,
 		reasoning: Count,
 		cost_usd: Type.Optional(Type.Number({ minimum: 0 })),
+		server_tools: Type.Optional(Type.Record(Type.String(), Count)),
 	},
 	closed,
 );
@@ -155,7 +171,13 @@ const AssistantMessage = Type.Object(
 		role: Type.Literal("assistant"),
 		message_id: Id,
 		content: Type.Array(
-			Type.Union([TextBlock, ReasoningBlock, ToolCallBlock, FallbackBlock]),
+			Type.Union([
+				TextBlock,
+				ReasoningBlock,
+				ToolCallBlock,
+				FallbackBlock,
+				OpaqueBlock,
+			]),
 		),
 		protocol: ProtocolName,
 		service: Type.String(),
@@ -728,6 +750,15 @@ const requestParams = {
 			closed,
 		),
 	]),
+	"subagent/start": Type.Object(
+		{ tool_call_id: Id, agent: Type.String(), prompt: Type.String() },
+		closed,
+	),
+	"subagent/send": Type.Object(
+		{ tool_call_id: Id, agent_id: Id, input: Type.String() },
+		closed,
+	),
+	"subagent/stop": Type.Object({ tool_call_id: Id, agent_id: Id }, closed),
 } satisfies Record<keyof Protocol.RuntimeRequests, TSchema>;
 
 /** runtime 发给 Host 的通知的参数。 */
@@ -744,6 +775,7 @@ const results = {
 				Type.Literal("idle"),
 				Type.Literal("model"),
 				Type.Literal("tools"),
+				Type.Literal("subagents"),
 			]),
 			tool_call_ids: Type.Array(Id),
 		},

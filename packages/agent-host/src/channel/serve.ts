@@ -28,6 +28,12 @@ import type {
 	RuntimeRequests,
 	SkillLoadParams,
 	SkillLoadResult,
+	SubagentSendParams,
+	SubagentSendResult,
+	SubagentStartParams,
+	SubagentStartResult,
+	SubagentStopParams,
+	SubagentStopResult,
 	TaskEndParams,
 	TaskEndResult,
 	ToolCallCompleteParams,
@@ -71,6 +77,9 @@ export interface ChannelHandlers {
 	memoryPropose(params: MemoryProposeParams): Promise<MemoryProposeResult>;
 	skillLoad(params: SkillLoadParams): Promise<SkillLoadResult>;
 	hooksRun(params: HooksRunParams): Promise<HooksRunResult>;
+	subagentStart(params: SubagentStartParams): Promise<SubagentStartResult>;
+	subagentSend(params: SubagentSendParams): Promise<SubagentSendResult>;
+	subagentStop(params: SubagentStopParams): Promise<SubagentStopResult>;
 }
 
 /** 在 Host 一侧的通道上注册 runtime 的全部操作。 */
@@ -106,4 +115,7 @@ export function serveChannel(
 	channel.handle("memory/propose", (params) => handlers.memoryPropose(params));
 	channel.handle("skill/load", (params) => handlers.skillLoad(params));
 	channel.handle("hooks/run", (params) => handlers.hooksRun(params));
+	channel.handle("subagent/start", (params) => handlers.subagentStart(params));
+	channel.handle("subagent/send", (params) => handlers.subagentSend(params));
+	channel.handle("subagent/stop", (params) => handlers.subagentStop(params));
 }

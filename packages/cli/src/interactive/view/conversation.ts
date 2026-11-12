@@ -3,13 +3,18 @@ import {
 	Markdown,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import type { TaskEndedEvent } from "@ospreycode/agent-host";
+import type {
+	SubagentEndedEvent,
+	TaskEndedEvent,
+} from "@ospreycode/agent-host";
 import {
 	type ApprovalDescription,
+	attributed,
 	decisionText,
 	describeApproval,
 } from "../approval.js";
 import {
+	brief,
 	type DetailLine,
 	formatDuration,
 	formatUsd,
@@ -24,6 +29,7 @@ import type {
 	Entry,
 	InteractiveState,
 	NoticeEntry,
+	SubagentEntry,
 	TaskEndedEntry,
 	ToolEntry,
 	UserEntry,
@@ -201,6 +207,73 @@ function approvalLines(
 	];
 }
 
+function subagentEndText(ended: SubagentEndedEvent): string {
+	switch (ended.outcome) {
+		case "completed":
+			return "完成";
+		case "failed":
+			return `失败${ended.error === undefined ? "" : `：${sanitize(ended.error)}`}`;
+		case "cancelled":
+			return "已停止";
+		case "refused":
+			return "模型拒绝回答";
+	}
+}
+
+/** 子 agent 的进展压成一项：运行中写最近的一次工具调用，结束后写结果和它的用量。 */
+function subagentLines(entry: SubagentEntry, width: number): string[] {
+	const { ended, last } = entry;
+	const head = `${style.bold(`子 agent ${sanitize(entry.name)}`)}（${sanitize(entry.model)}）`;
+	const calls = entry.toolCalls === 0 ? [] : [`${entry.toolCalls} 次工具调用`];
+	const lines =
+		ended === undefined
+			? wrapped(
+					[
+						`${head} 运行中`,
+						...calls,
+						...(last === undefined
+							? []
+							: [
+									`最近：${sanitize(last.name)} ${brief(toolSummary(last.arguments), 80)}`,
+								]),
+					].join(" · "),
+					width,
+					style.plain,
+					"  ",
+					`${style.accent("◆")} `,
+				)
+			: wrapped(
+					[
+						`${head} ${subagentEndText(ended)}`,
+						...calls,
+						`输入 ${ended.usage.input} · 输出 ${ended.usage.output} token`,
+						...(ended.usage.cost_usd === undefined
+							? []
+							: [formatUsd(ended.usage.cost_usd)]),
+					].join(" · "),
+					width,
+					{
+						completed: style.plain,
+						failed: style.error,
+						cancelled: style.warning,
+						refused: style.warning,
+					}[ended.outcome],
+					"  ",
+					`${style.accent("◆")} `,
+				);
+	return entry.workspace === undefined
+		? lines
+		: [
+				...lines,
+				...wrapped(
+					`它自己的工作区：${sanitize(entry.workspace)}`,
+					width,
+					style.dim,
+					"    ",
+				),
+			];
+}
+
 function noticeLines(entry: NoticeEntry, width: number): string[] {
 	const [marker, paint] = {
 		info: ["· ", style.dim] as const,
@@ -298,12 +371,19 @@ class EntryView implements Component {
 			case "approval":
 				return approvalLines(
 					entry,
-					describeApproval(entry.request, (id) => {
-						const call = this.#state.toolCall(id);
-						return call === undefined ? undefined : toolSummary(call.arguments);
-					}),
+					attributed(
+						describeApproval(entry.request, (id) => {
+							const call = this.#state.toolCall(id);
+							return call === undefined
+								? undefined
+								: toolSummary(call.arguments);
+						}),
+						entry.subagent,
+					),
 					width,
 				);
+			case "subagent":
+				return subagentLines(entry, width);
 			case "notice":
 				return noticeLines(entry, width);
 			case "task_ended":

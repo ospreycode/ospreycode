@@ -23,11 +23,16 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search", "web_fetch"],
 		price: {
 			input: 10,
 			output: 50,
 			cache_read: 0.25,
 			cache_write: 12.5,
+			server_tools: {
+				web_search: 10,
+				web_fetch: 0,
+			},
 		},
 		prefix_check: true,
 	},
@@ -49,11 +54,16 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search", "web_fetch"],
 		price: {
 			input: 10,
 			output: 50,
 			cache_read: 1,
 			cache_write: 12.5,
+			server_tools: {
+				web_search: 10,
+				web_fetch: 0,
+			},
 		},
 		allowed_fallback_models: [
 			{
@@ -63,6 +73,10 @@ export const builtinModels: readonly ModelEntry[] = [
 					output: 25,
 					cache_read: 0.5,
 					cache_write: 6.25,
+					server_tools: {
+						web_search: 10,
+						web_fetch: 0,
+					},
 				},
 			},
 			{
@@ -72,6 +86,10 @@ export const builtinModels: readonly ModelEntry[] = [
 					output: 25,
 					cache_read: 0.5,
 					cache_write: 6.25,
+					server_tools: {
+						web_search: 10,
+						web_fetch: 0,
+					},
 				},
 			},
 		],
@@ -94,11 +112,16 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search", "web_fetch"],
 		price: {
 			input: 4,
 			output: 20,
 			cache_read: 0.2,
 			cache_write: 5,
+			server_tools: {
+				web_search: 10,
+				web_fetch: 0,
+			},
 		},
 		prefix_check: true,
 	},
@@ -120,11 +143,16 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search", "web_fetch"],
 		price: {
 			input: 5,
 			output: 25,
 			cache_read: 0.5,
 			cache_write: 6.25,
+			server_tools: {
+				web_search: 10,
+				web_fetch: 0,
+			},
 		},
 		allowed_fallback_models: [
 			{
@@ -134,6 +162,10 @@ export const builtinModels: readonly ModelEntry[] = [
 					output: 25,
 					cache_read: 0.5,
 					cache_write: 6.25,
+					server_tools: {
+						web_search: 10,
+						web_fetch: 0,
+					},
 				},
 			},
 		],
@@ -156,11 +188,16 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search", "web_fetch"],
 		price: {
 			input: 5,
 			output: 25,
 			cache_read: 0.5,
 			cache_write: 6.25,
+			server_tools: {
+				web_search: 10,
+				web_fetch: 0,
+			},
 		},
 	},
 	{
@@ -181,11 +218,16 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search", "web_fetch"],
 		price: {
 			input: 2,
 			output: 10,
 			cache_read: 0.1,
 			cache_write: 2.5,
+			server_tools: {
+				web_search: 10,
+				web_fetch: 0,
+			},
 		},
 		prefix_check: true,
 	},
@@ -208,11 +250,16 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search", "web_fetch"],
 		price: {
 			input: 2,
 			output: 10,
 			cache_read: 0.2,
 			cache_write: 2.5,
+			server_tools: {
+				web_search: 10,
+				web_fetch: 0,
+			},
 		},
 	},
 	{
@@ -234,6 +281,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search", "web_fetch"],
 		price: {
 			input: 0.1,
 			output: 0.5,
@@ -248,6 +296,10 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 0.625,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+				web_fetch: 0,
+			},
 		},
 		prefix_check: true,
 	},
@@ -270,6 +322,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 2,
 			output: 10,
@@ -284,6 +337,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 5,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -306,6 +362,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 1,
 			output: 5,
@@ -320,6 +377,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 2.5,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -341,6 +401,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 10,
 			output: 50,
@@ -355,6 +416,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 25,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -377,6 +441,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 2,
 			output: 10,
@@ -391,6 +456,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 5,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -413,6 +481,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 0.1,
 			output: 0.5,
@@ -427,6 +496,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 0.25,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -449,6 +521,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 4,
 			output: 20,
@@ -463,6 +536,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 10,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -485,6 +561,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 2,
 			output: 12,
@@ -499,6 +576,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 5,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -521,6 +601,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			xhigh: "xhigh",
 			max: "max",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 0.2,
 			output: 1.2,
@@ -535,6 +616,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 0.5,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -556,6 +640,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			high: "high",
 			xhigh: "xhigh",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 5,
 			output: 30,
@@ -570,6 +655,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 0,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -591,6 +679,7 @@ export const builtinModels: readonly ModelEntry[] = [
 			high: "high",
 			xhigh: "xhigh",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 2.5,
 			output: 15,
@@ -605,6 +694,9 @@ export const builtinModels: readonly ModelEntry[] = [
 					cache_write: 0,
 				},
 			],
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -626,11 +718,15 @@ export const builtinModels: readonly ModelEntry[] = [
 			high: "high",
 			xhigh: "xhigh",
 		},
+		server_tools: ["web_search"],
 		price: {
 			input: 0.75,
 			output: 4.5,
 			cache_read: 0.075,
 			cache_write: 0,
+			server_tools: {
+				web_search: 10,
+			},
 		},
 	},
 	{
@@ -723,6 +819,118 @@ export const builtinModels: readonly ModelEntry[] = [
 			reasoning_field: "reasoning_content",
 			max_tokens_field: "max_tokens",
 			stream_usage: true,
+		},
+	},
+	{
+		id: "gemini-4-argon",
+		protocol: "google.generate-content",
+		service: "google",
+		base_url: "https://generativelanguage.googleapis.com/v1",
+		model: "gemini-4-argon",
+		context_window: 1048576,
+		max_output_tokens: 32768,
+		images: true,
+		system_updates: false,
+		tool_updates: false,
+		thinking_level_map: {
+			low: "low",
+			medium: "medium",
+			high: "high",
+		},
+		price: {
+			input: 2,
+			output: 10,
+			cache_read: 0.1,
+			cache_write: 0,
+			changes: [
+				{
+					from: "2026-12-01",
+					factor: 2,
+				},
+			],
+		},
+	},
+	{
+		id: "gemini-3.8-flash",
+		protocol: "google.generate-content",
+		service: "google",
+		base_url: "https://generativelanguage.googleapis.com/v1",
+		model: "gemini-3.8-flash",
+		context_window: 1048576,
+		max_output_tokens: 65536,
+		images: true,
+		system_updates: false,
+		tool_updates: false,
+		thinking_level_map: {
+			low: "low",
+			medium: "medium",
+			high: "high",
+		},
+		price: {
+			input: 0.75,
+			output: 3.75,
+			cache_read: 0.075,
+			cache_write: 0,
+			changes: [
+				{
+					from: "2027-01-01",
+					factor: 2,
+				},
+			],
+		},
+	},
+	{
+		id: "gemini-3.6-flash",
+		protocol: "google.generate-content",
+		service: "google",
+		base_url: "https://generativelanguage.googleapis.com/v1",
+		model: "gemini-3.6-flash",
+		context_window: 1048576,
+		max_output_tokens: 65536,
+		images: true,
+		system_updates: false,
+		tool_updates: false,
+		thinking_level_map: {
+			minimal: "minimal",
+			low: "low",
+			medium: "medium",
+			high: "high",
+		},
+		price: {
+			input: 0.75,
+			output: 3.75,
+			cache_read: 0.075,
+			cache_write: 0,
+			changes: [
+				{
+					from: "2027-01-01",
+					factor: 2,
+				},
+			],
+		},
+	},
+	{
+		id: "gemini-3.5-flash-lite",
+		protocol: "google.generate-content",
+		service: "google",
+		base_url: "https://generativelanguage.googleapis.com/v1",
+		model: "gemini-3.5-flash-lite",
+		context_window: 1048576,
+		max_output_tokens: 65536,
+		images: true,
+		system_updates: false,
+		tool_updates: false,
+		thinking_level_map: {
+			minimal: "minimal",
+			low: "low",
+			medium: "medium",
+			high: "high",
+		},
+		price: {
+			input: 0.3,
+			output: 2.5,
+			cache_read: 0.03,
+			cache_write: 0,
 		},
 	},
 ];

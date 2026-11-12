@@ -74,6 +74,8 @@ const versions: Record<TaskHostEvent["type"], number> = {
 	"background.delivered": recordFormatVersion,
 	"memory.candidates": recordFormatVersion,
 	"memory.retrieved": recordFormatVersion,
+	"subagent.started": recordFormatVersion,
+	"subagent.ended": recordFormatVersion,
 };
 
 /** `EventSink` 用到的依赖。 */
@@ -99,7 +101,7 @@ export interface EventSinkOptions {
  */
 export class EventSink {
 	#options: EventSinkOptions;
-	/** 会话树上的当前位置：最后一个属于 task 的事件。新的 run 接在它之后。 */
+	/** 会话树上的当前位置：主 agent 最后一个属于 task 的事件。新的 run 接在它之后。 */
 	#position: Position | null = null;
 	/** 不属于任何 task 的事件（进程的启动和退出）所在的 run，第一次用到时才开始。 */
 	#housekeeping: { runId: string; seq: number } | undefined;
@@ -125,7 +127,7 @@ export class EventSink {
 		return {
 			task_id: run.taskId,
 			run_id: run.runId,
-			agent_id: this.#options.agentId,
+			agent_id: run.subagent?.agentId ?? this.#options.agentId,
 		};
 	}
 
@@ -155,7 +157,10 @@ export class EventSink {
 			version,
 			data,
 		});
-		this.#position = { run_id: run.runId, seq: stored.seq };
+		// 子 agent 的 run 不在会话树的路径上：它的事件不移动当前位置
+		if (run.subagent === undefined) {
+			this.#position = { run_id: run.runId, seq: stored.seq };
+		}
 		return stored;
 	}
 
@@ -174,16 +179,25 @@ export class EventSink {
 		this.#options.listener({ ...this.#base(), ...event } as HostEvent);
 	}
 
-	/** 在会话树上开始一个 run：接在当前位置之后。 */
+	/**
+	 * 开始一个 run。主 agent 的接在会话树的当前位置之后；子 agent 的不接在树上，带上启动它的
+	 * agent 和那次工具调用。
+	 */
 	runStarted(run: Run): void {
+		const parent =
+			run.subagent === undefined
+				? undefined
+				: {
+						parent_agent_id: this.#options.agentId,
+						parent_tool_call_id: run.subagent.toolCallId,
+					};
 		const record: RunRecord = {
-			run_id: run.runId,
-			task_id: run.taskId,
-			agent_id: this.#options.agentId,
-			base: this.#position,
+			...this.#scope(run),
+			base: parent === undefined ? this.#position : null,
+			...parent,
 		};
 		const stored = this.#store(run, runStartedType, storageVersion, record);
-		this.#options.listener({ ...stored, type: "run.started" });
+		this.#options.listener({ ...stored, type: "run.started", ...parent });
 	}
 
 	/** 属于 run、会存储的事件。返回事件的编号：检查点按它引用用户输入的事件。 */
@@ -196,10 +210,13 @@ export class EventSink {
 		>,
 	): string {
 		let data = event;
-		if (event.type === "task.ended" && event.error !== undefined) {
+		if (
+			(event.type === "task.ended" || event.type === "subagent.ended") &&
+			event.error !== undefined
+		) {
 			const error = this.#options.scrub(event.error);
 			data = { ...event, error };
-			if (event.outcome === "failed") {
+			if (event.type === "task.ended" && event.outcome === "failed") {
 				this.#options.log.write({
 					level: "error",
 					message: `task ${run.taskId} 失败：${error}`,

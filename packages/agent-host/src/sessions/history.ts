@@ -30,7 +30,17 @@ const direct = new Set([
 	"background.delivered",
 	"memory.candidates",
 	"memory.retrieved",
+	"subagent.started",
+	"subagent.ended",
 ]);
+
+/** 子 agent 的 run：`run.started` 带父 agent 和启动它的那次工具调用。 */
+const subagentRun = Compile(
+	Type.Object({
+		parent_agent_id: Type.String(),
+		parent_tool_call_id: Type.String(),
+	}),
+);
 
 const storedCompleted = Compile(
 	Type.Object({ result: Type.Object({ content: storedContentSchema }) }),
@@ -62,7 +72,13 @@ export function hostEvents(
 			);
 		let content: object;
 		if (type === "run.started") {
-			content = {};
+			// 子 agent 的 run 带着谁启动的它，其余的内容前端用不到
+			content = subagentRun.Check(data)
+				? {
+						parent_agent_id: data.parent_agent_id,
+						parent_tool_call_id: data.parent_tool_call_id,
+					}
+				: {};
 		} else if (type === "tool_call.completed") {
 			if (!storedCompleted.Check(data)) throw malformed();
 			content = {
@@ -101,9 +117,6 @@ export function hostEvents(
 		return [event];
 	});
 }
-
-/** 子 agent 的 run：`run.started` 带父 agent。 */
-const subagentRun = Compile(Type.Object({ parent_agent_id: Type.String() }));
 
 /** 路径上最后一次模型请求用的模型和推理强度。 */
 export interface RecordedModel {

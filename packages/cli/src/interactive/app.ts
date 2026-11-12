@@ -35,6 +35,7 @@ import { writeExportFile } from "../export-file.js";
 import { openHost } from "../host.js";
 import { resumableSessions, targetSessionId } from "../resume.js";
 import {
+	attributed,
 	describeApproval,
 	describeServerApproval,
 	serverApprovalOptions,
@@ -336,12 +337,15 @@ class Interactive {
 							requestId: request.request_id,
 							component: new ApprovalPanel({
 								request,
-								description: describeApproval(request, (id) => {
-									const call = this.#state.toolCall(id);
-									return call === undefined
-										? undefined
-										: toolSummary(call.arguments);
-								}),
+								description: attributed(
+									describeApproval(request, (id) => {
+										const call = this.#state.toolCall(id);
+										return call === undefined
+											? undefined
+											: toolSummary(call.arguments);
+									}),
+									this.#state.subagentName(request.agent_id),
+								),
 								waiting: () => this.#state.approvals.length - 1,
 								adjacent: () => {
 									const last = this.#state.entries.at(-1);

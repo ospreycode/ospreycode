@@ -463,3 +463,112 @@ extends = "workspace-write"
 		]);
 	});
 });
+
+describe("子 agent 的定义", () => {
+	test("[agents.<名字>] 逐个解析：没写的项沿用 session 的，模型换成清单里的条目", () => {
+		userConfig(`
+[agents.explorer]
+description = "Looks things up."
+
+[agents.worker]
+description = "Makes changes."
+instructions = "Work in small steps."
+model = "other"
+reasoning_effort = "low"
+sandbox_mode = "read-only"
+tools = ["read", "grep"]
+workspace = "isolated"
+`);
+		const config = resolve({
+			model: "scripted",
+			models: {
+				scripted: testModel,
+				other: { ...testModel, model: "other" },
+			},
+		});
+		expect(config.agents.explorer).toEqual({
+			description: "Looks things up.",
+			readOnly: false,
+			isolated: false,
+		});
+		expect(config.agents.worker).toMatchObject({
+			description: "Makes changes.",
+			instructions: "Work in small steps.",
+			model: { id: "other", model: "other" },
+			reasoningEffort: "low",
+			readOnly: true,
+			tools: ["read", "grep"],
+			isolated: true,
+		});
+		expect(config.warnings).toEqual([]);
+	});
+
+	test("没有定义时是空的", () => {
+		expect(resolve({ model: "scripted" }).agents).toEqual({});
+	});
+
+	test("写错的定义加载报错，带文件路径和出错的键", () => {
+		const path = join(dirs.root, "config.toml");
+		const load = (definition: string) => {
+			userConfig(`[agents.explorer]\n${definition}`);
+			return configError(() => resolve({ model: "scripted" }));
+		};
+		expect(load(`instructions = "x"`)).toBe(
+			`${path}：agents.explorer.description 要是非空的字符串`,
+		);
+		expect(load(`description = "x"\ncolor = "red"`)).toBe(
+			`${path}：agents.explorer.color 不认识的键`,
+		);
+		// 子 agent 的沙盒模式只能收紧
+		expect(load(`description = "x"\nsandbox_mode = "danger-full-access"`)).toBe(
+			`${path}：agents.explorer.sandbox_mode 要是 read-only 之一`,
+		);
+		expect(load(`description = "x"\nmodel = "missing"`)).toBe(
+			`${path}：agents.explorer.model 模型清单里没有 missing`,
+		);
+		expect(load(`description = "x"\ntools = ["read", "spawn_agent"]`)).toMatch(
+			/agents\.explorer\.tools 里的 spawn_agent 不是内置工具/,
+		);
+		userConfig(`[agents.Explorer]\ndescription = "x"`);
+		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
+			/agents\.Explorer 名字只能用小写字母/,
+		);
+	});
+
+	test("启用费用上限时，子 agent 的模型也要有价格", () => {
+		const { price: _, ...unpriced } = testModel;
+		userConfig(`[agents.explorer]\ndescription = "x"\nmodel = "free"`);
+		const models = { scripted: testModel, free: unpriced };
+		expect(configError(() => resolve({ model: "scripted", models }))).toMatch(
+			/agents\.explorer\.model .*模型 free 在清单里没有价格/,
+		);
+		expect(
+			resolve({ model: "scripted", models, budget: { maxCostUsd: null } })
+				.agents.explorer?.model?.id,
+		).toBe("free");
+	});
+
+	test("仓库配置可以添加定义，但不能指定模型，也不能覆盖用户级配置里同名的定义", () => {
+		userConfig(`[agents.explorer]\ndescription = "from user"`);
+		repoConfig(`
+[agents.explorer]
+description = "from repo"
+
+[agents.reviewer]
+description = "Reviews a change."
+model = "scripted"
+sandbox_mode = "read-only"
+`);
+		const config = resolve({ model: "scripted" });
+		expect(config.agents.explorer?.description).toBe("from user");
+		expect(config.agents.reviewer).toEqual({
+			description: "Reviews a change.",
+			readOnly: true,
+			isolated: false,
+		});
+		expect(config.warnings).toEqual([
+			expect.stringMatching(/agents\.reviewer\.model 只认用户级配置和启动参数/),
+			expect.stringMatching(/agents\.explorer 和用户级配置里的定义同名/),
+		]);
+	});
+});

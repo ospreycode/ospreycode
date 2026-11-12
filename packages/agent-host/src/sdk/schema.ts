@@ -483,6 +483,7 @@ const BackgroundNotification = event({
 	type: Type.Literal("background.notification"),
 	notification_id: Type.String(),
 	background_id: Type.Union([Type.String(), Type.Null()]),
+	message_id: Type.Optional(Type.String()),
 	text: Type.String(),
 });
 
@@ -492,6 +493,32 @@ const BackgroundDelivered = event({
 	...stored,
 	type: Type.Literal("background.delivered"),
 	notification_ids: Type.Array(Type.String()),
+});
+
+const SubagentStarted = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("subagent.started"),
+	name: Type.String(),
+	model: Type.String(),
+	sandbox_mode: Type.String(),
+	workspace: Type.String(),
+});
+
+const SubagentEnded = event({
+	...base,
+	...scope,
+	...stored,
+	type: Type.Literal("subagent.ended"),
+	outcome: Type.Union([
+		Type.Literal("completed"),
+		Type.Literal("failed"),
+		Type.Literal("cancelled"),
+		Type.Literal("refused"),
+	]),
+	usage: p.usage,
+	error: Type.Optional(Type.String()),
 });
 
 const ProcessKind = Type.Union([
@@ -775,6 +802,8 @@ export const hostEventSchema = Type.Union([
 	BackgroundEnded,
 	BackgroundNotification,
 	BackgroundDelivered,
+	SubagentStarted,
+	SubagentEnded,
 	ProcessStarted,
 	ProcessExited,
 	SandboxModeChanged,

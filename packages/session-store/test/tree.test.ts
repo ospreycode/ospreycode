@@ -891,3 +891,86 @@ test("迁移失败时留下备份，删除 session 时一起删掉", async () =>
 	expect(existsSync(backup)).toBe(false);
 	expect(store.sessions()).toEqual([]);
 });
+
+test("子 agent 的 run 不在会话树的路径上：事件不移动当前位置，里面的位置不能接续、回退", async () => {
+	const store = open();
+	const p = await create(store, "p");
+	p.run("r1", null);
+	p.input("r1", "第一次", null);
+	const call = p.add("r1", "tool_call.started", {});
+	const child = (
+		run: string,
+		seq: number,
+		type: string,
+		data: unknown,
+	): StoredEvent => ({
+		event_id: `${run}-${seq}`,
+		session_id: "p",
+		run_id: run,
+		seq,
+		time: "2026-11-11T00:00:30.000Z",
+		source: "host",
+		task_id: "task-r1",
+		agent_id: "sub",
+		type,
+		version: storageVersion,
+		data,
+	});
+	const record = (run: string, extra: Partial<RunRecord>): RunRecord => ({
+		run_id: run,
+		task_id: "task-r1",
+		agent_id: "sub",
+		base: null,
+		...extra,
+	});
+	const parents = { parent_agent_id: "agent", parent_tool_call_id: "call-1" };
+	p.writer.append(child("c1", 1, runStartedType, record("c1", parents)));
+	p.writer.append(child("c1", 2, "message", "子 agent 的回复"));
+	expect(store.position("p")).toEqual({ run_id: "r1", seq: call.seq });
+
+	// 父 run 接着写，子 run 的事件交错其间
+	p.add("r1", "message", "回复一");
+	p.writer.append(child("c1", 3, "message", "子 agent 的第二条回复"));
+	const end = p.add("r1", "task.ended", {});
+	expect(store.position("p")).toEqual({ run_id: "r1", seq: end.seq });
+	expect(texts(store.pathEvents("p", end))).toEqual(["第一次", "回复一"]);
+	expect(store.runs("p").find((run) => run.run_id === "c1")).toEqual(
+		record("c1", parents),
+	);
+
+	// 重建之后一样
+	store.rebuild();
+	expect(store.position("p")).toEqual({ run_id: "r1", seq: end.seq });
+
+	// 子 run 里的位置不在会话树里
+	const inChild = { run_id: "c1", seq: 2 };
+	expect(() =>
+		p.writer.append({
+			...child("r2", 1, runStartedType, {
+				run_id: "r2",
+				task_id: "task-r2",
+				agent_id: "agent",
+				base: inChild,
+			} satisfies RunRecord),
+			task_id: "task-r2",
+			agent_id: "agent",
+		}),
+	).toThrow(StorageError);
+	expect(() => p.move(inChild)).toThrow(StorageError);
+	// 两个父字段要一起出现，`base` 要为空
+	expect(() =>
+		p.writer.append(
+			child(
+				"c2",
+				1,
+				runStartedType,
+				record("c2", { parent_agent_id: "agent" }),
+			),
+		),
+	).toThrow(StorageError);
+	expect(() =>
+		p.writer.append(
+			child("c3", 1, runStartedType, record("c3", { ...parents, base: end })),
+		),
+	).toThrow(StorageError);
+});

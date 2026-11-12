@@ -59,9 +59,10 @@ session 默认保存 30 天，从最后一次写入事件算起。
 
 - 每个事件都带 `event_id`、run 内递增的序号、时间、来源、关联标识、类型和格式版本。来源和关联标识由 Host 按通道核实后写入，不采信沙盒内填写的值。
 - 不属于任何 task 的工作（如后台的记忆提取，见 memory 的[写入](memory.md#写入)）也由 Host 分配一个 `run_id`，事件照常带 run 内的序号和 `event_id`，`task_id` 和 `agent_id` 为空；这种 run 不进入会话树的路径，也不能作为 `base`。
+- 子 agent 的 run（`run.started` 的内容带 `parent_agent_id` 和 `parent_tool_call_id`，`base` 必须为空）和父 run 属于同一个 task，`task_id` 相同、`agent_id` 是子 agent 的。它同样不进入会话树的路径、不能作为 `base`，它的事件写入时不移动 session 的当前位置：路径是主 agent 的对话，几个子 agent 和父 agent 的事件交错写入，接在路径上就分不出每个 agent 自己的历史。读它的事件用 `events(sessionId)`，按 `run_id` 筛选。
 - 会话树和检查点索引靠本包自己定义的几种事件维护，本包只读取这几种事件的内容，索引因此能从事件表重建。它们的 `data` 格式版本取写入时的存储格式版本，格式没有变的旧版本照常接受：
   - `run.started`：每个 run 的第一个事件，`data` 是 `RunRecord`，记下这个 run 接在哪个 run 的哪个序号之后（`base = {run_id, seq}`）。重启、恢复、回退和分叉都是"从某个位置开始一个新的 run"。
-  - `position.moved`：把 session 的当前位置移到 `to`（回退到第一次输入之前时为空），写在不属于任何 task 的 run 里。原来的当前位置不在通往新位置的路径上时记为被放弃的位置，可以再移回去；属于 task 的事件写入时当前位置照常移到它。
+  - `position.moved`：把 session 的当前位置移到 `to`（回退到第一次输入之前时为空），写在不属于任何 task 的 run 里。原来的当前位置不在通往新位置的路径上时记为被放弃的位置，可以再移回去；属于 task 的事件写入时当前位置照常移到它（子 agent 的 run 里的事件除外）。
   - `checkpoint.created`：每次用户输入（task 的输入和 steering）一个，紧跟在输入事件之后、写在同一个 run 里，带输入事件的 `event_id`、种类和这次输入之前的位置 `before`（回退到这个检查点就是把当前位置移到 `before`）。从用户输入到它所在的 run 和序号范围的索引由它得到。
   - `checkpoint.snapshot`：这个 session 做的每次快照一条，记在当时最新的检查点名下，带影子仓库里的提交、和上一次快照相比改动的路径（包括新建和删除的文件）、改动的来源（`agent`、`undo`、`external`）。一个检查点的第一条就是"这次输入之后第一次工具调用之前的快照"，之后改动的路径是它后面各条里来源为 `agent` 的路径。Host 怎样用这些记录还原和检测冲突，见 agent-host 的[快照和撤销](agent-host.md#快照和撤销)。
   - `checkpoints.inherited`：分叉的第一个事件，带分叉时父 session 的整个检查点索引（见[分叉的存储](#分叉的存储)）。

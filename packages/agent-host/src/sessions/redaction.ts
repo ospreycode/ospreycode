@@ -175,6 +175,7 @@ const shapes = {
 	}),
 	"background.notification": Type.Object({
 		background_id: Type.Union([Type.String(), Type.Null()]),
+		message_id: Type.Optional(Type.String()),
 	}),
 	"hooks.ran": Type.Object({
 		tool_call_id: Type.Optional(Type.String()),
@@ -425,6 +426,9 @@ class Records {
 				if (view.data.background_id !== null) {
 					this.#link("notified", view.data.background_id, row);
 				}
+				if (view.data.message_id !== undefined) {
+					this.#link("quoted", view.data.message_id, row);
+				}
 				break;
 			case "hooks.ran":
 				if (view.data.tool_call_id !== undefined) {
@@ -630,7 +634,14 @@ function cover(view: View, mark: Mark): object | undefined {
 						: block;
 				}
 				if (!mark.whole) return block;
-				if (block.type === "text") return { ...block, text: placeholder };
+				// 引用是模型服务照搜索结果给出的，带着网页的标题和摘录
+				if (block.type === "text") {
+					return { ...without(block, ["citations"]), text: placeholder };
+				}
+				// 服务端工具的调用和结果：原文和摘要都去掉，块留在原位；重建历史时它不再发给模型
+				if (block.type === "opaque") {
+					return { ...without(block, ["summary"]), raw: "{}" };
+				}
 				// 推理块留在原位：`blocks.invalidated` 按块的下标引用，删掉它之后的下标都会错位。
 				// 签名和加密数据是照原文算的，一起去掉；重建历史时这条回复的推理块不再发给模型
 				if (block.type === "reasoning") {
@@ -1019,6 +1030,10 @@ class Closure {
 				// 放着开始 task 的输入的消息：`task.started` 里存着同一份输入
 				for (const row of records.linked("task_input", facet.id)) {
 					this.task(row);
+				}
+				// 子 agent 做完时交给父 agent 的结果通知：文字里是它最后这条回复的原文
+				for (const row of records.linked("quoted", facet.id)) {
+					this.whole(row);
 				}
 				// 输出放在这条消息里的 hooks，和按这条消息里的输入做的记忆检索（查询就是输入）
 				for (const row of records.linked("carried", facet.id)) {

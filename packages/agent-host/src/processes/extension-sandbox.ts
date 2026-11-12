@@ -7,7 +7,7 @@ import {
 	startSandboxHelper,
 } from "@ospreycode/sandbox/backends";
 import type { ProcessEvent } from "../sessions/events.js";
-import type { Placeholders } from "./placeholders.js";
+import type { PlaceholderRegistry } from "./placeholders.js";
 import type { ProcessTracker } from "./registry.js";
 
 /** 扩展的沙盒用到的依赖，和 session 的命令沙盒相同。 */
@@ -21,7 +21,7 @@ export interface ExtensionSandboxOptions {
 	env: Record<string, string>;
 	bash: string;
 	tracker: ProcessTracker;
-	placeholders: Placeholders;
+	placeholders: PlaceholderRegistry;
 	onWarning: (message: string) => void;
 	onProcess: (event: ProcessEvent) => void;
 }

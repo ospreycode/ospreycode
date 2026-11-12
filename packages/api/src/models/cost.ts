@@ -6,9 +6,24 @@ function minutes(clock: string): number {
 	return hours * 60 + mins;
 }
 
+/** 服务端工具的费用（美元）：计费的次数乘以每一千次的价格。清单里没有价格的工具是清单的缺陷。 */
+export function serverToolsCost(price: ModelPrice, usage: Usage): number {
+	let cost = 0;
+	for (const [name, calls] of Object.entries(usage.server_tools ?? {})) {
+		const rate = (price.server_tools as Record<string, number> | undefined)?.[
+			name
+		];
+		if (rate === undefined) {
+			throw new Error(`模型清单的价格里没有服务端工具 ${name}`);
+		}
+		cost += (calls * rate) / 1000;
+	}
+	return cost;
+}
+
 /**
  * 一次请求的费用（美元）：照 pi，按总输入（输入加缓存读写）选价格档，整次请求按这一档计费；
- * 请求结束时落在某个时段里，再乘以那个时段的倍数。
+ * 请求结束时落在某个时段里，再乘以那个时段的倍数；已经到期的调价逐个乘上。服务端工具按次另计。
  */
 export function computeCost(price: ModelPrice, usage: Usage, at: Date): number {
 	const totalInput = usage.input + usage.cache_read + usage.cache_write;
@@ -23,12 +38,18 @@ export function computeCost(price: ModelPrice, usage: Usage, at: Date): number {
 			now >= minutes(candidate.from) &&
 			now < minutes(candidate.to),
 	);
+	const day = at.toISOString().slice(0, 10);
+	const changed = (price.changes ?? [])
+		.filter((change) => day >= change.from)
+		.reduce((factor, change) => factor * change.factor, 1);
 	return (
 		((usage.input * rates.input +
 			usage.output * rates.output +
 			usage.cache_read * rates.cache_read +
 			usage.cache_write * rates.cache_write) /
 			1_000_000) *
-		(period?.factor ?? 1)
+			(period?.factor ?? 1) *
+			changed +
+		serverToolsCost(price, usage)
 	);
 }

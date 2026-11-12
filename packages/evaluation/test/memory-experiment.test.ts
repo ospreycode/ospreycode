@@ -11,7 +11,7 @@ import type { ModelRequest } from "@ospreycode/api/protocol";
 import { type ScriptedTurn, scriptedModel } from "@ospreycode/api/testing";
 import {
 	type EvaluationEnvironment,
-	type MemoryGroup,
+	formatMemoryReport,
 	type MemoryTask,
 	type MemoryTrial,
 	memoryGroups,
@@ -19,6 +19,7 @@ import {
 	runMemoryExperiment,
 } from "@ospreycode/evaluation";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { fakeMem0, fakeUsage } from "./mem0-harness.js";
 
 /** 脚本模型用的清单条目，地址不会被访问。 */
 const model: ModelEntry = {
@@ -103,7 +104,10 @@ function toolNames(request: ModelRequest): string[] {
 	return request.tools.map((tool) => tool.name);
 }
 
-function by(trials: readonly MemoryTrial[], group: MemoryGroup): MemoryTrial {
+function by(
+	trials: readonly MemoryTrial[],
+	group: MemoryTrial["group"],
+): MemoryTrial {
 	const trial = trials.find((item) => item.group === group);
 	if (trial === undefined) throw new Error(`没有 ${group} 组的运行`);
 	return trial;
@@ -132,6 +136,7 @@ const deployCode: MemoryTask = {
 			: ["code.txt 里没有口令"]),
 	],
 	evidence: (text) => text.includes("K-42"),
+	facts: "The deploy code is K-42.",
 };
 
 /**
@@ -198,7 +203,7 @@ test("五个组各运行一遍：只有拿得到之前会话内容的组通过�
 	const trials = await runMemoryExperiment(
 		[deployCode],
 		environment(deployScript),
-		{ runs: 1, timeoutMs: 30_000 },
+		{ runs: 1, timeoutMs: 30_000, diagnostic: false },
 	);
 
 	expect(trials.map((trial) => trial.group)).toEqual([...memoryGroups]);
@@ -332,6 +337,7 @@ test("五个组各运行一遍：只有拿得到之前会话内容的组通过�
 
 	const report = memoryReport(
 		{
+			suite: "部署口令",
 			model: "scripted",
 			protocol: model.protocol,
 			reasoningEffort: "off",
@@ -380,11 +386,12 @@ test("没有学习会话的题：完整 memory 组没通过时归到没写入；
 		probe: "What is the deploy code?",
 		check: () => ["答不出来"],
 		evidence: (text) => text.includes("K-42"),
+		facts: "The deploy code is K-42.",
 	};
 	const answered = await runMemoryExperiment(
 		[task],
 		environment(() => say("I do not know.")),
-		{ runs: 1, timeoutMs: 30_000 },
+		{ runs: 1, timeoutMs: 30_000, diagnostic: false },
 	);
 	expect(answered.map((trial) => trial.passed)).toEqual(
 		memoryGroups.map(() => false),
@@ -404,11 +411,200 @@ test("没有学习会话的题：完整 memory 组没通过时归到没写入；
 	const hung = await runMemoryExperiment(
 		[{ ...task, check: () => [] }],
 		environment(() => ({ ...say("thinking"), hang: true })),
-		{ runs: 1, timeoutMs: 300 },
+		{ runs: 1, timeoutMs: 300, diagnostic: false },
 	);
 	for (const trial of hung) {
 		expect(trial.probe.outcome).toBeUndefined();
 		expect(trial.problems).toEqual(["超过时间上限 300 毫秒"]);
 		expect(trial.passed).toBe(false);
 	}
+}, 120_000);
+
+/** 检验会话的输入里第一个文本块。 */
+function probeText(trial: MemoryTrial): string {
+	const [text] = trial.probe.events.flatMap((event) =>
+		event.type === "task.started"
+			? event.input.flatMap((block) =>
+					block.type === "text" ? [block.text] : [],
+				)
+			: [],
+	);
+	if (text === undefined) throw new Error("检验会话没有输入");
+	return text;
+}
+
+test("诊断组和 Mem0 对照组排在五组之后：诊断组拿到题目写的正确证据，Mem0 组拿到 Mem0 从学习会话提炼和检索的记忆", async () => {
+	const mem0 = await fakeMem0(secrets);
+	const trials = await runMemoryExperiment(
+		[deployCode],
+		environment(deployScript),
+		{ runs: 1, timeoutMs: 30_000, diagnostic: true, mem0: mem0.options },
+	).finally(() => mem0.close());
+
+	expect(trials.map((trial) => trial.group)).toEqual([
+		...memoryGroups,
+		"diagnostic",
+		"mem0",
+	]);
+
+	// 诊断组：关掉长期记忆，输入前面只有证据
+	const diagnostic = by(trials, "diagnostic");
+	expect(diagnostic.passed).toBe(true);
+	expect(probeText(diagnostic)).toBe(
+		`<known_facts>\nFacts established in earlier sessions. They are correct and current.\n\nThe deploy code is K-42.\n</known_facts>\n\n${probeInput}`,
+	);
+	expect(diagnostic.memories).toEqual([]);
+	expect(diagnostic.maintenance).toEqual([]);
+	expect(diagnostic.external).toBeUndefined();
+
+	// Mem0 组：学习会话的文字记录一批交给 Mem0，工具调用写成 assistant 的文字
+	const external = by(trials, "mem0");
+	expect(external.passed).toBe(true);
+	const extraction = mem0.requests.filter(
+		(request) => request.path === "/v1/chat/completions",
+	);
+	expect(extraction).toHaveLength(1);
+	expect(extraction[0]?.body.messages).toEqual([
+		{ role: "user", content: learnInput },
+		{
+			role: "assistant",
+			content: expect.stringMatching(
+				/^tool: read \{"path":"notes\.txt"\}\nsucceeded: /,
+			),
+		},
+		{ role: "assistant", content: "OK" },
+	]);
+	// 检验会话之前用它的输入检索，结果放在输入前面
+	expect(probeText(external)).toBe(
+		`<earlier_sessions>\nMemories from earlier sessions in this project that match this request. They may be out of date.\n\n- ${learnInput}\n</earlier_sessions>\n\n${probeInput}`,
+	);
+	expect(external.memories).toEqual([]);
+	expect(external.external).toEqual({
+		llmRequests: 1,
+		embeddingRequests: 2,
+		tokens: {
+			input: fakeUsage.chat.prompt_tokens,
+			output: fakeUsage.chat.completion_tokens,
+			embedding: 2 * fakeUsage.embedding.prompt_tokens,
+		},
+		costUsd: (100 * 2 + 20 * 10 + 16 * 1) / 1_000_000,
+	});
+	// 这两组的会话里模型都没有记忆工具
+	for (const trial of [diagnostic, external]) {
+		expect(eventsOf(trial, "memory.candidates")).toEqual([]);
+		expect(trial.probe.indexTokens).toBe(0);
+	}
+
+	const report = memoryReport(
+		{
+			suite: "部署口令",
+			model: "scripted",
+			protocol: model.protocol,
+			reasoningEffort: "off",
+			commit: "0000000",
+			version: "0.0.0",
+			os: "test",
+			rules: "",
+			budget: { maxCostUsd: null, maxRequests: 10, maxDurationMs: null },
+			timeoutMs: 30_000,
+		},
+		trials,
+	);
+	expect(report.groups.map((group) => group.group)).toEqual([...memoryGroups]);
+	expect(
+		report.extra.map(({ group, passed, trials: total, difference }) => ({
+			group,
+			passed,
+			total,
+			mean: difference?.mean,
+		})),
+	).toEqual([
+		{ group: "diagnostic", passed: 1, total: 1, mean: 1 },
+		{ group: "mem0", passed: 1, total: 1, mean: 1 },
+	]);
+	expect(report.extra[1]?.external).toEqual(external.external);
+	expect(report.diagnosis).toEqual({ writeOrRetrieve: 0, use: 0 });
+	expect(report.perTask[0]?.passed).toMatchObject({ diagnostic: 1, mem0: 1 });
+	expect(formatMemoryReport(report)).toContain("## 单独报告的组");
+}, 120_000);
+
+test("Mem0 中途出错：这次实验失败，错误里有桥接进程退出的原因", async () => {
+	const mem0 = await fakeMem0(secrets, { FAKE_MEM0_CRASH: "add" });
+	await expect(
+		runMemoryExperiment([deployCode], environment(deployScript), {
+			runs: 1,
+			timeoutMs: 30_000,
+			diagnostic: false,
+			mem0: mem0.options,
+		}).finally(() => mem0.close()),
+	).rejects.toThrow("Mem0 的桥接进程退出了（退出码 3）");
+}, 120_000);
+
+test("检验会话换到另一个项目：同一个 HOME 下的另一个工作区，只有 user 范围的记忆跟过去", async () => {
+	const preference = "Scripts always start with the line # owner: quill-53.";
+	const probe = "Write hello.sh the way I like scripts.";
+	const task: MemoryTask = {
+		name: "另一个项目里的个人偏好",
+		setup: (workspace) =>
+			writeFileSync(join(workspace, "first-project.txt"), "first\n"),
+		learn: [`${preference} Remember it for all my projects.`],
+		probeProject: (workspace) =>
+			writeFileSync(join(workspace, "second-project.txt"), "second\n"),
+		probe,
+		check: (_session, workspace) => [
+			...(existsSync(join(workspace, "second-project.txt")) &&
+			!existsSync(join(workspace, "first-project.txt"))
+				? []
+				: ["检查拿到的不是检验会话的工作区"]),
+			...(existsSync(join(workspace, "hello.sh")) ? [] : ["没有写 hello.sh"]),
+		],
+		evidence: (text) => text.includes("quill-53"),
+		facts: preference,
+	};
+	// 学习会话里各提议一条 project 记忆和一条 user 记忆；检验会话里看得到 quill-53 才写文件
+	const trials = await runMemoryExperiment(
+		[task],
+		environment((request) => {
+			const seen = received(request);
+			const step = turn(request);
+			if (!seen.includes(probe)) {
+				if (step < 2 && toolNames(request).includes("memory_propose")) {
+					return call("memory_propose", {
+						scope: step === 0 ? "project" : "user",
+						kind: "preference",
+						title:
+							step === 0
+								? "first-project keeps notes in first-project.txt"
+								: "Scripts start with # owner: quill-53",
+						body: "The user said so.",
+					});
+				}
+				return say("OK");
+			}
+			if (step === 0 && seen.includes("quill-53")) {
+				return call("shell", { command: "printf hi > hello.sh" });
+			}
+			return say("done");
+		}),
+		{ runs: 1, timeoutMs: 30_000, diagnostic: true },
+	);
+
+	expect(
+		Object.fromEntries(trials.map((trial) => [trial.group, trial.passed])),
+	).toEqual({
+		none: false,
+		history: true,
+		retrieval: true,
+		memory: true,
+		irrelevant: false,
+		diagnostic: true,
+	});
+	// 另一个项目里只有 user 范围的那条
+	expect(
+		by(trials, "memory").memories.map(({ scope, title }) => ({ scope, title })),
+	).toEqual([{ scope: "user", title: "Scripts start with # owner: quill-53" }]);
+	// 等长无关记忆也加在检验会话所在的项目里
+	expect(by(trials, "irrelevant").memories.map(({ scope }) => scope)).toEqual([
+		"user",
+	]);
 }, 120_000);

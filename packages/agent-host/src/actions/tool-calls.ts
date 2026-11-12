@@ -89,6 +89,9 @@ const runtimeTools: ReadonlySet<string> = new Set([
 	"memory_search",
 	"memory_read",
 	"skill_load",
+	"spawn_agent",
+	"send_message",
+	"interrupt_agent",
 ]);
 
 /** 其中改文件的工具，登记时带改动前后的哈希。 */
@@ -188,6 +191,8 @@ export interface ToolCallsOptions {
 	env: Record<string, string>;
 	/** 启用的工具。 */
 	tools: readonly string[];
+	/** 这个 agent 能不能调用 MCP 工具：定义里限定了工具的子 agent 不能。 */
+	mcp: boolean;
 	/** 命令的进程记进进程登记表。 */
 	tracker: ProcessTracker;
 	/** 这个 session 的扩展：MCP 工具、skill 内容的核对、工具调用前后的 hooks。 */
@@ -642,7 +647,9 @@ export class ToolCalls {
 		signal: AbortSignal,
 		context: HandlerContext<RuntimeRequests["tool_call/run"]["stream"]>,
 	): Promise<ToolResult> {
-		const mcpTool = this.#options.extensions.mcpTool(params.name);
+		const mcpTool = this.#options.mcp
+			? this.#options.extensions.mcpTool(params.name)
+			: undefined;
 		if (mcpTool !== undefined) {
 			return this.#callMcpTool(
 				mcpTool,

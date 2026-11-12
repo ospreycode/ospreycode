@@ -29,8 +29,8 @@ export interface ExtractionRequest {
 	/** 当前 session 选用的模型和推理强度。 */
 	entry: ModelEntry;
 	reasoningEffort: ReasoningEffort;
-	/** 模型服务的凭据：每次请求时取，会话中可能换过。 */
-	apiKey: () => string;
+	/** 模型服务的凭据：每次请求时取，会话中可能换过，来自命令的到期了要重新运行命令。 */
+	apiKey: () => Promise<string>;
 	fetch: typeof globalThis.fetch;
 	streamModel: StreamModel;
 	signal: AbortSignal;
@@ -79,7 +79,7 @@ export async function extractSessionMemory(
 		};
 		for await (const event of request.streamModel(entry, modelRequest, {
 			messageId: newId(),
-			apiKey: request.apiKey(),
+			apiKey: await request.apiKey(),
 			fetch: request.fetch,
 			signal,
 		})) {

@@ -16,12 +16,40 @@
 - OpenAI 自己的 `/v1/chat/completions` 从 GPT-5.4 起带函数工具时 `reasoning_effort` 只能是 `none`，否则返回 400；GPT-6 Astra 和 GPT-6.1 Sol 不支持 `none`，调用工具只能用 Responses。o 系列和 GPT-5 到 GPT-5.3 不受限制。
 - 以后增加协议只新增一个转换模块，内部协议和其他包不变。
 
-P5 增加的服务：
+## P5 增加的服务
 
-- 沿用首批协议、只改地址、认证和模型 ID：Azure OpenAI 的 v1 接口（`/openai/v1/responses`，不需要 `api-version`）、Microsoft Foundry 上的 Claude、Claude Platform on AWS（带 `anthropic-workspace-id`）、Claude in Amazon Bedrock（`bedrock-mantle.{region}.api.aws/anthropic/v1/messages`）。Vertex 上的 Claude 把模型写在 `:rawPredict` 的 URL 里、`anthropic_version` 放进请求体，作为 `anthropic.messages` 的一个兼容项。
-- 真正的新协议是 Gemini 的 `generateContent`：签名附在 part 上，函数调用缺签名返回 400，并行调用和结果不能交错，以 `CONTINUATION` 结束时要带 `continuationToken` 续接。
-- 不做 Bedrock Converse 和旧的 `InvokeModel`，不做 Gemini 的 Interactions API（以服务端保存状态为中心）。
-- 顺序：只改请求头的 Azure 和 Foundry，需要 SigV4 签名的两种 AWS 接入，需要 Google OAuth 的 Vertex，最后按需要做 Gemini。模型清单增加 `auth`（`x-api-key`、`api-key`、`bearer`、带区域和服务名的 `aws-sigv4`、`google-oauth`、`entra-id`）、各服务的 API 版本和模型 ID，区域端点的溢价沿用 models.dev 的倍率表示。凭据由 Host 的 `credentials/` 换成请求头或签名；SigV4 用 `node:crypto` 实现，不引入 AWS SDK；不照搬 AWS 的默认凭据链（macOS 上凭据不能经启动参数和环境变量传入）。
+云平台上的模型沿用首批协议，只改地址、认证和模型名；真正的新协议只有 Gemini 的 `generateContent`（协议名 `google.generate-content`，见 [Gemini 的转换规则](#gemini-的转换规则)）。
+
+| 服务 | 协议 | `base_url` | `auth`（见[认证](#认证)） | `model` |
+|---|---|---|---|---|
+| Azure OpenAI 的 v1 接口 | `openai.responses` | `https://<资源>.openai.azure.com/openai/v1`，不需要 `api-version` | `api-key`，或 `bearer`（Entra 令牌） | 部署名 |
+| Microsoft Foundry 上的 Claude | `anthropic.messages` | `https://<资源>.services.ai.azure.com/anthropic/v1` | `api-key`，或 `bearer`（Entra 令牌） | 部署名 |
+| Claude in Amazon Bedrock | `anthropic.messages` | `https://bedrock-mantle.<区域>.api.aws/anthropic/v1` | `aws-sigv4`（服务名 `bedrock-mantle`），或 Bedrock API key（`x-api-key`） | `anthropic.claude-opus-5-5` 这样带前缀的 ID |
+| Claude Platform on AWS | `anthropic.messages` | `https://aws-external-anthropic.<区域>.api.aws/v1` | `aws-sigv4`（服务名 `aws-external-anthropic`），或 `bearer`（AWS 控制台发的 API key） | 和 Anthropic 自己的相同 |
+| Vertex AI 上的 Claude（Google 托管） | `anthropic.messages`，`vertex = true` | `https://aiplatform.googleapis.com/v1/projects/<项目>/locations/global/publishers/anthropic/models`，多区域和单区域端点换主机名和 `locations` | `bearer`（Google OAuth 令牌） | `claude-opus-5-5`，4.5 及更早的写成 `claude-opus-4-5@20251101` |
+| Gemini API | `google.generate-content` | `https://generativelanguage.googleapis.com/v1` | `x-goog-api-key` | `gemini-3.8-flash` 这样的 ID |
+
+- **内置清单只收 Gemini API**：它的地址固定。云平台的地址里有用户自己的资源名、区域或项目，条目由用户在用户级配置的 `[models.<ID>]` 里写全（见[模型清单](#模型清单)），各平台的写法在 `api` 的 README 里各给一个完整的例子。
+- **各平台不支持的功能由条目的字段表达**，转换模块不按地址猜：Bedrock、Vertex 和 Foundry 不支持服务端回退，条目不写 `allowed_fallback_models`（覆盖内置条目时写空数组），否则回退的 beta header 返回 400；能用的服务端工具写在 `server_tools`；Bedrock 和 Vertex 的区域端点比全球端点贵 10%，写在 `price` 里。平台没有明确写支持的能力（如 Bedrock 上的前缀校验 beta）在例子里关掉，核对的项目见[实施时核对](#实施时核对)。
+- **Claude Platform on AWS 要带 `anthropic-workspace-id`**：写在条目的 `headers` 里。`headers` 是每次请求附加的固定请求头，不能写认证和协议自己的头（`authorization`、`x-api-key`、`api-key`、`x-goog-api-key`、`content-type`、`accept`、`host`、`anthropic-version`、`anthropic-beta` 和 `x-amz-` 开头的）。
+- **Vertex 上的 Claude** 是 `anthropic.messages` 的一个变体（`vertex = true`），请求体和流的格式不变：模型写在 URL 里（`{base_url}/{model}:streamRawPredict`），请求体不带 `model`、多一个 `anthropic_version`（值和别处的 `anthropic-version` 相同），不发 `anthropic-version` 头；计数接口是 `{base_url}/count-tokens:rawPredict`，`model` 留在请求体里。平台自己的错误用 Google 的格式（`error.code`、`error.status`），没有 `error.type` 时只按状态码归类；流里的 `vertex-block-event`（Google 的内容分类器中断了流）按拒绝处理，类别取 `promptFeedback.blockReason`。
+- **Azure OpenAI** 流里的 `error` 事件有两种写法（字段平铺，或包在 `error` 对象里），两种都认，`type` 是 `too_many_requests`、`server_error`、`forbidden` 时按它归类，其余照旧按 `code`；它没有 `/responses/input_tokens`，计数按失败处理（见 [token 计数](#token-计数)）；429 的等待时间取 `retry-after-ms`。
+- 不做 Bedrock Converse、`InvokeModel` 和 `bedrock-runtime` 上的 Anthropic 路径，不做 Gemini 的 Interactions API（以服务端保存状态为中心），不做 Vertex AI 上的 Gemini 和 Anthropic 托管的 Google Cloud 接入（见 roadmap 的[不做的功能](../roadmap.md#不做的功能)）。
+
+### 认证
+
+模型条目的 `auth` 决定凭据怎样放进请求，没写时按协议取默认值：`anthropic.messages` 是 `x-api-key`，`openai.chat` 和 `openai.responses` 是 `bearer`，`google.generate-content` 是 `x-goog-api-key`。
+
+| `auth` | 凭据的内容 | 请求里的写法 |
+|---|---|---|
+| `"x-api-key"`、`"api-key"`、`"x-goog-api-key"` | API key | 同名的请求头 |
+| `"bearer"` | API key，或云厂商的短期访问令牌 | `Authorization: Bearer <凭据>` |
+| `{ scheme = "aws-sigv4", region = "<区域>", service = "<服务名>" }` | AWS `credential_process` 格式的 JSON：`AccessKeyId`、`SecretAccessKey`，临时凭据另有 `SessionToken` | SigV4 签名的 `Authorization`，外加 `x-amz-date`、`x-amz-content-sha256` 和（临时凭据的）`x-amz-security-token` |
+
+- **`api` 只管把凭据放进请求**，凭据从哪里来由 Host 决定（见 agent-host 的[凭据和登录](agent-host.md#凭据和登录)）：`streamModel` 和 `countTokens` 的 `apiKey` 就是上表里的"凭据的内容"。签名要用最终的地址和请求体，所以在 `client/` 发请求之前做，不在 Host 里做。
+- **不为 Entra 和 Google OAuth 各设一种 `auth`**：它们发出的都是放进 `Authorization: Bearer` 的访问令牌，换取令牌由厂商自己的命令行完成（`az account get-access-token`、`gcloud auth print-access-token`），Host 按用户配置的命令取得并定时刷新。`api` 不实现各家的令牌交换，也不读它们的凭据文件。
+- **SigV4** 用 `node:crypto` 实现，不引入 AWS SDK，照官方 SDK 的做法：请求里已有的头连同 `host`、`x-amz-date`、`x-amz-content-sha256`（请求体的 SHA-256）和 `x-amz-security-token` 都参加签名。签名用的时刻取发请求时的时钟。不照搬 AWS 的默认凭据链：它读环境变量和 `~/.aws` 下的文件，macOS 上凭据不能经环境变量传入，凭据文件也不该由 `api` 读。
+- **凭据格式不对**（`aws-sigv4` 的凭据不是这种 JSON、缺字段）时不发请求，这次请求以"认证失败"结束，错误信息不含凭据的内容。`api` 导出 `credentialSecrets(entry, credential)`，列出凭据里要从日志和错误信息里去掉的值（整个凭据，`aws-sigv4` 时另有 `SecretAccessKey` 和 `SessionToken`）：AWS 的签名错误会回显参加签名的请求头。
 
 ## 模块
 
@@ -43,7 +71,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 - **工具声明**：名称、说明和 JSON Schema 格式的参数。各家对名称和 schema 的限制不同，转换时按固定规则改写并保留对应关系，无法转换的报错。工具名和工具调用编号按各协议的限制改写：`[A-Za-z0-9_-]` 以外的字符改成下划线，超长时截断并加原文的 8 位哈希；工具名的上限是 OpenAI 两种协议 64 个字符、Anthropic 128 个，调用编号的上限是 Chat Completions 40 个、其余 64 个。同一个原文总是改写成同一个结果，所以工具调用和它的结果对得上；模型调用改写过的工具名时换回内部的名字，两个工具改写后重名时报错。MCP 工具名带标签前缀后常常超长。
 - **流式事件**：开始、文本增量、推理内容增量、工具调用的开始、参数增量和结束、用量、作废、结束。"作废"标出本轮哪些块不再发回模型以及原因（见[拒绝和回退](#拒绝和回退)）。
 - **停止原因**：正常结束、要调用工具、达到输出上限、上下文窗口用尽、服务端工具暂停、拒绝回答、出错、被取消。服务端工具暂停是 Anthropic 的 `pause_turn`：把暂停的回复原样追加为 assistant 消息后再次请求，响应带 `container` 时一并带回它的 id。Anthropic 的 beta 停止原因 `compaction` 只在采用服务端压缩时出现（见[上下文压缩](#上下文压缩)）。
-- **用量**：输入、输出、缓存读取、缓存写入和推理的 token 数，费用按模型清单里的价格计算。输入、缓存读取和缓存写入三项互不包含，推理算进输出、另列为子项；各家的口径不同（Anthropic 的 `input_tokens` 不含缓存，OpenAI 的含 `cached_tokens`），由适配器换成这个口径，token 计数的锚点和价格档都按它计算。用量保留各家的细分，清单的价格也不只是每个模型一个单价，只靠总数算不准：Anthropic 的缓存写入分 5 分钟和 1 小时两档，OpenAI 的分 `ttl_30m_tokens` 和 `ttl_12h_tokens`；服务端工具按次计费（`server_tool_use.web_search_requests` 等）；快速模式和 `inference_geo: "us"` 改变价格；两家都按提示长度分档，超过阈值时整次请求按更高的价格计。
+- **用量**：输入、输出、缓存读取、缓存写入和推理的 token 数，费用按模型清单里的价格计算。输入、缓存读取和缓存写入三项互不包含，推理算进输出、另列为子项；各家的口径不同（Anthropic 的 `input_tokens` 不含缓存，OpenAI 的含 `cached_tokens`），由适配器换成这个口径，token 计数的锚点和价格档都按它计算。用量保留各家的细分，清单的价格也不只是每个模型一个单价，只靠总数算不准：Anthropic 的缓存写入分 5 分钟和 1 小时两档，OpenAI 的分 `ttl_30m_tokens` 和 `ttl_12h_tokens`；服务端工具按次计费，用量里按工具名记下计费的次数（`server_tools`，取自 Anthropic 的 `server_tool_use.web_search_requests`、OpenAI 的 `tool_usage.web_search.num_requests`），价格写在清单的 `price.server_tools`（每一千次的美元数）；快速模式和 `inference_geo: "us"` 改变价格；两家都按提示长度分档，超过阈值时整次请求按更高的价格计。
 - **错误类别**：认证失败、无权限或模型不存在、额度或账单不足、限流（附带建议的等待时间）、服务过载、上下文超长、请求过大、请求格式错误、推理内容前缀不符（见[前缀校验失败](#前缀校验失败)）、网络中断和超时。loop 按类别决定能不能重试，不需要认识各家的错误格式。转换模块按各家的错误码分类，不只看 HTTP 状态码：
   - OpenAI 的额度不足和限流都是 429，按 `error.code` 区分：`credit_balance_exhausted`、`organization_spend_limit_exceeded`、`project_spend_limit_exceeded` 和 `organization_usage_limit_exceeded` 是额度不足（`error.type` 仍可能是 `insufficient_quota`）；`slow_down` 是限流；服务过载是 503 `server_is_overloaded`。
   - Anthropic 达到用量等级的月度消费上限时返回 429、不带 `retry-after`，按 `error.details.error_code` 为 `enforced_spend_limit_reached` 归入额度不足；组织或工作区自设的消费上限返回 400 `invalid_request_error`（"You have reached your specified API usage limits"），同样是额度不足；429 `ramp_limit_exceeded` 等 `retry-after` 后重试。上下文超长是 400 且没有错误码，按错误信息"prompt is too long"识别。
@@ -52,6 +80,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 - **协议专有的内容**分两类：
   - 其他包要据此做决定的，定义正式类型：推理内容（摘要可以为空，带 `redacted` 标记、不透明的签名或加密数据，以及产生它的协议、服务和模型）、拒绝的详情、回退的分界、服务端对输入的变换（`input_transformations`）、分次用量和文本上可选的 `phase`。它们决定换模型、压缩和前缀校验的处理、task 是否结束、Host 按哪个模型检查和计费。
   - 其余只原样往返：Anthropic 的服务端工具块（web search、web fetch、code execution、tool search 等）、`citations`、`document`、`search_result`、`tool_reference`、`container`、`connector_text` 和 MCP 块，OpenAI 的 `web_search_call`、`annotations` 等。它们在启用对应功能时按协议逐项列出，作为带来源的不透明块按原位置保存，只发回同一协议和同一服务。响应里出现没列出的类型时报错：Anthropic 要求每种块都原样带回，丢掉不认识的块等于改写之后每一轮的前缀；服务端工具和 beta 都要显式开启，正常使用遇不到没列出的类型。
+  - P5 启用服务端工具后列出的类型（见[服务端工具](#服务端工具)）：不透明块 `opaque` 保存这个块在原协议里的 JSON 原文（`raw`）、它在原协议里的类型（`kind`）、一行给人看的说明（`summary`，如搜索的关键词）和来源；文本块上的引用是可选的 `citations`，带原协议里引用数组的 JSON 原文和来源，同样只带回同一协议和服务。其他包不解释这两样，只按原文的长度估算 token。
 - **不用参数不是 JSON Schema 的工具**：OpenAI 的 custom 工具、Responses 内置的 `apply_patch` 和 `shell`，Anthropic 定义的 `bash_20250124`、`text_editor_20250728` 和 `memory_20250818`。它们的参数固定在模型里，放不下越界申请的参数，声明和结果格式也随协议变化，违反"所有模型用同一套工具"。
 
 内部协议有格式版本。会话记录保存内部协议的消息，格式变化时提供迁移；Host 另外保存每条消息在目标协议里的原文（见[原样重放](#原样重放)）。
@@ -89,7 +118,8 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 内置清单随 `api` 包发布，开发时由脚本生成，用户在用户级配置里补充（见 agent-host 的[配置项](agent-host.md#配置项)）。
 
 - **字段**照 pi 的 `Model`，名字用 snake_case，和配置文件里 `[models.<ID>]` 的键相同：`protocol`、`service`、`base_url`、`model`、`context_window`、`max_input_tokens`、`max_output_tokens`、`price`、`images`、`thinking_level_map`、`system_updates`（能在中途追加 system 级指令）、`tool_updates`（能在中途增减工具）、`prefix_check`（Anthropic 会做前缀校验）、`allowed_fallback_models`（拒绝时允许接着回答的模型和它们的价格，见[拒绝和回退](#拒绝和回退)）和 `openai.chat` 的 `compat`。能力标记没写时按不支持处理；`compat` 没写的项按 OpenAI 自己的 Chat Completions 的行为。费用照 pi 计算：按总输入（输入加缓存读写）选价格档（`price.tiers`），整次请求按这一档计费；分时段的价格写成 UTC 的星期几、时段和倍数（`price.periods`，如 DeepSeek 工作日高峰加倍，节假日判断不了、按高峰价估）。某个服务上的限制写成这个服务上单独的条目，例如 OpenAI 的 Chat Completions 带工具时只能不推理，就把 `thinking_level_map` 写成只有 `off = "none"`。
-- **数据来源**：`anomalyco/models.dev`（MIT）固定 commit 下的 TOML 源文件。models.dev 发布的 v2 数据（`https://models.dev/experimental/v2.0/api.json`）就是由这些文件生成的，但它不能按 commit 取，所以生成脚本（`packages/api/scripts/generate-models.ts`）经 GitHub 的 REST 接口按 commit 读收录的服务和模型的源文件，按 models.dev 的 generate-v2 合并规范定义和服务文件，严格校验用到的字段（用了不认识的价格条件、推理 token 单独计价等表达不了的写法时报错）；再叠加 `api` 自己维护的修正层（`scripts/model-corrections.ts`）：收录哪些服务和模型、各服务的协议和地址、`openai.chat` 的兼容差异、`prefix_check`，以及和本项目核实的结论不一致的字段。只收录能调用工具、用 effort 控制推理（或不推理）的对话模型。生成后抽样和官方定价页核对，models.dev 有漏项。
+- **P5 增加的字段**：`auth`（见[认证](#认证)）、`headers`（每次请求附加的固定请求头）、`vertex`（`anthropic.messages` 发往 Vertex AI 的写法）、`server_tools`（这个服务上能用的服务端工具，见[服务端工具](#服务端工具)；协议没有的工具写了就报错）、`price.server_tools`（服务端工具每一千次调用的价格，键是工具名）和 `price.changes`（已经公布的调价：从 UTC 的某一天起整个价格乘一个倍数，如 Gemini 的优惠价到期后翻倍）。条目有价格时，`server_tools` 里的每个工具都要有价格，不收费的写 0：否则启用之后费用上限算不准。
+- **数据来源**：`anomalyco/models.dev`（MIT）固定 commit 下的 TOML 源文件。models.dev 发布的 v2 数据（`https://models.dev/experimental/v2.0/api.json`）就是由这些文件生成的，但它不能按 commit 取，所以生成脚本（`packages/api/scripts/generate-models.ts`）经 GitHub 的 REST 接口按 commit 读收录的服务和模型的源文件，按 models.dev 的 generate-v2 合并规范定义和服务文件，严格校验用到的字段（用了不认识的价格条件、推理 token 单独计价等表达不了的写法时报错）；再叠加 `api` 自己维护的修正层（`scripts/model-corrections.ts`）：收录哪些服务和模型、各服务的协议和地址、`openai.chat` 的兼容差异、`prefix_check`，以及和本项目核实的结论不一致的字段。只收录能调用工具、用 effort 控制推理（或不推理）的对话模型。Anthropic 和 OpenAI 自己的服务上的条目带 `server_tools`：联网搜索的价格取 models.dev 的 `cost.web_search`（它没有这一项的模型不列联网搜索），网页读取不另收费、写 0。models.dev 里按日期生效的价格倍数生成 `price.changes`。生成后抽样和官方定价页核对，models.dev 有漏项。
 - 生成结果提交进仓库，构建不联网，价格变化直接出现在 diff 里，发布内容可以复现。
 - 清单不单独发包：它要随 `api` 的转换规则一起变，所有包也用同一个版本号。改价格或加模型就发一个所有包都升的 patch 版本，走正常的发布流程。
 - 不联网拉取清单（见 overview 的[所有包都遵守的规则](../overview.md#所有包都遵守的规则)），评测也需要固定的清单。
@@ -100,7 +130,7 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 不用官方 SDK，`client/` 自己发请求：`fetch` 由调用方传入（Host 传 Node 内置的，或带代理的版本），SSE 按 WHATWG 的规则手写解析，`api` 不增加运行时依赖。
 
 - 不用 SDK 的原因：Anthropic 和 OpenAI 的 TS SDK 都会读环境变量和凭据文件、关不干净，并附带暴露系统和运行时版本的 `x-stainless-*` 头；它们自带的重试会和 loop 的重试叠加，让请求次数上限算错；剩下的累加和序列化功能不需要它们。
-- 对外的入口是 `streamModel(entry, request, {messageId, apiKey, fetch, signal})`，产出内部协议的流式事件，以唯一的 `end` 结束：服务报错、网络中断和取消都体现在 `end` 里（`stop_reason` 为 `error` 或 `cancelled`，前者另带错误类别），不抛出；只有转换模块的缺陷和没有列出的内容才抛出。`testing/` 的脚本模型用法相同。
+- 对外的入口是 `streamModel(entry, request, {messageId, apiKey, fetch, signal})`（另有可选的 `cacheKey`、`raws` 和 `serverTools`），产出内部协议的流式事件，以唯一的 `end` 结束：服务报错、网络中断和取消都体现在 `end` 里（`stop_reason` 为 `error` 或 `cancelled`，前者另带错误类别），不抛出；只有转换模块的缺陷和没有列出的内容才抛出。`testing/` 的脚本模型用法相同。
 - `anthropic-version` 由 adapter 显式发送，P1 固定为 `2026-10-21`，换版本按破坏性改动处理。这个版本里发送 `temperature`、`top_p` 或 `top_k`，在 assistant 消息里直接放 `document` 块，或在 user 消息的文本上带 `citations`，都返回 400。
 - 代理不在 `api` 里处理，由 Host 传入的 `fetch` 决定（见 overview 的[语言和运行环境](../overview.md#语言和运行环境)）。
 - 流的空闲超时 300 秒，归入"网络中断和超时"。解析器用录制的真实流测试，包括兼容服务的非标准事件（没有 `event:` 的错误、注释心跳）。不带内容的事件里没列出的类型忽略（中转服务会加 `response.metadata` 这类事件），带内容的没列出的类型报错。
@@ -136,6 +166,34 @@ runtime 在沙盒里只用 `protocol/`（测试时还用 `testing/`），`adapte
 **工具结果里的图片**：`openai.chat` 的 tool 消息只能放文本，图片移到这组工具结果之后追加的 user 消息里（照 pi）；Responses 的 `function_call_output` 能直接带 `input_image`；Anthropic 对 `is_error` 为真的工具结果只接受文本，图片移到同一条 user 消息里这组 `tool_result` 块之后。清单标明不读图片的模型收到图片时，转换模块换成一句文字占位。这几种放法都用真实模型核对过（2026-11-10，`gpt-5.6-sol` 的 Responses 和 Chat Completions，`claude-haiku-5-5` 的 `is_error` 为真和为假）：请求被接受，模型答得出图片的颜色。
 
 **模型能力以模型清单为准**：上下文长度、最大输出长度，是否支持工具、并行工具调用、图片、推理和提示缓存，是否支持中途 system 消息、能否在对话中增减工具，`tool_choice` 允许的值，服务档位的价格倍率，都从清单读取（这几项 models.dev v2 已经提供），context 和转换模块据此决定做法。
+
+### Gemini 的转换规则
+
+`google.generate-content` 对应 Gemini API 的 `streamGenerateContent`（P5）。请求发往 `{base_url}/models/{model}:streamGenerateContent?alt=sse`，内置条目用 `v1`：官方 SDK 从 2026 年 11 月的大版本起默认用它，这里用到的字段它都有。
+
+| 内部协议 | `google.generate-content` |
+|---|---|
+| 第一条 `system` 消息 | `systemInstruction` |
+| 追加的 `system` 消息 | 并入 `systemInstruction`（只有这一处能放系统指令，清单里不标 `system_updates`） |
+| `user` 消息 | `role: "user"` 的一条 content：文本是 `text` part，图片是 `inlineData` part；连续的 user 消息并成一条（`contents` 里 user 和 model 交替） |
+| `tool_call` 块 | `role: "model"` 的 `functionCall` part（`name`、`args`、`id`）；转换后一个 part 都不剩的回复（比如只有别的服务留下的推理块）不发 |
+| `tool_result` 消息 | `role: "user"` 的 `functionResponse` part（`name` 取对应调用的名字，`id`，`response`）：文字放 `response.output`，`is_error` 为真时放 `response.error`，PNG、JPEG 和 WebP 图片放 `functionResponse.parts` 的 `inlineData`（`is_error` 为真时也一样），官方文档没列在这里的 GIF 移到这组结果之后、作为普通的 `inlineData` part；连续的工具结果和其后的用户输入并成一条 |
+| `reasoning` 块 | 有文字的是 `thought: true` 的 `text` part（思考摘要）；文字为空、只有 `opaque` 的是紧跟其后那个 part 上的 `thoughtSignature`，后面没有 part 时是一个空 `text` part 上的签名 |
+| 停止原因、拒绝的详情 | `finishReason`、`promptFeedback.blockReason` |
+
+- **签名按 part 原位带回**：Gemini 3 起，一轮里每一步的第一个 `functionCall` 必须带着收到的 `thoughtSignature`，否则返回 400；文本 part 上的签名不强制，但同样带回。带签名的 part 不和别的 part 合并：流里一段带签名的文本另起一个文本块，签名作为它前面的推理块保存。签名和其他推理内容一样只带回同一服务；其他模型留下的工具调用没有签名，按官方文档的做法给每条回复的第一个 `functionCall` 写上 `skip_thought_signature_validator`。实测（2026-11-12，`gemini-4-argon`）：调用的签名和 `functionCall` 在同一个 part 上，文字回复的签名在流末尾一个 `text` 为空的 part 上；两种签名带回后请求都被接受，Claude 留下的调用写上占位签名后也被接受。空 part 上的签名之后又来了不带签名的文本时（没有见过），带回时签名落在那段文本上。
+- **调用编号**：Gemini 3 起每个 `functionCall` 都带 `id`，对应内部的 `call_id`，`functionResponse` 带同一个 `id`。响应里没有 `id` 时用回复的 `message_id` 和这个调用在回复里的块下标生成一个。工具结果按调用的顺序排在同一条 content 里，不和调用交错。
+- **工具声明**用 `parametersJsonSchema`（标准的 JSON Schema），不用 OpenAPI 子集的 `parameters`。工具名最长 128 个字符，首字符必须是字母或下划线：按[内部协议](#内部协议)里工具声明的规则改写，首字符是数字或连字符时再在前面加一个下划线。`tool_choice` 为 `none` 时发 `functionCallingConfig.mode = "NONE"`，为 `auto` 或者这次请求没有工具时不发 `toolConfig`（默认就是 `AUTO`）。
+- **推理强度**写在 `generationConfig.thinkingConfig.thinkingLevel`，同时设 `includeThoughts: true` 取思考摘要。Gemini 4 和 3.8 Flash 不能关闭推理，也不支持 `minimal`，清单的 `thinking_level_map` 不写这两级。不发 `thinkingBudget`：它在 Gemini 4 上已经弃用，和 `thinkingLevel` 一起发返回 400。不接受采样参数：Gemini 3.6 起忽略它们，并预告以后返回 400。
+- **流**里每个事件是一个完整的 `GenerateContentResponse`，没有事件名也没有结束标志；收到带 `finishReason` 的候选才算正常结束，否则按流中断处理。`functionCall` 整个到达，不分段。不带签名的空 `text` part 不产生内容；`text` 和 `functionCall` 以外的 part 只在启用了内置工具时才有，出现就报错。流中途的错误是一个带 `error` 对象的事件，和 HTTP 错误的格式相同，状态码取 `error.code`。实测流的最后一个事件带 `finishReason`，它的 `parts` 是空数组或只有那个带签名的空 `text` part，之后没有 `[DONE]`。
+- **停止原因**：`STOP` 是正常结束，回复里有 `functionCall` 时是"要调用工具"（Gemini 没有对应的 `finishReason`，实测以调用工具结束的回复也是 `STOP`）；`MAX_TOKENS` 是达到输出上限；`SAFETY`、`RECITATION`、`LANGUAGE`、`BLOCKLIST`、`PROHIBITED_CONTENT`、`SPII` 和 `IMAGE_` 开头的几种按拒绝处理并作废本轮输出，类别取 `finishReason` 的值；没有候选、只有 `promptFeedback.blockReason` 时同样按拒绝处理。`MALFORMED_FUNCTION_CALL`、`UNEXPECTED_TOOL_CALL`、`TOO_MANY_TOOL_CALLS`、`MISSING_THOUGHT_SIGNATURE`、`MALFORMED_RESPONSE`、`OTHER` 和没列出的值按请求出错处理（类别"请求格式错误"，带上 `finishMessage`）。
+- **不做长输出续接**：Gemini 4 的一次流式响应最多输出 65,536 个 token，超过要带着 `continuationToken` 重发同一个请求（`finishReason` 为 `CONTINUATION`）。清单里 `max_output_tokens` 不超过 65,536，达到上限时以 `MAX_TOKENS` 结束，不会出现 `CONTINUATION`；万一出现，按达到输出上限处理。加入的条件见 roadmap 的[不做的功能](../roadmap.md#不做的功能)。
+- **用量**：`usageMetadata` 的每一份都是到当时为止的累计，后到的覆盖先到的。输入是 `promptTokenCount` 减去 `cachedContentTokenCount` 再加 `toolUsePromptTokenCount`，缓存读取是 `cachedContentTokenCount`，输出是 `candidatesTokenCount` 加 `thoughtsTokenCount`，推理是 `thoughtsTokenCount`。缓存是服务端按前缀自动做的，没有断点可设，也不另收写入的钱，`cache_retention` 不起作用。
+- **错误**按 HTTP 状态码归类：400 且 `details` 里的 `reason` 为 `API_KEY_INVALID`、以及 401 是认证失败；403 和 404 是无权限或模型不存在；402 是额度不足；413 是请求过大；429 是限流，官方文档没有写错误体里等待时间放在哪里，只认 `retry-after` 响应头（网关和中转服务会加），没有就按 agent-runtime 的[模型请求的重试](agent-runtime.md#模型请求的重试)里的间隔重试；5xx 是服务过载。上下文超长没有专门的错误码，文档只给出 500 的"Your input context is too long."和 504 的"Your prompt (or context) is too large to be processed in time."，按这两句识别。
+- **计数**用 `POST {base_url}/models/{model}:countTokens`，请求体是 `{generateContentRequest: {...}}`（带 `model: "models/<模型>"`，真实请求里模型只写在地址上），内容和真实请求相同，结果取 `totalTokens`。实测 `v1` 上带着 `systemInstruction`、`tools` 和 `generationConfig` 的请求体被接受。
+- **图片**按每张 1,120 个 token 估算：这是 Gemini 3 和 4 在默认分辨率下每张图片的上限。
+- 不发 `store`：日志开不开由用户的项目设置决定。
+- 不接内置工具（Google Search、URL context）：条目不写 `server_tools`，对这个协议启用服务端工具会抛出（见[服务端工具](#服务端工具)）。
 
 ## 追加指令的来源
 
@@ -180,11 +238,32 @@ Anthropic 的拒绝可能在输出部分内容之后才到，这部分输出要�
 - 对做前缀校验的模型，请求带上 `thinking-binding-controls-2026-08-01` 并显式设 `prefix_mismatch_behavior: "error"`：不设时结果取决于账号的创建日期，较早的账号上失效的推理块会被悄悄送给模型并计费。Sonnet 5.5 用 `between_tools`、Haiku 5.5 用 `disabled` 时不能设这个字段。
 - 历史按设计只追加、转换结果确定，出现这个错误说明有缺陷或存储被改过，测试和评测里出现即判失败。
 
+## 服务端工具
+
+模型服务自带的联网搜索和网页读取（P5）。它们由模型服务执行，调用和结果都在同一条回复里，客户端不执行、也不回工具结果；请求由模型服务发往第三方，不经过沙盒和代理，所以默认关闭，由 Host 的配置按服务打开（见 agent-host 的[配置项](agent-host.md#配置项)）。
+
+| 内部的名字 | `anthropic.messages` | `openai.responses` |
+|---|---|---|
+| `web_search` | `{"type": "web_search_20250305", "name": "web_search"}` | `{"type": "web_search"}` |
+| `web_fetch` | `{"type": "web_fetch_20250910", "name": "web_fetch"}` | 没有单独的工具，打开网页是 `web_search` 的一个动作 |
+
+- **开关**：`streamModel` 的 `serverTools` 给出这次请求启用的工具名，定义排在客户端工具之后。名字必须在模型条目的 `server_tools` 里，不在就是调用方的缺陷，会抛出；客户端工具和启用的服务端工具重名时同样抛出。`openai.chat` 的兼容服务没有统一的服务端工具，Gemini 的内置工具和函数声明一起用还在预览，这两种协议的条目不写 `server_tools`。
+- **Anthropic 用基础版本**，不用带动态过滤的 `_20260209` 及之后的版本：那些版本默认经代码执行的容器调用，要保存和带回容器的编号，容器里的数据保留 30 天；基础版本也是 Vertex 和 Azure 托管的 Foundry 上唯一能用的版本。不设 `max_uses`、域名过滤和位置：花费由 run 的费用上限管。
+- **内容块**作为不透明块原位保存、原样带回（见[内部协议](#内部协议)）：Anthropic 的 `server_tool_use`（流里的 `input_json_delta` 拼成 `input`）、`web_search_tool_result` 和 `web_fetch_tool_result`（整块随 `content_block_start` 到达），文本块上的 `citations`（流里的 `citations_delta` 逐条追加）；OpenAI 的 `web_search_call`（取 `response.output_item.done` 里的完整 item）和 `output_text` 上的 `annotations`。搜索结果里的 `encrypted_content` 和引用里的 `encrypted_index` 缺了或改了，下一次请求返回 400。没有启用服务端工具时，响应里出现这些类型照旧报错。经中转服务用真实模型核对过（2026-11-12，`claude-haiku-5-5` 的搜索和网页读取，`gpt-5.6-sol`、`gpt-6.1-sol`、`gpt-6.1-terra` 和 `gpt-6-sol` 的搜索）：内容块收得下，带回后下一次请求被接受。
+- **不为服务端工具的调用回工具结果**：`srvtoolu_` 开头的编号不对应内部的 `tool_call`，回了会被拒绝。
+- **没有结果的调用**：回复以 `pause_turn` 结束，或者模型在同一组里同时调用了服务端工具和客户端工具（以 `tool_use` 结束）时，最后的 `server_tool_use` 没有结果，结果在下一条回复的开头。这时下一次请求里它后面只能是工具结果，多一段文字就返回 400。所以转换时这样的 `server_tool_use` 只在它所在的回复是最后一条消息、或者之后到下一条回复之间只有工具结果时带回，否则去掉：被取消的 task 之后用户接着输入、工具执行期间插入了 steering 时，请求照样发得出去，代价是那一次调用白做。去掉的块在它所在的回复末尾，前面的推理块不受影响。反过来也一样：结果对应的调用不在同一条回复、也不在上一条回复里（调用被去掉、作废，或者不能带回这个服务）时，结果也不带回。文本块上指向这次结果的引用照常带回：实测调用和结果都去掉之后，带着引用的请求被 Anthropic 接受。
+- **回退**之后，最后一个 `fallback` 块之前没有结果的 `server_tool_use` 随其他不能发回的块一起作废，有结果的成对留下（见[拒绝和回退](#拒绝和回退)）。
+- **用量和费用**：计费的次数取 Anthropic 最后一个 `message_delta` 的 `usage.server_tool_use`（`web_search_requests`、`web_fetch_requests`，是累计值）和 OpenAI `response.completed` 里的 `tool_usage.web_search.num_requests`，不按内容块的个数算：失败的搜索不收费，打开网页不算搜索。记进用量的 `server_tools`，费用按清单的 `price.server_tools` 加进这次请求的费用；搜索结果占的 token 已经在输入里（OpenAI 上实测：同一句话不带搜索时输入 20 个 token，搜索一次后约 8,500 个）。
+- **流式事件**：不透明块没有流式事件，随回复结束时的完整消息到达；前端在回复结束后按 `summary` 各列一行。`summary` 写成 `<工具名>: <关键词或网址>`，只有调用有，结果没有。
+- **提示缓存和前缀校验**：启用或关闭服务端工具会改变 `tools`，缓存失效，做前缀校验的模型上之前的推理块也失效。服务端工具的定义排在最后，Anthropic 的缓存断点跟着落在最后一个定义上。开关在打开 session 时定下，session 中途不变；恢复 session 时配置变了，按[前缀校验失败](#前缀校验失败)处理。
+- **计数**：Anthropic 的计数接口不接受服务端工具，计数的请求不带它们的定义；历史里已经有服务端工具的内容块时计数可能失败，按计数失败处理（见 [token 计数](#token-计数)）。
+- 不做 code execution、tool search、advisor、MCP connector 和 OpenAI 的其他内置工具：它们要在服务端保存容器或文件，或者和本地的工具、MCP 重复（见 roadmap 的[不做的功能](../roadmap.md#不做的功能)）。
+
 ## token 计数
 
 runtime 平时自己估算，不调用计数接口。
 
-- 以上一次响应报告的用量为锚点（输入、输出、缓存读和缓存写之和，只取当前模型正常结束的回复），加上之后新增内容的估算：文字按 UTF-8 字节数除以 1.7，图片按各家的公式（Anthropic 把长边缩到 1568 像素后按宽乘高除以 750；OpenAI 先缩进 2048×2048、再把短边缩到 768，按 512 像素的块数乘 170 再加 85）。没有锚点时（会话的第一次请求、换模型之后）估算全部内容，工具声明也算进去，回复按它报告的输出 token 计。
+- 以上一次响应报告的用量为锚点（输入、输出、缓存读和缓存写之和，只取当前模型正常结束的回复），加上之后新增内容的估算：文字按 UTF-8 字节数除以 1.7，图片按各家的公式（Anthropic 把长边缩到 1568 像素后按宽乘高除以 750；OpenAI 先缩进 2048×2048、再把短边缩到 768，按 512 像素的块数乘 170 再加 85）。没有锚点时（会话的第一次请求、换模型之后）估算全部内容，工具声明也算进去，回复按它报告的输出 token 计。带服务端工具内容块的回复不作锚点：模型服务在一次请求里采样了几轮，报告的输入是各轮之和，比上下文长；这样的回复按报告的输出加上不透明块原文的估算计，搜索结果不在输出里。
 - 除以 1.7 是实测的最坏情况（2026-11-07 经中转服务，每 token 对应的 UTF-8 字节数）：Claude 5.5（Haiku 和 Opus 相同）上代码 2.41、带缩进的 JSON 1.70、中文 2.45、日志 1.88，GPT-6.1 Sol 上分别是 3.78、2.39、3.66、2.44。估算偏低会超出上下文窗口，偏高只是让压缩早一点发生，而偏低最多的 JSON 和日志正是常见的工具输出。
 - 压缩或换模型之后锚点作废；作废的块只会让实际的上下文变小，锚点照用。估算超过上下文长度（模型另有输入上限时取较小的那个）的 90% 时压缩（见[上下文压缩](#上下文压缩)）。每次请求的 `max_tokens` 取清单里的最大输出长度和"上下文长度减去估算"中较小的一个。
 - 只在临界时（按除以 1.7 要压缩、按除以 4 不用）经通道请 Host 计数（`model/count_tokens`，带和 `model/request` 相同的请求）：计数接口要带凭据，只能由 Host 发起。Host 的模型代理用和真实请求相同的原文调用计数接口，因为 Anthropic 的计数接口同样做前缀校验；计数结果作为新的锚点（到被计数的最后一条消息为止），也计入请求次数的上限。计数失败（接口报错、60 秒没有响应）时按除以 1.7 的估算处理，不重试：早一点压缩不影响正确性，中转服务也不一定转发计数接口。计数不算把消息发给了模型，Host 不为它记 `message.sent`：被计数的新输入可能在压缩之后才进入历史。
@@ -192,6 +271,7 @@ runtime 平时自己估算，不调用计数接口。
 - OpenAI 的 `POST /v1/responses/input_tokens` 结果准确。请求体取 `responses.create` 的 `model`、`instructions`、`input`、`tools`、`tool_choice` 和 `reasoning`，去掉它不接受的 `include`、采样参数、`max_output_tokens`、`prompt_cache_key`、`store` 和 `stream`；响应是 `{object: "response.input_tokens", input_tokens}`。
 - `api` 导出 `countTokens(entry, request, options)`，和 `streamModel` 一样按清单条目的协议分派，不重试；结果是 `{input_tokens}`、`{error}`（和模型请求相同的错误类别，响应里没有 `input_tokens` 按网络错误算）或 `{cancelled: true}`。
 - `openai.chat` 兼容服务没有计数接口，阈值降到 85%，临界时直接压缩；对它调用 `countTokens` 是缺陷，会抛出。服务端报上下文超长时由 loop 压缩后再发一次请求。
+- Gemini 的计数见 [Gemini 的转换规则](#gemini-的转换规则)。Azure OpenAI 没有 `/responses/input_tokens`，Bedrock 和 Vertex 上的计数接口没有实测过：计数失败都按上面的办法处理，不为各平台另设开关。
 - 不用本地分词器：它们只对应 OpenAI 的编码，也不处理图片、文件和工具声明。
 
 ## 上下文压缩
@@ -216,8 +296,8 @@ P3 以客户端压缩为基线，所有协议共用：runtime 决定压缩的时
 ## 在系统中的位置
 
 - runtime 用内部协议发出模型请求，经通道送到 Host。
-- Host 的模型代理先检查模型是否允许使用、启用的服务端工具是否获准、预算是否足够；再用 `api` 转换成目标服务的协议，附加凭据后发出；最后把流式响应转换回内部事件交给 runtime，并按内部事件统计用量。
-- 服务端工具（联网搜索等）的开关和对应内容块的原样往返在 P5 交付，P1 到 P4 一律关闭。
+- Host 的模型代理先检查模型是否允许使用、预算是否足够；再用 `api` 转换成目标服务的协议，按配置加上启用的服务端工具，附加凭据后发出；最后把流式响应转换回内部事件交给 runtime，并按内部事件统计用量。
+- 服务端工具由 Host 按配置决定，runtime 的请求里不带、也不能要求启用（见[服务端工具](#服务端工具)）。
 - `api` 包本身不读取凭据文件或环境变量，凭据由调用方传入。
 - `memory` 需要调用模型时，由调用方传入发起调用的函数，`memory` 不依赖 `api`。
 
@@ -241,4 +321,9 @@ P3：
 
 P5：
 
-- 接入 Gemini 前，按 `@google/genai` 的类型和 changelog 核实 `CONTINUATION` 和 `continuationToken` 的续接规则。
+- 本机没有 Azure、Foundry、AWS 和 Vertex 的凭据，也没有装这几家的命令行，这几个平台只用官方文档里的请求和响应样例测过。有凭据后各发一次真实请求，凭据用 agent-host 的[输出凭据的命令](agent-host.md#凭据和登录)取（`gcloud auth print-access-token`、`az account get-access-token`、`aws configure export-credentials --format process`），核对：命令的输出能直接当凭据用，地址和认证被接受（SigV4 的签名、`x-amz-content-sha256`、`anthropic-workspace-id`），流的格式和首批服务相同，错误体能归到正确的类别（Vertex 上模型自己报的错是 Anthropic 的格式还是 Google 的格式；Bedrock 的 429 和签名错误的响应体）。
+- 文档没有写明、例子里先关掉的能力，核对后改清单的例子：Bedrock 和 Foundry 上的前缀校验（`thinking-binding-controls-2026-08-01` 和 `prefix_mismatch_behavior`）、中途的 system 消息和 `inline-tools-2026-09-15`；Claude Platform on AWS 上的服务端回退（两处文档说法不一）；Bedrock 和 Vertex 的计数接口是否可用。
+- Gemini：经中转服务只能用原生接口调用 `gemini-4-argon`，下面几项没有核对到。429 的等待时间放在哪里（论坛里见过 `details` 里的 `RetryInfo`，官方文档和 SDK 都没有）；输入超过上下文长度时返回的状态码和文字（文档只有 500 和 504 的两句）；流中途出错的事件长什么样；`countTokens` 的结果含不含签名占的 token、带 `toolConfig` 时是否接受；同一服务上换一个 Gemini 模型后带回的签名是否被接受；有没有只带 `thoughtSignature`、连 `text` 都没有的 part（现在按没列出的 part 报错）；GIF 放进 `functionResponse.parts` 在中转服务上被接受，直连时是否像文档写的返回 400。
+- 服务端工具：在能直连、看得到账单的 Anthropic 账号和 OpenAI 账号上核对用量里的计费次数和账单一致（中转服务看不到两家的账单）；Anthropic 的计数接口在历史里有服务端工具的内容块、`tools` 里没有对应定义时是否报错（中转服务没有计数接口）。
+- 内置清单里 `gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.4` 和 `gpt-5.4-mini` 的联网搜索只依据 models.dev 的 `cost.web_search`，没有逐个对过 OpenAI 的模型页，中转服务上也没有这几个型号：各发一次带搜索的请求，不支持的从修正层去掉。
+- Vertex 流里的 `vertex-block-event`、Azure OpenAI 内容过滤的 400（现在按"请求格式错误"归类，响应体里的 `content_filter` 没有另作拒绝处理）只按文档的描述写了解析，没有见过真实的响应。

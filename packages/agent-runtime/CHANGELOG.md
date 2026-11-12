@@ -12,6 +12,7 @@
 - `ToolResult` 里被审批策略拒绝的结果（`status: "denied"`、`reason: "policy"`）多了必填的 `categories`（新增的类型 `DenialCategory[]`）：这次调用要询问的全部类别，取值是审批策略 `granular` 的类别名，其中危险命令判断单独记作 `dangerous_command`。通道的 schema 同步变化，不带它的这种结果校验不过。迁移：给出这种结果的一方（Host，测试里的假 Host）补上 `categories`；其余 `reason` 的结果不变。
 - `hooks/run` 的参数（`HooksRunParams`）两种事件都多了必填的 `message_id`：hooks 的原因（`Stop`）或补充的信息（`PreCompact`）交给模型时，runtime 放它的那条 user 消息的编号。Host 把它记进 `hooks.ran`，按事件脱敏靠它把 hooks 的输出和那条消息对上。通道的 schema 同步变化，不带它的请求校验不过。迁移：处理 `hooks/run` 的一方（Host，测试里的假 Host）接受这个字段。
 - `memory/read` 的参数（`MemoryReadParams`）多了必填的 `tool_call_id`，`memory/search`（`MemorySearchParams`）多了可选的 `tool_call_id`：发起它的那次 `memory_read` 或 `memory_search` 调用登记时得到的编号，Host 记进 `memory.retrieved`，按事件脱敏时查询随那次调用的参数一起覆盖。task 开始时自动注入的检索不是工具调用发起的，不带。迁移：处理这两个请求的一方接受这个字段；Host 核对它是这个 run 里登记过、还没有结果的同名调用。
+- 通道上的消息格式随内部协议放宽：模型回复的内容块多了 `type: "opaque"`（服务端工具的调用和结果），文本块多了可选的 `citations`，用量多了可选的 `server_tools`，协议名多了 `google.generate-content`。迁移：自己实现通道 Host 一侧的调用方按新的 schema 收发；不透明块不对应工具调用，不用为它回工具结果。
 
 ### Added
 
@@ -68,3 +69,13 @@
   - 会话开始的上下文消息里多了单独的一块 `<memory_index>`：每条生效的记忆一行，引用的文件和写入时比已经改动的标上 `[referenced files changed]`，放不下的只写条数。之后索引变了，在下一个 task 的输入前面追加 `<memory_update>`。注入方式为 `auto` 时，每个 task 开始时按输入检索（`memory/search`），把前 3 条的正文放在输入前面。
   - 已经告诉模型的索引经 `instructions.recorded` 的 `memory`（`RecordedMemory[]`：编号和版本号）上报，重启后据此只追加变化。
 - 重建历史（`rebuildState`）认 Host 按事件脱敏留下的标记：`record/read` 读回的事件内容上可以带可选的 `redacted: true`（Host 定义，事件结构不变、内容是占位；runtime 只读这个标记，`RecordedEvent` 的类型不变）。路径上出现带标记的事件之后，回复里的推理块都作废，不再发给模型。带标记的 `context.compacted` 是一次作废的压缩：历史不换成它的 `messages`，接着用压缩之前的历史，要摘要的那条消息和摘要的回复去掉，它的 `messages` 随后记的副本照样不放回；它的 `instructions`、`loaded_skills` 和之后到下一次有效压缩为止的 `instructions.recorded` 不取；它之后的回复不当估算上下文的锚点，历史超过阈值时在下一次请求前照常重新压缩。带标记的 `skill_load` 调用不算已加载。没有带标记的事件时行为不变。
+- 子 agent 和多 worker（P5，设计见 `docs/packages/agent-runtime.md` 的"子 agent"）：
+  - 启动配置多了可选的 `subagents`（`SubagentInfo[]`：可以启动的子 agent 的名字、说明和是不是在自己的工作区里运行）和 `subagent`（`SubagentRole`：这个进程自己是子 agent 时它的名字和补充说明）。两者都没有时，工具集、系统指令和行为同以前一样。
+  - 工具 `spawn_agent`、`send_message`、`interrupt_agent`（`subagentToolRegistry`，参数的 schema `spawnAgentArgumentsSchema`、`sendMessageArgumentsSchema`、`interruptAgentArgumentsSchema`），Host 在启动配置的 `tools` 里列出才启用。和文件工具一样先用 `tool_call/register` 登记，允许后经通道新增的 `subagent/start`、`subagent/send`、`subagent/stop`（runtime → Host 的请求，`SubagentStartParams` 等）执行。`spawn_agent` 在子 agent 开始工作后就返回它的 `agent_id`，不等它做完。
+  - 通道新增通知 `subagent/ended`（Host → runtime，`SubagentEndedParams`）：一个子 agent 自己结束了，结果已经在 Host 的通知队列里，runtime 用 `input/take` 取出，在下一次模型请求之前插入。
+  - 模型给出最终回复时还有子 agent 在运行的，runtime 不报告 task 结束，等到有结果可取或用户有 steering 再请求模型；这期间 `status` 的 `state` 是新增的 `subagents`。
+  - 会话开始的上下文消息里多了单独的一块 `<subagents>`（每个定义一行）；子 agent 进程的系统指令写明它是哪个子 agent、结果怎样交回，它的补充说明放在上下文消息的 `<subagent_instructions>` 里。
+- 服务端工具的内容块和 Gemini（P5）：
+  - loop 把回复里的不透明块原样留在历史里，不为它执行工具、也不回工具结果。
+  - 上下文估算：不透明块按原文的长度估算；带着不透明块的回复不作锚点（它报告的输入用量是服务端几次采样的累计，不是上下文的长度），它的长度按输出用量加上不透明块的估算。`google.generate-content` 的图片按每张 1120 个 token 估算。
+  - 恢复 session 时，被按事件脱敏覆盖的回复里的不透明块随推理内容一起作废，没有被覆盖的照常保留。

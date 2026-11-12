@@ -4,6 +4,7 @@ import type { ModelEntry } from "../models/entry.js";
 import type {
 	ImageBlock,
 	Message,
+	Origin,
 	ProtocolName,
 	UserContent,
 } from "../protocol/index.js";
@@ -40,6 +41,15 @@ export function contentSha256(entry: ModelEntry, value: unknown): string {
 	);
 }
 
+/** 协议专有的内容（推理的密文、不透明块、引用）只带回产生它的协议和服务。 */
+export function sameService(
+	entry: ModelEntry,
+	protocol: ProtocolName,
+	origin: Origin,
+): boolean {
+	return origin.protocol === protocol && origin.service === entry.service;
+}
+
 /** 一条消息里影响转换结果的部分：回复的用量、停止原因这类字段不算。 */
 export function messageHashInput(message: Message): unknown {
 	return message.role === "assistant"
@@ -62,6 +72,22 @@ export function jsonObject(fields: [string, string | undefined][]): string {
 
 export function jsonArray(items: readonly string[]): string {
 	return `[${items.join(",")}]`;
+}
+
+/**
+ * 工具参数的原文：原样放进请求，不经 JSON 往返。模型写出的参数不是 JSON 对象时发空对象，
+ * 否则这段历史再也发不出去。
+ */
+export function inputRaw(args: string): string {
+	try {
+		const value = JSON.parse(args) as unknown;
+		if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+			return args;
+		}
+	} catch {
+		// 参数原文不是 JSON：工具调用已经按失败处理，这里只要能发出去
+	}
+	return "{}";
 }
 
 /**

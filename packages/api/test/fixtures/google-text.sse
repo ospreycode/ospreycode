@@ -1,0 +1,6 @@
+data: {"candidates":[{"content":{"parts":[{"text":"The image displays"}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":264,"totalTokenCount":264},"modelVersion":"gemini-3.8-flash","responseId":"mAitaLmkHPPlz7IPvtfUqQ4"}
+
+data: {"candidates":[{"content":{"parts":[{"text":" the following materials:\n\n*   **Wood:** The accordion and the violin are primarily"}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":264,"totalTokenCount":264},"modelVersion":"gemini-3.8-flash","responseId":"mAitaLmkHPPlz7IPvtfUqQ4"}
+
+data: {"candidates":[{"content":{"parts":[{"text":" made of wood."}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":264,"candidatesTokenCount":21,"thoughtsTokenCount":58,"totalTokenCount":343},"modelVersion":"gemini-3.8-flash","responseId":"mAitaLmkHPPlz7IPvtfUqQ4"}
+

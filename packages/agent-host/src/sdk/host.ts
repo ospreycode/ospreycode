@@ -6,6 +6,7 @@ import {
 	builtinModels,
 	type CountTokens,
 	countTokens,
+	credentialSecrets,
 	type StreamModel,
 	streamModel,
 } from "@ospreycode/api";
@@ -38,6 +39,7 @@ import {
 	type SessionConfig,
 	type SessionOptions,
 } from "../config/session-config.js";
+import { loadCommandCredential } from "../credentials/command.js";
 import {
 	CredentialError,
 	type LoadedCredential,
@@ -70,7 +72,10 @@ import {
 	processStartTime,
 } from "../processes/info.js";
 import { installDirectories } from "../processes/install-location.js";
-import { Placeholders } from "../processes/placeholders.js";
+import {
+	type PlaceholderRegistry,
+	Placeholders,
+} from "../processes/placeholders.js";
 import { ProcessRegistry } from "../processes/registry.js";
 import {
 	runInSandbox,
@@ -630,6 +635,7 @@ export function createHost(options: HostOptions): Host {
 		"cache",
 		"tmp",
 		"output",
+		"workers",
 	];
 	const install = installDirectories(programFiles, process.execPath);
 	// 规则匹配用的 bash 解析器：加载一次 WASM，这个 Host 的 session 共用
@@ -694,13 +700,30 @@ export function createHost(options: HostOptions): Host {
 	): Promise<{ credential: LoadedCredential; file?: string }> => {
 		const id = config.model.service;
 		const source = config.credentials[id];
-		if (source !== undefined) {
+		// 签名用的凭据里另有密钥和会话令牌，和整个凭据一起登记
+		const onSecret = (value: string) => {
+			for (const secret of credentialSecrets(config.model, value)) {
+				secrets.add(secret);
+			}
+		};
+		if (source !== undefined && "command" in source) {
 			return {
-				credential: loadCredential(id, source, {
-					workspace: config.workspace,
+				credential: await loadCommandCredential(id, source, {
+					cwd: root,
 					env: options.env,
-					platform: process.platform,
+					onSecret,
 				}),
+			};
+		}
+		if (source !== undefined) {
+			const credential = loadCredential(id, source, {
+				workspace: config.workspace,
+				env: options.env,
+				platform: process.platform,
+			});
+			onSecret(credential.value);
+			return {
+				credential,
 				...("file" in source ? { file: realpathSync(source.file) } : {}),
 			};
 		}
@@ -712,6 +735,7 @@ export function createHost(options: HostOptions): Host {
 					: `没有模型服务 ${id} 的凭据：用 ospreycode login --service ${id} 保存，或用 --credential-file 指定`,
 			);
 		}
+		onSecret(value);
 		return { credential: { id, value } };
 	};
 
@@ -721,6 +745,15 @@ export function createHost(options: HostOptions): Host {
 	): Promise<ReloadedSettings> => {
 		const { credential, file } = await credentialFor(config);
 		secrets.add(credential.value);
+		// 子 agent 的定义指定的模型另有凭据文件时，这个 session 的沙盒同样读不到它；文件还不存在的
+		// 等启动子 agent 取凭据时再报
+		const agentFiles = Object.values(config.agents).flatMap(({ model }) => {
+			const source =
+				model === undefined ? undefined : config.credentials[model.service];
+			return source !== undefined && "file" in source && existsSync(source.file)
+				? [realpathSync(source.file)]
+				: [];
+		});
 		const parser = await shellParser();
 		return {
 			config,
@@ -746,7 +779,11 @@ export function createHost(options: HostOptions): Host {
 				owner,
 			}),
 			denied: {
-				read: [root, ...(file === undefined ? [] : [file]), ...config.denyRead],
+				read: [
+					root,
+					...new Set([...(file === undefined ? [] : [file]), ...agentFiles]),
+					...config.denyRead,
+				],
 				write: [...config.denyWrite],
 			},
 		};
@@ -870,11 +907,11 @@ export function createHost(options: HostOptions): Host {
 					sessionId = sourceId;
 					writer = await store.resume(sessionId, locker);
 					resume = readResumeState(store, sessionId);
-					// 上次的临时文件不留：创建它们的进程都不在了
-					rmSync(sessionPaths(root, sessionId).tmp, {
-						recursive: true,
-						force: true,
-					});
+					// 上次的临时文件和 worker 的工作区不留：创建它们的进程都不在了
+					const left = sessionPaths(root, sessionId);
+					for (const directory of [left.tmp, left.workers]) {
+						rmSync(directory, { recursive: true, force: true });
+					}
 				} else {
 					sessionId = newId();
 					// 父 session 当时的整个检查点索引：不在路径上的检查点改过的文件还在工作区里
@@ -1013,7 +1050,20 @@ export function createHost(options: HostOptions): Host {
 						};
 					},
 				},
-				// 切换沙盒模式和重新加载配置时再调用，所以模式和路径都取这一次给的
+				credentialFor,
+				cloneRepository: (projectRoot, directory) =>
+					runGitInSandbox(
+						[
+							"clone",
+							"--shared",
+							"--quiet",
+							projectRoot,
+							join(directory, "repo"),
+						],
+						{ directory },
+						{ root, env: options.env, helperEntry, hostEntries, install },
+					),
+				// 切换沙盒模式、重新加载配置和启动子 agent 时再调用，所以模式和路径都取这一次给的
 				createSandbox: async (context) => {
 					const { denied, bash, env, directories, tracker } = context;
 					const mode = context.config.baseSandboxMode;
@@ -1026,12 +1076,21 @@ export function createHost(options: HostOptions): Host {
 							"Host 的环境变量里没有 HOME，找不到要禁止读取的密钥位置",
 						);
 					}
+					// worker 的工作区在 Host 根目录里：有这样的定义时，这个 session 的沙盒都能读 worker 目录，
+					// 写只有 worker 自己的沙盒能写它的工作区
+					const workers = Object.values(context.config.agents).some(
+						({ isolated }) => isolated,
+					);
 					const policy = {
 						mode,
-						workspace,
+						workspace: context.config.workspace,
 						tmpdir: directories.tmp,
 						cache: directories.cache,
-						readOnly: [directories.output, ...inheritedOutputs],
+						readOnly: [
+							directories.output,
+							...inheritedOutputs,
+							...(workers ? [directories.workers] : []),
+						],
 						denyRead: [...denied.read],
 						denyWrite: [...denied.write],
 						home: env.HOME,
@@ -1041,7 +1100,20 @@ export function createHost(options: HostOptions): Host {
 						...(profile === undefined ? {} : { profile }),
 					};
 					const capabilities = checkSandboxSupport(process.platform);
-					const placeholders = new Placeholders(data, owner, workspace);
+					const registry = new Placeholders(
+						data,
+						owner,
+						context.config.workspace,
+					);
+					// 和主 agent 共用工作区的子 agent 不清理占位：主 agent 的沙盒还靠它们挡住受保护的路径，
+					// 它登记的残留等主 agent 的沙盒停掉时一起清
+					const placeholders: PlaceholderRegistry =
+						context.subagent && context.config.workspace === workspace
+							? {
+									record: (paths) => registry.record(paths),
+									clean: async () => {},
+								}
+							: registry;
 					const sandbox = await sandboxedSession({
 						helperEntry,
 						// agent 和它的命令只读已启用插件的版本目录：skills 的文件在那里

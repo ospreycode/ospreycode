@@ -58,7 +58,8 @@ const noUsage: Usage = {
  * 从最近的一次开始：历史换成它带的消息，只放回它之后的事件。
  *
  * 路径上有被脱敏覆盖的事件（见 `isRedacted`）时：
- * - 从它起，回复里的推理块都作废：它们是对着原来的历史生成的，模型服务核对不上。
+ * - 从它起，回复里的推理块都作废：它们是对着原来的历史生成的，模型服务核对不上。被覆盖的回复里
+ *   服务端工具的不透明块也作废：原文已经换成占位。
  * - 被覆盖的压缩作废：它的摘要是从被覆盖的内容写出来的。历史不换成它带的消息，接着用到此为止
  *   累积的历史，要摘要的那条消息和摘要的回复去掉；它带的消息之后随请求记的副本照样跳过。它重新
  *   生成的系统指令也不取，之后记下的系统指令都建立在那一份上，同样不取：恢复后和压缩之前的记录
@@ -110,8 +111,13 @@ export function rebuildState(
 					});
 				}
 				if (redacted) {
+					// 被覆盖的回复自己的不透明块只剩占位，不能再发回
+					const covered = isRedacted(event.data);
 					message.content.forEach((block, index) => {
-						if (block.type === "reasoning") {
+						if (
+							block.type === "reasoning" ||
+							(covered && block.type === "opaque")
+						) {
 							invalidate(message.message_id, index);
 						}
 					});
