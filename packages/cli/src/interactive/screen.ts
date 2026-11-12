@@ -7,6 +7,7 @@ import {
 	TuiMainScreen,
 	type TuiMouseEvent,
 	VStack,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { TuiMode } from "@ospreycode/agent-host";
 import type { Clipboard } from "./clipboard.js";
@@ -30,6 +31,17 @@ class FullScreen extends TuiAltScreen {
 	}
 }
 
+/**
+ * 对话区滚上去之后的那一行提示。界面库把它盖在对话区最后一行的文字上：只有中间一段的话，两边露出来
+ * 的文字和它连成一行，读不出来。所以占满 `columns` 列，把那一行整个换掉。
+ */
+function scrollToEndRow(columns: number): string {
+	const label = " ↓ 回到最新的内容 · Ctrl+End ";
+	const rule = Math.max(0, columns - visibleWidth(label));
+	const left = Math.floor(rule / 2);
+	return `${style.dim("─".repeat(left))}${style.selected(label)}${style.dim("─".repeat(rule - left))}`;
+}
+
 /** 交互界面的渲染器：`regular` 写在终端的主缓冲区里，`fullscreen` 占着备用缓冲区。 */
 export type Screen = TuiMainScreen | FullScreen;
 
@@ -46,7 +58,7 @@ export function createScreen(
 	const { writeText } = clipboard;
 	return new FullScreen(terminal, undefined, undefined, {
 		wheelScrollLines: "auto",
-		scrollToEndIndicator: () => style.selected(" ↓ 回到最新的内容 · Ctrl+End "),
+		scrollToEndIndicator: () => scrollToEndRow(terminal.columns),
 		...(writeText === undefined
 			? {}
 			: {

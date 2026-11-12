@@ -211,7 +211,7 @@ describe("按记录重画的工具调用", () => {
 		});
 		await terminal.waitForVisible("Enter 发送");
 		expect(terminal.text()).toMatch(
-			/^• Explored\n {2}└ Read a\.txt\n• Edited a\.txt \(\+1 -1\)\n {4}1 - 甲\n {4}1 \+ 乙\n {4}2 {3}丙$/m,
+			/^• Explored\n {2}└ Read a\.txt\n\n• Edited a\.txt \(\+1 -1\)\n {4}1 - 甲\n {4}1 \+ 乙\n {4}2 {3}丙$/m,
 		);
 	});
 });

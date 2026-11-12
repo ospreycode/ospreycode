@@ -139,6 +139,10 @@ describe("MCP 工具", () => {
 		expect(result.stderr).toContain(
 			"警告：仓库自带的 MCP server tools 还没有确认，没有启用",
 		);
+		// 两条提示各一行，排在一起；和上面的任务、下面的结果各隔一行
+		expect(result.stderr).toMatch(
+			/^› 你好\n\n警告：.*\n警告：.*\n\n— 完成 · /m,
+		);
 		const request = JSON.stringify(server.requests[0]);
 		expect(request).not.toContain("审阅改动");
 		expect(request).not.toContain("tools__echo");

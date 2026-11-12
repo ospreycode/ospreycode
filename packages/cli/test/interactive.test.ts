@@ -289,14 +289,127 @@ describe("对话区", () => {
 			{ content: "想好了" },
 		]);
 
-	test("模型的推理内容显示在回复前面", async () => {
+	test("模型的推理内容显示在回复前面，和回复之间空一行", async () => {
 		await fixture.useModel(thinking, reasoning);
 		const { terminal } = await fixture.start();
 		await terminal.type("想");
 		await terminal.press(key.enter);
 		await terminal.waitFor("想好了");
 
-		expect(terminal.text()).toMatch(/^ {2}先想一想\n• 想好了$/m);
+		expect(terminal.text()).toMatch(/^ {2}先想一想\n\n• 想好了$/m);
+	});
+
+	test("不同的块之间空一行：输入、推理内容、回复、查看、命令、文件改动和任务结束的那一行都不贴在一起；推理内容里的 **标题** 不把记号露出来", async () => {
+		writeFileSync(join(fixture.dirs.workspace, "a.txt"), "甲\n");
+		await fixture.useModel(
+			(call) =>
+				[
+					streamReply(
+						[
+							{
+								role: "assistant",
+								reasoning_content: "**看一下文件**\n\n先读 a.txt",
+							},
+							{ content: "我先看看" },
+							{
+								tool_calls: [
+									{
+										index: 0,
+										id: "call_1",
+										type: "function",
+										function: {
+											name: "read",
+											arguments: JSON.stringify({ path: "a.txt" }),
+										},
+									},
+								],
+							},
+						],
+						"tool_calls",
+					),
+					shellCallReply("echo hi"),
+					toolCallsReply([
+						{ name: "write", arguments: { path: "new.txt", content: "乙\n" } },
+					]),
+					textReply("做完了"),
+				][call],
+			reasoning,
+		);
+		// 写在主缓冲区里：对话区下面紧接着就是按键提示，看得出它们之间隔了几行
+		const { terminal } = await fixture.start({ tuiMode: "regular" });
+		await terminal.type("干活");
+		await terminal.press(key.enter);
+		await terminal.waitFor("— 完成");
+		await terminal.waitForVisible("Enter 发送");
+
+		const seconds = String.raw`\d+\.\ds`;
+		expect(terminal.text()).toMatch(
+			new RegExp(
+				[
+					String.raw`^· Osprey Code \S+ · .*`,
+					"",
+					"› 干活",
+					"",
+					"  看一下文件",
+					"",
+					String.raw`  先读 a\.txt`,
+					"",
+					"• 我先看看",
+					"",
+					"• Explored",
+					String.raw`  └ Read a\.txt`,
+					"",
+					"• Ran echo hi",
+					"  └ hi",
+					`    ✓ 退出码 0 · ${seconds}`,
+					"",
+					String.raw`• Added new\.txt \(\+1 -0\)`,
+					String.raw`    1 \+ 乙`,
+					"",
+					"• 做完了",
+					"",
+					`— 完成 · 用时 ${seconds} · .*`,
+					"",
+					"Enter 发送 · .*$",
+				].join("\n"),
+				"m",
+			),
+		);
+		expect(terminal.text()).not.toContain("**");
+	});
+
+	test("连着的一行说明排在一起，多行的说明和别的块之间空一行", async () => {
+		await fixture.useModel((call) =>
+			call === 0
+				? toolCallsReply([
+						{ name: "write", arguments: { path: "a.txt", content: "甲\n" } },
+					])
+				: textReply("写好了"),
+		);
+		const { terminal } = await fixture.start({ tuiMode: "regular" });
+		const command = async (line: string, shown: string | RegExp) => {
+			await terminal.type(line);
+			await terminal.press(key.enter);
+			await terminal.waitFor(shown);
+		};
+		await command("/approval never", "审批策略：on-request → never");
+		await command("/approval on-request", "审批策略：never → on-request");
+		await command("写文件", "— 完成");
+		await command("/diff", /^\s+\+甲$/m);
+		await command(
+			"/approval never",
+			/(审批策略：on-request → never[\s\S]*){2}/,
+		);
+
+		const shown = terminal.text();
+		// 启动时的提示和两次换策略各一行，连着排
+		expect(shown).toMatch(
+			/^· Osprey Code .*\n· 审批策略：on-request → never\n· 审批策略：never → on-request\n\n› 写文件$/m,
+		);
+		// /diff 的结果有好几行：和后面的那一行说明隔开
+		expect(shown).toMatch(
+			/^— 完成 · .*\n\n· 本 session 的改动：1 个文件\n(?: .*\n)+\n· 审批策略：on-request → never\n\nEnter 发送/m,
+		);
 	});
 
 	test("[ui] show_reasoning = false 时不显示推理内容", async () => {

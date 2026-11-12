@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
 import { textReply } from "./harness.js";
 import { interactiveFixture } from "./interactive-fixture.js";
@@ -55,6 +56,29 @@ describe("全屏模式", () => {
 		await terminal.waitForGone("第30段");
 		await terminal.press(key.ctrlEnd);
 		await terminal.waitForVisible("第30段");
+	});
+
+	test("对话区滚上去之后的提示占满一行，不盖在一行文字的中间；点它回到最新的内容", async () => {
+		// 每段都比屏幕宽的一半长：提示只占中间一段的话，会盖在这些字上
+		const wide = paragraphs.map((paragraph) => paragraph.repeat(12));
+		await fixture.useModel(() => textReply(wide.join("\n")));
+		const { terminal } = await fixture.start(short);
+		await askForLongReply(terminal);
+		await terminal.wheel(-100);
+		await terminal.waitForVisible("回到最新的内容");
+
+		const rows = terminal.visible().split("\n");
+		const at = rows.findIndex((row) => row.includes("回到最新的内容"));
+		// 最后一列是滚动条
+		expect(rows[at]).toMatch(/^─+ ↓ 回到最新的内容 · Ctrl\+End ─+│$/);
+		expect(visibleWidth(rows[at] as string)).toBe(terminal.columns);
+		// 上面是对话，下面隔着按键提示就是输入框
+		expect(rows[at - 1]).toContain("段");
+		expect(rows[at + 1]).toContain("Enter 发送");
+
+		await terminal.click({ x: 0, y: at });
+		await terminal.waitForVisible("第30段");
+		await terminal.waitForGone("回到最新的内容");
 	});
 
 	test("对话区滚上去之后输入照常：打的字进输入框，提交之后回到最新的内容", async () => {

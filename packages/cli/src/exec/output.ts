@@ -88,13 +88,23 @@ const outputTail = 5;
 /** 别的工具给人看的结果、没做成的调用交给模型的说明留开头这么多行。 */
 const previewHead = 5;
 
-/** 过程里的一行：前面的圆点、内容，和缩进在它下面的几行。 */
+/** 过程里的一块：前面的圆点、内容，和缩进在它下面的几行。 */
 interface Block {
 	/** 圆点的颜色；没有圆点的是说明（警告、错误、后台命令）。 */
 	tone?: ResultTone;
 	text: string;
 	detail?: readonly string[];
+	/**
+	 * 这一块属于哪一组：和上一块同组时接着写，不空行。不给时，只有一行的说明算一组（连着的几条警告、
+	 * 后台命令的结束排在一起），别的各自是一块。
+	 */
+	group?: string;
 }
+
+/** 只有一行的说明所在的组。 */
+const noteGroup = "note";
+/** 只读的查看（读文件、搜索、列目录）所在的组：连着的几次各写一行，排在一起。 */
+const exploreGroup = "explore";
 
 /** 一次进行中的工具调用。 */
 interface Call {
@@ -102,12 +112,15 @@ interface Call {
 	/** 子 agent 的调用是哪个子 agent 的；主 agent 的没有。 */
 	owner: string | undefined;
 	output: OutputBuffer;
+	/** 开始和结果的两块所在的组：中间没有写别的内容时，结果紧接在开始的那一行下面。 */
+	group: string;
 }
 
 /**
  * 文本输出：stdout 上只有主任务的最后一条回复，脚本可以直接取用；过程写到 stderr：开头是这次运行的
  * 配置和任务，接着是中间几轮的回复、每次工具调用的结果和耗时、子 agent 的起止、警告和错误，最后是
- * 主任务的结果、用时、用量和费用。stderr 是终端时上色，写进管道和文件时是纯文字。
+ * 主任务的结果、用时、用量和费用。块和块之间空一行（和交互界面的对话区一样）。stderr 是终端时
+ * 上色，写进管道和文件时是纯文字。
  */
 export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 	const paint: Style = stderr.isTTY === true ? style : plainStyle;
@@ -133,11 +146,26 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 	 */
 	let reply: string | undefined;
 
+	/** 上一行是不是空行：另起一块时不再空一行。 */
+	let blank = false;
+	/** 上一块所在的组。 */
+	let lastGroup: string | undefined;
+
 	const write = (line: string) => {
+		blank = line === "";
 		if (held === undefined) stderr.write(`${line}\n`);
 		else held.push(line);
 	};
-	const block = ({ tone, text, detail = [] }: Block) => {
+	/** 另起一块：和上一块之间空一行；和上一块同组时接着写。 */
+	const begin = (group?: string) => {
+		if (!blank && (group === undefined || group !== lastGroup)) write("");
+		lastGroup = group;
+	};
+	const block = ({ tone, text, detail = [], group }: Block) => {
+		begin(
+			group ??
+				(tone === undefined && detail.length === 0 ? noteGroup : undefined),
+		);
 		write(tone === undefined ? text : `${tones[tone]("•")} ${text}`);
 		for (const line of detail) write(paint.dim(`  ${line}`));
 	};
@@ -149,6 +177,7 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 	const flushReply = () => {
 		if (reply === undefined) return;
 		const [first = "", ...rest] = sanitize(reply).trimEnd().split("\n");
+		begin();
 		write(`${paint.dim("•")} ${first}`);
 		for (const line of rest) write(`  ${line}`);
 		reply = undefined;
@@ -174,6 +203,7 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 	const completed = (call: Call, result: ToolResult, durationMs: number) => {
 		const { action, owner } = call;
 		const outcome = status(result, durationMs);
+		const group = action.kind === "explore" ? exploreGroup : call.group;
 		if (
 			action.kind === "edit" &&
 			result.status === "succeeded" &&
@@ -208,6 +238,7 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 				ran && detail.length === 0 && action.kind === "command"
 					? ["（没有输出）"]
 					: detail,
+			group,
 		});
 	};
 
@@ -248,10 +279,15 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 					if (owner !== undefined) break;
 					flushReply();
 					if (showReasoning) {
-						for (const part of event.message.content) {
-							if (part.type !== "reasoning") continue;
-							for (const line of sanitize(part.text).trim().split("\n")) {
-								write(paint.italic(`  ${line}`));
+						const thoughts = event.message.content.flatMap((part) => {
+							const text =
+								part.type === "reasoning" ? sanitize(part.text).trim() : "";
+							return text === "" ? [] : [text];
+						});
+						if (thoughts.length > 0) {
+							begin();
+							for (const line of thoughts.join("\n").split("\n")) {
+								write(line === "" ? "" : paint.italic(`  ${line}`));
 							}
 						}
 					}
@@ -264,10 +300,12 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 				case "tool_call.started": {
 					if (owner === undefined) flushReply();
 					const action = describeTool(event.name, event.arguments, context());
+					const group = `call ${event.tool_call_id}`;
 					calls.set(event.tool_call_id, {
 						action,
 						owner,
 						output: new OutputBuffer(),
+						group,
 					});
 					// 查看和文件改动一下就有结果，做完时写一行；命令和别的调用可能要等，开始时先写一行
 					if (action.kind === "command" || action.kind === "call") {
@@ -277,6 +315,7 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 								owner,
 								`${actionTitle(action.running, action.target)}${action.workdir === undefined ? "" : paint.dim(`（在 ${action.workdir}）`)}${action.detail === undefined ? "" : `: ${action.detail}`}`,
 							),
+							group,
 						});
 					}
 					break;
@@ -365,11 +404,14 @@ export function textOutput(stdout: CliOutput, stderr: CliOutput): ExecOutput {
 				...duration,
 				...usageParts(ended.usage),
 			].join(" · ");
+			begin();
 			write(
 				`— ${ended.outcome === "completed" ? paint.dim(summary) : paint.error(summary)}`,
 			);
 			reply = undefined;
 			if (final !== "") {
+				// stdout 和 stderr 常常写在同一处（终端、CI 的日志）：回复和这一行之间也空一行
+				write("");
 				stdout.write(final.endsWith("\n") ? final : `${final}\n`);
 			}
 		},

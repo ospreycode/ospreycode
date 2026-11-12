@@ -143,8 +143,11 @@ describe("完成的任务", () => {
 					"─+",
 					"› 跑一下",
 					"  再写个文件",
-					// 中间一轮的回复写在过程里
+					"",
+					// 中间一轮的回复写在过程里；块和块之间空一行
 					"• 先看一下",
+					"",
+					// 命令的结果紧接在它开始的那一行下面
 					"• Running seq 1 12",
 					`• Ran seq 1 12 · ✓ 退出码 0 · ${seconds}`,
 					"  1",
@@ -156,11 +159,16 @@ describe("完成的任务", () => {
 					"  10",
 					"  11",
 					"  12",
+					"",
 					String.raw`• Added note\.txt \(\+2 -0\) · ✓ ${seconds}`,
+					"",
 					"• Running exit 3",
 					`• Ran exit 3 · ✗ 失败 · 退出码 3 · ${seconds}`,
 					"  （没有输出）",
+					"",
 					String.raw`— 完成 · 用时 ${seconds} · 输入 40 · 输出 20 token · \$0\.\d+`,
+					// 最后一条回复写在 stdout 上：和它之间也空一行
+					"",
 					"$",
 				].join("\n"),
 			),
@@ -181,7 +189,8 @@ describe("完成的任务", () => {
 		dirs.writeConfig(`${server.config}${compat}`);
 		const shown = await exec("想");
 		expect(shown.stdout).toBe("想好了\n");
-		expect(shown.stderr).toMatch(/^ {2}先想一想$/m);
+		// 推理内容自己是一块：和上面的任务、下面的结果各隔一行
+		expect(shown.stderr).toMatch(/^› 想\n\n {2}先想一想\n\n— 完成 · /m);
 
 		dirs.writeConfig(
 			`${server.config}${compat}\n[ui]\nshow_reasoning = false\n`,
@@ -267,7 +276,8 @@ describe("完成的任务", () => {
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("找到了\n");
 		expect(result.stderr).toMatch(
-			/\n• Search \/answer\/ in \. \(\*\.ts\) · ✓ \d+\.\ds\n• List \. · ✓ \d+\.\ds\n— 完成 · /,
+			// 连着的几次查看各写一行，排在一起
+			/\n\n• Search \/answer\/ in \. \(\*\.ts\) · ✓ \d+\.\ds\n• List \. · ✓ \d+\.\ds\n\n— 完成 · /,
 		);
 		// 参数的原文不写出来
 		expect(result.stderr).not.toContain('{"pattern"');

@@ -128,16 +128,13 @@ function userLines(
 		steering: "（steering）",
 		notification: "（后台通知）",
 	}[entry.source];
-	return [
-		"",
-		...wrapped(
-			`${label}${sanitize(entry.text)}`,
-			width,
-			(line) => paintLabels(line, images, style.user),
-			"  ",
-			"› ",
-		),
-	];
+	return wrapped(
+		`${label}${sanitize(entry.text)}`,
+		width,
+		(line) => paintLabels(line, images, style.user),
+		"  ",
+		"› ",
+	);
 }
 
 /** 结果的那一行：成功与否、退出码和耗时。 */
@@ -428,7 +425,6 @@ function approvalLines(
 	width: number,
 ): string[] {
 	return [
-		"",
 		...wrapped(
 			`需要确认：${description.title}`,
 			width,
@@ -536,7 +532,19 @@ function taskEndedLines(entry: TaskEndedEntry, width: number): string[] {
 		cancelled: style.warning,
 		refused: style.warning,
 	}[entry.event.outcome];
-	return [...wrapped(parts.join(" · "), width, paint, "  ", "— "), ""];
+	return wrapped(parts.join(" · "), width, paint, "  ", "— ");
+}
+
+/**
+ * 只有一行的说明。连着的几条排在一起，不用空行隔开：启动时的几条提示、后台命令的开始和结束、
+ * 一条回复里的几次联网搜索，各占一行，隔开了反而散。
+ */
+function oneLine(entry: Entry): boolean {
+	return (
+		entry.kind === "notice" &&
+		entry.detail === undefined &&
+		!entry.text.includes("\n")
+	);
 }
 
 /** 对话区的一项，按宽度缓存画好的行：对话变长之后每次重画只重新算变了的那几项。 */
@@ -547,6 +555,11 @@ class EntryView implements Component {
 	readonly #images: Attachments;
 	/** 模型的回复按 Markdown 显示。 */
 	readonly #markdown = new Markdown("", 0, 0, markdownTheme);
+	/** 推理内容也按 Markdown 显示，整段是暗的斜体：和回复分得开。 */
+	readonly #reasoning = new Markdown("", 0, 0, markdownTheme, {
+		italic: true,
+		color: style.dim,
+	});
 	#width = 0;
 	#lines: string[] | undefined;
 	/** 画好的行里的图片标签：在这一项的第几行、第几列。 */
@@ -599,6 +612,18 @@ class EntryView implements Component {
 			);
 	}
 
+	/**
+	 * 模型的推理内容：缩进在回复前面，没有圆点。按 Markdown 画，模型给每一段思考起的 `**标题**`
+	 * 是粗体，不把记号原样露出来。
+	 */
+	#thought(text: string, width: number): string[] {
+		this.#reasoning.setText(text);
+		return this.#reasoning
+			.render(Math.max(1, width - 2))
+			.map((line) => `  ${line}`);
+	}
+
+	/** 这一项的各行，前后不带空行：项和项之间的空行由对话区加。 */
 	#draw(width: number): string[] {
 		const entry = this.#entry;
 		switch (entry.kind) {
@@ -606,12 +631,13 @@ class EntryView implements Component {
 				return userLines(entry, this.#images, width);
 			case "assistant": {
 				const reasoning = sanitize(entry.reasoning).trim();
+				const thought = reasoning === "" ? [] : this.#thought(reasoning, width);
+				const reply = entry.text === "" ? [] : this.#reply(entry.text, width);
 				return [
-					"",
-					...(reasoning === ""
-						? []
-						: wrapped(reasoning, width, style.italic, "  ")),
-					...(entry.text === "" ? [] : this.#reply(entry.text, width)),
+					...thought,
+					// 推理内容和回复是两块
+					...(thought.length > 0 && reply.length > 0 ? [""] : []),
+					...reply,
 				];
 			}
 			case "tool":
@@ -704,9 +730,15 @@ export class ConversationView implements Component {
 		this.#views.clear();
 	}
 
+	/**
+	 * 各项从上到下排开，项和项之间空一行（照 Codex）：用户的输入、推理内容和回复、每次工具调用、
+	 * 一组查看、询问、子 agent、说明和 task 结束的那一行都是单独的一块，贴在一起分不出哪几行是
+	 * 一块。最后也留一行空行，对话区的末尾和下面的活动行、输入框不贴在一起。
+	 */
 	render(width: number): string[] {
 		const lines: string[] = [];
 		const spots: (LabelSpot & { row: number })[] = [];
+		let previous: Entry | undefined;
 		for (const entry of this.#state.entries) {
 			let view = this.#views.get(entry);
 			if (view === undefined) {
@@ -714,11 +746,18 @@ export class ConversationView implements Component {
 				this.#views.set(entry, view);
 			}
 			const drawn = view.render(width);
+			// 还没有内容的一项（刚开始的回复）不占行，也不占空行
+			if (drawn.length === 0) continue;
+			if (previous !== undefined && !(oneLine(previous) && oneLine(entry))) {
+				lines.push("");
+			}
 			for (const spot of view.spots) {
 				spots.push({ ...spot, row: spot.row + lines.length });
 			}
 			lines.push(...drawn);
+			previous = entry;
 		}
+		if (previous !== undefined) lines.push("");
 		this.#spots = spots;
 		return lines;
 	}
