@@ -3,6 +3,7 @@ import {
 	indexedColor,
 	type MarkdownTheme,
 	type SelectListTheme,
+	type SettingsListTheme,
 	styleText,
 	type TextStyle,
 	truncateToWidth,
@@ -51,6 +52,16 @@ export const selectListTheme: SelectListTheme = {
 	description: style.dim,
 	scrollInfo: style.dim,
 	noMatch: style.dim,
+};
+
+/** 逐项改设置的列表（granular 的类别、扩展）的样式。 */
+export const settingsListTheme: SettingsListTheme = {
+	label: (text, selected) => (selected ? style.selected(text) : text),
+	value: (text, selected) =>
+		selected ? style.selected(text) : style.dim(text),
+	description: style.dim,
+	cursor: style.selected("→ "),
+	hint: style.dim,
 };
 
 /** 输入框的样式。 */

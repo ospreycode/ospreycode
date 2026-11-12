@@ -63,6 +63,20 @@ async function enter(
 	await terminal.waitFor(shown);
 }
 
+/**
+ * 不带参数的 `/undo`、`/rewind`、`/branch`：等列表出来（`shown` 是其中的一项），按 Esc 关掉它、
+ * 什么都不选。列表记成了"上次列出的"，之后的命令按它的序号引用。
+ */
+async function list(
+	terminal: TestTerminal,
+	command: string,
+	shown: string,
+): Promise<void> {
+	await enter(terminal, command, shown);
+	await terminal.press(key.escape);
+	await terminal.waitForVisible("Enter 发送");
+}
+
 /** 回退之后输入框里是放回来的那次输入：等它出现，再用 Ctrl+C 清掉。 */
 async function clearEditor(
 	terminal: TestTerminal,
@@ -161,7 +175,7 @@ describe("/diff", () => {
 			"/diff 2",
 			"先用 /undo 或 /rewind 列出检查点，再按序号引用",
 		);
-		await enter(terminal, "/undo", "[2]");
+		await list(terminal, "/undo", "[2]");
 		await enter(terminal, "/diff 2", "第 2 个检查点以来的改动：1 个文件");
 		await terminal.waitFor(/第 2 个检查点以来的改动[\s\S]*^\s+\+乙$/m);
 		const since = terminal
@@ -205,7 +219,7 @@ describe("/diff", () => {
 });
 
 describe("/undo", () => {
-	test("不带参数列出检查点；/undo N 把文件还原到第 N 个检查点，对话不动，结果里列出还原的文件", async () => {
+	test("不带参数时列出检查点供选择，Esc 关掉列表不还原；/undo N 把文件还原到第 N 个检查点，对话不动，结果里列出还原的文件", async () => {
 		const { workspace } = fixture.dirs;
 		await fixture.useModel(worker);
 		const { terminal } = await fixture.start();
@@ -215,9 +229,14 @@ describe("/undo", () => {
 		await enter(terminal, "写 b.txt 乙", "写好了 b.txt");
 		await finished(terminal, 2);
 		await enter(terminal, "/undo", "[2]");
-		expect(terminal.text()).toMatch(
-			/\[1\] \d{4}-\S+ 写 a\.txt 甲\n\s+\[2\] \d{4}-\S+ 写 b\.txt 乙\n/,
+		// 最近的一次输入选中着
+		expect(terminal.visible()).toMatch(
+			/ {2}\[1\] \d{4}-\S+ +写 a\.txt 甲\n→ \[2\] \d{4}-\S+ +写 b\.txt 乙\n/,
 		);
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
+		expect(existsSync(join(workspace, "b.txt"))).toBe(true);
+		expect(terminal.text()).not.toContain("已把代码还原");
 
 		await enter(
 			terminal,
@@ -242,6 +261,29 @@ describe("/undo", () => {
 		await enter(terminal, "/undo 1 force", "/undo 的写法");
 	});
 
+	test("/undo 从列表里选：↑↓ 选一个检查点，Enter 把代码还原到它，和 /undo N 一样", async () => {
+		const { workspace } = fixture.dirs;
+		await fixture.useModel(worker);
+		const { terminal } = await fixture.start();
+		await enter(terminal, "写 a.txt 甲", "写好了 a.txt");
+		await enter(terminal, "写 b.txt 乙", "写好了 b.txt");
+		await finished(terminal, 2);
+
+		await enter(terminal, "/undo", "把代码还原到哪次输入之前");
+		await terminal.waitForVisible("→ [2]");
+		await terminal.press(key.up);
+		await terminal.waitForVisible("→ [1]");
+		await terminal.press(key.enter);
+		await terminal.waitFor("已把代码还原到第 1 个检查点，对话没有动：");
+		await terminal.waitFor(/还原了 2 个文件：\n\s+a\.txt\n\s+b\.txt/);
+		expect(existsSync(join(workspace, "a.txt"))).toBe(false);
+		expect(existsSync(join(workspace, "b.txt"))).toBe(false);
+		// 列表关掉了，输入框回来
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).not.toContain("把代码还原到哪次输入之前");
+		expect(terminal.text()).toContain("写好了 b.txt");
+	});
+
 	test("文件在 agent 改过之后又被别处改过：列为冲突、不还原；/undo N overwrite 连它一起还原", async () => {
 		const { workspace } = fixture.dirs;
 		const file = join(workspace, "a.txt");
@@ -251,7 +293,7 @@ describe("/undo", () => {
 		await finished(terminal, 1);
 		writeFileSync(file, "别处改的\n");
 
-		await enter(terminal, "/undo", "[1]");
+		await list(terminal, "/undo", "[1]");
 		await enter(
 			terminal,
 			"/undo 1",
@@ -284,7 +326,7 @@ describe("/undo", () => {
 			"/diff",
 			/本 session 的改动：1 个文件\n\s+改过但没有快照、看不到差异：\n\s+big\.bin\n\s+diff --git a\/small\.txt b\/small\.txt/,
 		);
-		await enter(terminal, "/undo", "[1]");
+		await list(terminal, "/undo", "[1]");
 		await enter(
 			terminal,
 			"/undo 1",
@@ -327,7 +369,7 @@ describe("/undo", () => {
 			await terminal.waitFor("写好了");
 			await finished(terminal, 1);
 
-			await enter(terminal, "/undo", "[1]");
+			await list(terminal, "/undo", "[1]");
 			await enter(
 				terminal,
 				"/undo 1",
@@ -352,7 +394,7 @@ describe("/undo", () => {
 		await enter(terminal, "跑一条后台命令", "在后台跑着");
 		await finished(terminal, 1);
 
-		await enter(terminal, "/undo", "[1]");
+		await list(terminal, "/undo", "[1]");
 		await enter(terminal, "/undo 1", "已把代码还原到第 1 个检查点");
 		expect(terminal.text()).toMatch(
 			/后台命令 \S+ 结束了（被停止）：sleep 96\.41[\s\S]*已把代码还原到第 1 个检查点/,
@@ -369,7 +411,7 @@ describe("/rewind", () => {
 		await enter(terminal, "第二件事", "回复1");
 		await finished(terminal, 2);
 
-		await enter(terminal, "/rewind", "[2]");
+		await list(terminal, "/rewind", "[2]");
 		await enter(
 			terminal,
 			"/rewind 2",
@@ -405,9 +447,11 @@ describe("/rewind", () => {
 			"先用 /undo 或 /rewind 列出检查点，再按序号引用",
 		);
 		await enter(terminal, "/rewind", "[3]");
-		expect(terminal.text()).toMatch(
-			/\[2\] \S+ 第二件事 · 不在当前对话路径上（只能还原代码）\n\s+\[3\] \S+ 第二件事，换个做法\n/,
+		expect(terminal.visible()).toMatch(
+			/ {2}\[2\] \S+ +第二件事 · 不在当前对话路径上（只能还原代码）\n→ \[3\] \S+ +第二件事，换个做法\n/,
 		);
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
 		await enter(
 			terminal,
 			"/rewind 2",
@@ -423,7 +467,7 @@ describe("/rewind", () => {
 		await enter(terminal, "第一件事", "回复0");
 		await enter(terminal, "第二件事", "回复1");
 		await finished(terminal, 2);
-		await enter(terminal, "/rewind", "[2]");
+		await list(terminal, "/rewind", "[2]");
 
 		await terminal.type("/rewind 2");
 		await terminal.press(key.enter);
@@ -442,14 +486,14 @@ describe("/rewind", () => {
 		await enter(terminal, "写 c.txt 丙", "写好了 c.txt");
 		await finished(terminal, 3);
 
-		await enter(terminal, "/rewind", "[3]");
+		await list(terminal, "/rewind", "[3]");
 		await enter(terminal, "/rewind 3 overwrite", "/rewind 的写法");
 		await enter(terminal, "/rewind 3", "代码没有动");
 		expect(existsSync(join(workspace, "c.txt"))).toBe(true);
 		expect(terminal.text()).not.toContain("写好了 c.txt");
 		await clearEditor(terminal, "写 c.txt 丙");
 
-		await enter(terminal, "/rewind", "[3]");
+		await list(terminal, "/rewind", "[3]");
 		await enter(terminal, "/rewind 2 code", "代码还原到那时：");
 		// 被放弃的那一段改过的文件也算在内
 		await terminal.waitFor(/还原了 2 个文件：\n\s+b\.txt\n\s+c\.txt/);
@@ -459,6 +503,41 @@ describe("/rewind", () => {
 		const shown = terminal.text();
 		expect(shown).toContain("写好了 a.txt");
 		expect(shown).not.toContain("写好了 b.txt");
+	});
+
+	test("/rewind 从列表里选：先选检查点，再选只回退对话还是连代码一起还原；Esc 关掉列表不回退", async () => {
+		const { workspace } = fixture.dirs;
+		await fixture.useModel(worker);
+		const { terminal } = await fixture.start();
+		await enter(terminal, "写 a.txt 甲", "写好了 a.txt");
+		await enter(terminal, "写 b.txt 乙", "写好了 b.txt");
+		await finished(terminal, 2);
+
+		// 第二步按 Esc：什么都没有动
+		await enter(terminal, "/rewind", "把对话回退到哪次输入之前");
+		await terminal.waitForVisible("→ [2]");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("回退到第 2 个检查点的输入之前");
+		expect(terminal.visible()).toMatch(/→ 只回退对话 +代码不动\n/);
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.text()).toContain("写好了 b.txt");
+		expect(terminal.text()).not.toContain("已把对话回退");
+
+		await enter(terminal, "/rewind", "把对话回退到哪次输入之前");
+		await terminal.waitForVisible("→ [2]");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("回退到第 2 个检查点的输入之前");
+		await terminal.press(key.down);
+		await terminal.waitForVisible("→ 回退对话并还原代码");
+		await terminal.press(key.enter);
+		await terminal.waitFor("已把对话回退到第 2 个检查点的输入之前");
+		await terminal.waitFor(/代码还原到那时：\n\s+还原了 1 个文件：\n\s+b\.txt/);
+		expect(existsSync(join(workspace, "b.txt"))).toBe(false);
+		expect(readFileSync(join(workspace, "a.txt"), "utf8")).toBe("甲\n");
+		expect(terminal.text()).not.toContain("写好了 b.txt");
+		// 那次输入回到输入框
+		await terminal.waitForVisible("写 b.txt 乙");
 	});
 
 	test("回退结束那次输入之后启动的后台命令：结束的说明显示在重画的对话之后", async () => {
@@ -475,7 +554,7 @@ describe("/rewind", () => {
 		await enter(terminal, "跑一条后台命令", "在后台跑着");
 		await finished(terminal, 2);
 
-		await enter(terminal, "/rewind", "[2]");
+		await list(terminal, "/rewind", "[2]");
 		await enter(terminal, "/rewind 2", "已把对话回退到第 2 个检查点");
 		expectInOrder(terminal.text(), [
 			"回复0",
@@ -489,7 +568,7 @@ describe("/rewind", () => {
 });
 
 describe("/branch", () => {
-	test("/branch 列出回退时放弃的分支；/branch N 切回去：对话重画成那一段，模型收到的历史也是那一段，刚才这一段成为被放弃的分支", async () => {
+	test("/branch 列出回退时放弃的分支供选择；/branch N 切回去：对话重画成那一段，模型收到的历史也是那一段，刚才这一段成为被放弃的分支", async () => {
 		const server = await fixture.useModel(worker);
 		const { terminal } = await fixture.start();
 		await enter(terminal, "/branch", "没有被放弃的分支");
@@ -502,14 +581,16 @@ describe("/branch", () => {
 		await enter(terminal, "第二件事", "回复1");
 		await finished(terminal, 2);
 
-		await enter(terminal, "/rewind", "[2]");
+		await list(terminal, "/rewind", "[2]");
 		await enter(terminal, "/rewind 2", "/branch 列出，可以切回去");
 		await clearEditor(terminal, "第二件事");
 		await enter(terminal, "另一件事", "回复2");
 		await finished(terminal, 2);
 
 		await enter(terminal, "/branch", "被放弃的分支");
-		expect(terminal.text()).toMatch(/\[1\] \S+ 第二件事\n/);
+		expect(terminal.visible()).toMatch(/→ \[1\] \S+ +第二件事\n/);
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
 		await enter(terminal, "/branch 1 2", "/branch 的写法");
 		await enter(terminal, "/branch 2", "序号要在 1 到 1 之间：2");
 		await enter(terminal, "/branch 1", "已切回第 1 个分支");
@@ -541,11 +622,11 @@ describe("/branch", () => {
 			"先用 /branch 列出被放弃的分支，再按序号引用",
 		);
 		await enter(terminal, "/branch", "被放弃的分支");
-		expect(terminal.text()).toMatch(/\[1\] \S+ 另一件事\n/);
-		expect(terminal.text()).not.toMatch(/\[2\]/);
+		expect(terminal.visible()).toMatch(/→ \[1\] \S+ +另一件事\n/);
+		expect(terminal.visible()).not.toMatch(/\[2\]/);
 	});
 
-	test("切换分支结束不在那个分支上的后台命令，代码不动", async () => {
+	test("/branch 从列表里选一个分支切回去；切换分支结束不在那个分支上的后台命令，代码不动", async () => {
 		const { workspace } = fixture.dirs;
 		await fixture.useModel((call, request) => {
 			if (!lastUserMessage(request).includes("后台")) {
@@ -559,14 +640,16 @@ describe("/branch", () => {
 		const { terminal } = await fixture.start();
 		await enter(terminal, "写 a.txt 甲", "写好了 a.txt");
 		await finished(terminal, 1);
-		await enter(terminal, "/rewind", "[1]");
+		await list(terminal, "/rewind", "[1]");
 		await enter(terminal, "/rewind 1", "/branch 列出，可以切回去");
 		await clearEditor(terminal, "写 a.txt 甲");
 		await enter(terminal, "跑一条后台命令", "在后台跑着");
 		await finished(terminal, 1);
 
-		await enter(terminal, "/branch", "[1]");
-		await enter(terminal, "/branch 1", "已切回第 1 个分支");
+		await enter(terminal, "/branch", "切回哪个被放弃的分支");
+		await terminal.waitForVisible("→ [1]");
+		await terminal.press(key.enter);
+		await terminal.waitFor("已切回第 1 个分支");
 		expectInOrder(terminal.text(), [
 			"写好了 a.txt",
 			"结束了（被停止）：sleep 96.41",
@@ -638,7 +721,7 @@ describe("/fork", () => {
 			"/fork 2",
 			"先用 /undo 或 /rewind 列出检查点，再按序号引用",
 		);
-		await enter(terminal, "/undo", "[2]");
+		await list(terminal, "/undo", "[2]");
 		await enter(
 			terminal,
 			"/fork 1",
@@ -667,8 +750,10 @@ describe("/fork", () => {
 		await enter(
 			terminal,
 			"/undo",
-			/\[1\] \S+ 第一件事\n\s+\[2\] （来源 session 的检查点） · 不在当前对话路径上（只能还原代码）\n\s+\[3\] \S+ 分叉里的事\n/,
+			/ {2}\[1\] \S+ +第一件事\n {2}\[2\] +（来源 session 的检查点） · 不在当前对话路径上（只能还原代码）\n→ \[3\] \S+ +分叉里的事\n/,
 		);
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
 		await terminal.type("/quit");
 		await terminal.press(key.enter);
 		expect(await fixture.exitCode()).toBe(0);
@@ -701,7 +786,7 @@ describe("/fork", () => {
 		expect(requestedModel(server.requests[1])).toBe("other-model");
 
 		// 第二次输入之前最后一次请求用的是 fake
-		await enter(terminal, "/undo", "[2]");
+		await list(terminal, "/undo", "[2]");
 		await enter(terminal, "/fork 2", `已从 session ${first.fork} 分叉`);
 		await terminal.waitForVisible("Enter 发送");
 		expect(terminal.visible()).toMatch(/fake · 推理 .* 审批 never/);
@@ -727,7 +812,7 @@ describe("/fork", () => {
 
 		// 第二次输入之前用的模型从清单里去掉了：从那里分叉时 Host 按记录选它，选不了
 		fixture.configure({});
-		await enter(terminal, "/undo", "[2]");
+		await list(terminal, "/undo", "[2]");
 		await enter(terminal, "/fork 2", "分叉没有成功：");
 		await terminal.waitFor(`已重新打开 session ${source}`);
 		await terminal.waitForVisible("Enter 发送");
@@ -826,7 +911,7 @@ describe("/export", () => {
 });
 
 describe("task 运行中", () => {
-	test("/undo N、/rewind N、/fork 被拒绝，任务照常进行；/diff 和 /export 照常可用", async () => {
+	test("/undo 不带参数只把检查点列在对话区；/undo N、/rewind N、/fork 被拒绝，任务照常进行；/diff 和 /export 照常可用", async () => {
 		await fixture.useModel((call) =>
 			call === 0 ? shellCallReply(longCommand) : textReply("做完了"),
 		);
@@ -835,7 +920,9 @@ describe("task 运行中", () => {
 		await terminal.press(key.enter);
 		await terminal.waitFor(`$ ${longCommand}`);
 
-		await enter(terminal, "/undo", "[1]");
+		// 现在选了也做不了：不弹出列表，输入框还在
+		await enter(terminal, "/undo", /\[1\] \S+ 跑一条长命令\n/);
+		expect(terminal.visible()).not.toContain("把代码还原到哪次输入之前");
 		await enter(terminal, "/undo 1", "只能在 session 空闲时撤销改动");
 		await enter(terminal, "/rewind 1", "只能在 session 空闲时回退会话");
 		await enter(terminal, "/fork", "只能在 session 空闲时分叉");

@@ -1,38 +1,36 @@
 import { reasoningEfforts } from "./models.js";
+import { approvalPolicies } from "./policy.js";
 import type { ApprovalPolicy, ReasoningEffort } from "./types.js";
 
 /** 会话内命令能做的事，由界面实现。失败时抛出 Host 的错误，界面把原因显示在对话区。 */
 export interface CommandActions {
-	/** 在对话区显示一行说明。 */
-	notice(text: string): void;
-	/** 当前的沙盒模式、审批策略、模型和推理强度。 */
-	current(): {
-		sandboxMode: string;
-		approvalPolicy: string;
-		model: string;
-		reasoningEffort: string;
-	};
 	setSandboxMode(mode: string): Promise<void>;
 	setApprovalPolicy(policy: ApprovalPolicy): Promise<void>;
 	setModel(model: string): Promise<void>;
 	setReasoningEffort(level: ReasoningEffort): Promise<void>;
+	/** 列出能切换到的沙盒模式让用户选；session 不空闲时抛 `CommandUsageError`。 */
+	pickSandboxMode(): void;
+	/** 列出审批策略让用户选；选 `granular` 时接着逐类设置。 */
+	pickApprovalPolicy(): void;
 	/** 列出模型让用户选。 */
 	pickModel(): void;
+	/** 列出当前模型能区分的推理强度让用户选。 */
+	pickReasoningEffort(): void;
 	/** 列出后台命令，选中一条可以停止。 */
 	pickBackground(): void;
 	/** `/memory` 后面的内容：查看、纠正和删除记忆，确认候选。 */
 	memory(argument: string): Promise<void>;
-	/** `/extensions` 后面的内容：查看扩展，确认、启用和停用。 */
+	/** `/extensions` 后面的内容：不带参数时在列表里查看扩展，确认、启用和停用；带参数时按序号操作。 */
 	extensions(argument: string): Promise<void>;
 	/** 压缩上下文：只在 session 空闲时可用。 */
 	compact(): Promise<void>;
 	/** `/diff` 后面的内容：查看本 session 的改动，或者某个检查点以来的改动。 */
 	diff(argument: string): Promise<void>;
-	/** `/undo` 后面的内容：列出检查点，或者把代码还原到其中一个。 */
+	/** `/undo` 后面的内容：不带参数时列出检查点让用户选，带参数时把代码还原到其中一个。 */
 	undo(argument: string): Promise<void>;
-	/** `/rewind` 后面的内容：列出检查点，或者把对话回退到其中一个的输入之前。 */
+	/** `/rewind` 后面的内容：不带参数时列出检查点让用户选，带参数时把对话回退到其中一个的输入之前。 */
 	rewind(argument: string): Promise<void>;
-	/** `/branch` 后面的内容：列出回退时放弃的分支，或者切回其中一个。 */
+	/** `/branch` 后面的内容：不带参数时列出回退时放弃的分支让用户选，带参数时切回其中一个。 */
 	branch(argument: string): Promise<void>;
 	/** `/fork` 后面的内容：从当前位置或某个检查点分叉出新的 session，界面换到分叉上。 */
 	fork(argument: string): Promise<void>;
@@ -49,6 +47,8 @@ export interface CommandChoices {
 	sandboxModes(): string[];
 	/** 模型清单里的 ID。 */
 	models(): string[];
+	/** 当前模型能区分的推理强度。 */
+	efforts(): string[];
 }
 
 /** 一条会话内命令。 */
@@ -67,12 +67,8 @@ export class CommandUsageError extends Error {
 	override name = "CommandUsageError";
 }
 
-/** 审批策略的取值，和 `--approval` 接受的相同。 */
-const approvalPolicies: readonly ApprovalPolicy[] = [
-	"on-request",
-	"granular",
-	"never",
-];
+/** 审批策略的取值。 */
+const policyNames = approvalPolicies.map(({ policy }) => policy);
 
 /** `/memory` 的子命令，补全时列出；各自做什么见 `MemoryCommands`。 */
 const memorySubcommands = [
@@ -93,12 +89,12 @@ const memorySubcommands = [
 export const commands: readonly Command[] = [
 	{
 		name: "sandbox",
-		description: "查看或切换沙盒模式",
+		description: "切换沙盒模式，不带参数时从列表里选",
 		argumentHint: "[MODE]",
 		choices: (choices) => choices.sandboxModes(),
 		async run(argument, actions) {
 			if (argument === "") {
-				actions.notice(`沙盒模式：${actions.current().sandboxMode}`);
+				actions.pickSandboxMode();
 				return;
 			}
 			await actions.setSandboxMode(argument);
@@ -106,18 +102,18 @@ export const commands: readonly Command[] = [
 	},
 	{
 		name: "approval",
-		description: "查看或切换审批策略",
+		description: "切换审批策略，不带参数时从列表里选",
 		argumentHint: "[POLICY]",
-		choices: () => [...approvalPolicies],
+		choices: () => policyNames,
 		async run(argument, actions) {
 			if (argument === "") {
-				actions.notice(`审批策略：${actions.current().approvalPolicy}`);
+				actions.pickApprovalPolicy();
 				return;
 			}
-			const policy = approvalPolicies.find((name) => name === argument);
+			const policy = policyNames.find((name) => name === argument);
 			if (policy === undefined) {
 				throw new CommandUsageError(
-					`审批策略只能是 ${approvalPolicies.join("、")}：${argument}`,
+					`审批策略只能是 ${policyNames.join("、")}：${argument}`,
 				);
 			}
 			await actions.setApprovalPolicy(policy);
@@ -138,12 +134,12 @@ export const commands: readonly Command[] = [
 	},
 	{
 		name: "effort",
-		description: "查看或切换推理强度",
+		description: "切换推理强度，不带参数时从列表里选",
 		argumentHint: "[LEVEL]",
-		choices: () => [...reasoningEfforts],
+		choices: (choices) => choices.efforts(),
 		async run(argument, actions) {
 			if (argument === "") {
-				actions.notice(`推理强度：${actions.current().reasoningEffort}`);
+				actions.pickReasoningEffort();
 				return;
 			}
 			const level = reasoningEfforts.find((name) => name === argument);
@@ -173,7 +169,7 @@ export const commands: readonly Command[] = [
 	},
 	{
 		name: "extensions",
-		description: "查看扩展，确认、启用和停用",
+		description: "在列表里查看扩展，确认、启用和停用",
 		argumentHint: "[show|confirm|enable|disable] [N]",
 		choices: () => ["show", "confirm", "enable", "disable", "help"],
 		async run(argument, actions) {
@@ -211,7 +207,7 @@ export const commands: readonly Command[] = [
 	},
 	{
 		name: "undo",
-		description: "列出检查点，或者把代码还原到某个检查点，只在空闲时可用",
+		description: "把代码还原到某个检查点，不带参数时从列表里选，只在空闲时可用",
 		argumentHint: "[N] [overwrite]",
 		async run(argument, actions) {
 			await actions.undo(argument);
@@ -219,7 +215,7 @@ export const commands: readonly Command[] = [
 	},
 	{
 		name: "rewind",
-		description: "列出检查点，或者把对话回退到某个检查点，只在空闲时可用",
+		description: "把对话回退到某个检查点，不带参数时从列表里选，只在空闲时可用",
 		argumentHint: "[N] [code] [overwrite]",
 		async run(argument, actions) {
 			await actions.rewind(argument);
@@ -227,7 +223,8 @@ export const commands: readonly Command[] = [
 	},
 	{
 		name: "branch",
-		description: "列出回退时放弃的分支，或者切回其中一个，只在空闲时可用",
+		description:
+			"切回回退时放弃的一个分支，不带参数时从列表里选，只在空闲时可用",
 		argumentHint: "[N]",
 		async run(argument, actions) {
 			await actions.branch(argument);

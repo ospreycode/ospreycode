@@ -70,19 +70,19 @@ tui_mode = "regular"
 
 | 会话内命令 | 作用 |
 |---|---|
-| `/sandbox [MODE]` | 查看、切换沙盒模式（只在空闲时）：`read-only`、`workspace-write`，或命名权限配置的名字 |
-| `/approval [POLICY]` | 查看、切换审批策略 |
+| `/sandbox [MODE]` | 切换沙盒模式（只在空闲时）：`read-only`、`workspace-write`，或命名权限配置的名字；不带参数时从列表里选 |
+| `/approval [POLICY]` | 切换审批策略，不带参数时从列表里选；选 `granular` 时接着逐类设置是询问还是直接拒绝 |
 | `/model [MODEL]` | 切换模型，不带参数时从清单里选 |
-| `/effort [LEVEL]` | 查看、切换推理强度 |
+| `/effort [LEVEL]` | 切换推理强度，不带参数时从当前模型支持的级别里选 |
 | `/bg` | 查看运行中的后台命令，选中一条停止 |
-| `/extensions [show\|confirm\|enable\|disable] [N]` | 列出扩展（skills、MCP server、hooks、插件）和状态；按列表里的序号查看、确认仓库自带的扩展、启用和停用，`/reload` 之后生效 |
+| `/extensions [show\|confirm\|enable\|disable] [N]` | 不带参数时在列表里查看扩展（skills、MCP server、hooks、插件）和状态，选中一个查看内容，确认仓库自带的扩展、启用或停用；也可以按列表里的序号操作。`/reload` 之后生效 |
 | `/reload` | 重新读取配置、权限规则、规则文件和扩展（只在空闲时） |
 | `/cache-clear` | 清空这个项目的构建缓存 |
 | `/compact` | 压缩上下文：当前模型把到此为止的对话写成摘要，之后的请求从摘要接着做（只在空闲时） |
 | `/diff [N]` | 查看本 session 的改动，或者第 N 个检查点以来的改动 |
-| `/undo [N] [overwrite]` | 不带参数列出检查点；`/undo N` 把代码还原到第 N 个检查点，对话不动（只在空闲时） |
-| `/rewind [N] [code] [overwrite]` | 不带参数列出检查点；`/rewind N` 把对话回退到第 N 个检查点的输入之前，`code` 同时还原代码（只在空闲时） |
-| `/branch [N]` | 不带参数列出回退时放弃的分支；`/branch N` 切回第 N 个，代码不动（只在空闲时） |
+| `/undo [N] [overwrite]` | 不带参数时从列表里选一个检查点；`/undo N` 把代码还原到第 N 个检查点，对话不动（只在空闲时） |
+| `/rewind [N] [code] [overwrite]` | 不带参数时从列表里选一个检查点，再选要不要同时还原代码；`/rewind N` 把对话回退到第 N 个检查点的输入之前，`code` 同时还原代码（只在空闲时） |
+| `/branch [N]` | 不带参数时从列表里选一个回退时放弃的分支；`/branch N` 切回第 N 个，代码不动（只在空闲时） |
 | `/fork [N]` | 从当前位置或第 N 个检查点的输入之前分叉出新的 session，界面换到分叉上（只在空闲时） |
 | `/export [FILE]` | 把本 session 导出成 JSONL 文件，默认是当前目录下的 `ospreycode-<SESSION_ID>.jsonl` |
 | `/memory [show\|add\|confirm\|reject\|correct\|…] [ID]` | 查看长期记忆，确认或拒绝候选，纠正、停用和彻底删除；`/memory help` 列出全部写法 |
@@ -107,7 +107,9 @@ workspace = "isolated"
 
 `description` 告诉模型什么时候用它；还可以写 `instructions`、`model`、`reasoning_effort` 和 `tools`。子 agent 的权限不会比会话更宽，费用和请求次数算在同一个任务的预算里。`workspace = "isolated"` 的子 agent 在项目仓库的一份克隆里改动（只含已提交的内容），由主 agent 合并回来，会话结束时这份克隆删除。交互界面里每个子 agent 占一条，显示它的进展和结果；它发起的询问写明是哪个子 agent 的。`exec` 的标准输出仍然只有主 agent 最后一条回复。
 
-每次输入（任务运行中插入的也算）建立一个检查点，记着那次输入之前工作区的样子。`/undo` 或 `/rewind` 不带参数时列出检查点和序号，`/diff N`、`/undo N`、`/rewind N`、`/fork N` 的 `N` 就是这份列表里的序号；回退或分叉之后要重新列出。
+会话内命令不带参数时打开列表：当前生效的那一项选中着，↑↓ 选择，Enter 选中即执行，Esc 关掉列表、什么都不改。带参数时直接执行。
+
+每次输入（任务运行中插入的也算）建立一个检查点，记着那次输入之前工作区的样子。`/undo` 或 `/rewind` 不带参数时列出检查点和序号，可以直接在列表里选；`/diff N`、`/undo N`、`/rewind N`、`/fork N` 的 `N` 就是这份列表里的序号，回退或分叉之后要重新列出。
 
 - `/undo N` 只还原 agent 改过的文件。之后又被别处改过的文件不动，结果里列出来，`/undo N overwrite` 连它们一起还原；太大而没有快照的文件、编辑工具写在工作区之外的文件还原不了，也列出来。被 `.gitignore` 忽略的文件不做快照，内置编辑工具改的除外。还在运行的后台命令会先结束。
 - `/rewind N` 之后界面只留那次输入之前的对话，那次输入的文字回到输入框，可以改了再发；被放弃的那一段还在 session 记录里。加 `code` 同时还原代码，`overwrite` 的意思同 `/undo`。模型拒绝回答之后用它回到那次输入之前，改写后重发。

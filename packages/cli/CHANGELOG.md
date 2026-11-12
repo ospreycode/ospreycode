@@ -47,6 +47,9 @@
   - `exec` 的文本输出：子 agent 的开始、结束和它的工具调用各在 stderr 写一行，stdout 仍然只有主 agent 最后一条回复。`--json` 多了 `subagent.started`、`subagent.ended`，子 agent 的事件带它自己的 `agent_id`。
 - 模型服务自带的服务端工具（用户级配置的 `[server_tools.<服务名>]` 打开，见 `@ospreycode/agent-host`）：交互模式在回复结束时为模型服务一侧执行的每次联网搜索和网页读取各显示一行（如 `web_search: node lts`），按次计费的费用算进 task 结束时显示的费用；`exec --json` 的 `message.completed` 里带着它们的 `opaque` 块。
 - `login status` 列出来源是命令的凭据（用户级配置 `[credentials]` 里的 `{ command = …, args = […] }`）时显示程序名，不显示参数。
+- 会话内命令不带参数时打开列表，选中即执行，不再只显示现状：`/sandbox`（内置的两种模式和命名权限配置，任务运行中说明原因）、`/approval`（三种策略和说明）、`/effort`（当前模型支持的级别，补全也只列这些）、`/undo`、`/rewind`（选中检查点之后再选只回退对话还是同时还原代码）、`/branch`。列表里当前生效的那一项选中着（检查点是最近的一个），Esc 和 Ctrl+C 关掉列表、什么都不改；带参数的写法不变。`/undo`、`/rewind`、`/branch` 在任务运行中或有询问等着回答时仍然只把列表显示在对话区。
+- `/approval` 里选 `granular` 时逐类设置七个类别是询问还是直接拒绝（空格切换，Enter 应用，Esc 不改），不要求配置里写了 `[approval_granular]`；各类别从当前策略的等效值改起，结果里写实际生效的取值。
+- `/extensions` 不带参数时打开扩展的列表：Enter 打开选中的扩展，显示位置和内容摘要，可以确认、启用或停用，做完回到列表。`/extensions confirm N` 之前要先在列表里打开过这个扩展或 `/extensions show N`：列表本身不再显示内容摘要。
 - 交互界面默认全屏：占着终端的备用缓冲区，对话区自己滚动（滚轮、PageUp、PageDown，Ctrl+Home、Ctrl+End 到开头和末尾），输入框和状态行固定在屏幕底部；Ctrl+Shift+F 在对话里搜索，拖动鼠标框选的文字复制到剪贴板。对话区滚上去之后不跟着新内容走，屏幕上出现"回到最新的内容"，提交输入时回到末尾。退出后终端回到原来的内容，这次会话完整的对话写在后面。`ospreycode` 和 `ospreycode resume` 多了选项 `--tui-mode <fullscreen|regular>`，覆盖配置的 `[ui] tui_mode`：`regular` 是原来的主缓冲区界面，滚动和选择交给终端。包的导出：`InteractiveOptions` 多一项 `tuiMode`。
 
 ### Fixed

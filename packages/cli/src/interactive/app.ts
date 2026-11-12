@@ -1,8 +1,10 @@
 import { resolve } from "node:path";
 import {
+	type Component,
 	Container,
 	isKeyRelease,
 	matchesKey,
+	type SelectItem,
 	type Terminal,
 } from "@earendil-works/pi-tui";
 import {
@@ -62,12 +64,23 @@ import {
 } from "./commands.js";
 import { PromptAutocomplete } from "./completion.js";
 import { parseFields } from "./elicitation.js";
-import { ExtensionCommands } from "./extensions.js";
+import {
+	ExtensionCommands,
+	type ListedExtension,
+	needsReview,
+} from "./extensions.js";
 import { brief, toolSummary } from "./format.js";
 import type { InteractiveOptions } from "./index.js";
 import { Attachments, composeInput, editorText } from "./input.js";
 import { MemoryCommands } from "./memory.js";
 import { cycle, effortLevels, usableModels } from "./models.js";
+import {
+	approvalPolicies,
+	currentGranular,
+	describeGranular,
+	type GranularCategory,
+	granularCategories,
+} from "./policy.js";
 import {
 	createScreen,
 	mountScreen,
@@ -84,6 +97,7 @@ import { ElicitationPanel } from "./view/elicitation-panel.js";
 import { Picker } from "./view/picker.js";
 import { QueueView } from "./view/queue.js";
 import { QueuePanel } from "./view/queue-panel.js";
+import { SettingsPanel } from "./view/settings-panel.js";
 import { HintLine, StatusLine } from "./view/status.js";
 
 /** 被信号结束时的退出码：128 加信号的编号。 */
@@ -182,7 +196,8 @@ class Interactive {
 	 */
 	#switching: Promise<unknown> | undefined;
 	#panel: AnswerPanel | undefined;
-	#overlay: Picker | QueuePanel | undefined;
+	/** 占着输入框位置的列表或设置面板。 */
+	#overlay: Component | undefined;
 	#cancelling = false;
 	#exitArmed = false;
 	#closing = false;
@@ -236,6 +251,7 @@ class Interactive {
 						...Object.keys(this.#config.permissionProfiles),
 					],
 					models: () => this.#config.models.map((model) => model.id),
+					efforts: () => effortLevels(this.#config.model),
 				},
 				this.#config.workspace,
 			),
@@ -616,9 +632,171 @@ class Interactive {
 		});
 	}
 
-	/** `/undo`、`/rewind` 不带参数：列出检查点，之后的命令按这一份的序号引用。 */
-	#listCheckpoints(): void {
-		this.#state.notice(this.#checkpoints.show(this.#session.checkpoints()));
+	/** 从列表里选中一项就是执行带这个参数的命令：检查和结果都和手写参数时一样。 */
+	#command(name: string, argument: string): void {
+		this.#guard(() => runCommand({ name, argument }, this.#actions));
+	}
+
+	/** 换一个列表或面板到输入框的位置上。按键处理里调用：换完马上重画、交出焦点。 */
+	#show(overlay: Component): void {
+		this.#overlay = overlay;
+		this.#refresh();
+	}
+
+	/** 检查点和分支能不能从列表里选了就做：session 空闲，没有等着回答的询问。 */
+	#selectable(): boolean {
+		const { taskId, approvals, serverQuestions } = this.#state;
+		return (
+			taskId === undefined &&
+			approvals.length === 0 &&
+			serverQuestions.length === 0
+		);
+	}
+
+	/**
+	 * `/undo`、`/rewind` 不带参数：列出检查点让用户选，选中的序号交给 `run`。没有检查点、现在做不了
+	 * 时只把列表显示在对话区。两种列法都记成"上次列出的"，之后的命令按这一份的序号引用。
+	 */
+	#pickCheckpoint(options: {
+		title: string;
+		hint: string;
+		run(number: string): void;
+	}): void {
+		const checkpoints = this.#session.checkpoints();
+		if (checkpoints.length === 0 || !this.#selectable()) {
+			this.#state.notice(this.#checkpoints.show(checkpoints));
+			return;
+		}
+		const items = this.#checkpoints.choices(checkpoints);
+		this.#overlay = this.#picker({
+			title: options.title,
+			hint: options.hint,
+			items,
+			// 最常回到的是最近的一次输入
+			selected: items.at(-1)?.value,
+			run: options.run,
+		});
+	}
+
+	/** 一个选了就做的列表：选中时关掉列表、执行，Esc 关掉列表不做。 */
+	#picker(options: {
+		title: string;
+		hint: string;
+		items: SelectItem[];
+		selected?: string | undefined;
+		run(value: string): void;
+	}): Picker {
+		return new Picker({
+			title: options.title,
+			hint: options.hint,
+			items: options.items,
+			...(options.selected === undefined ? {} : { selected: options.selected }),
+			onSelect: (value) => {
+				this.#overlay = undefined;
+				options.run(value);
+				this.#refresh();
+			},
+			onCancel: () => this.#closeOverlay(),
+		});
+	}
+
+	/** `/approval` 里选了 granular：七个类别逐个设成询问或直接拒绝，Enter 才应用。 */
+	#openGranular(): void {
+		const ask = "询问";
+		const deny = "直接拒绝";
+		const table = currentGranular(this.#config);
+		const categories = Object.keys(granularCategories) as GranularCategory[];
+		this.#show(
+			new SettingsPanel({
+				title: "审批策略 granular：各类需要批准的动作是询问还是直接拒绝",
+				hint: "↑↓ 选择 · 空格 切换 · Enter 应用 · Esc 取消",
+				items: categories.map((category) => ({
+					id: category,
+					label: category,
+					description: granularCategories[category],
+					currentValue: table[category] ? ask : deny,
+					values: [ask, deny],
+				})),
+				onChange: (id, value) => {
+					const category = categories.find((name) => name === id);
+					if (category === undefined) {
+						throw new Error(`granular 没有 ${id} 这个类别`);
+					}
+					table[category] = value === ask;
+				},
+				onSubmit: () => {
+					this.#overlay = undefined;
+					this.#guard(() => {
+						this.#session.setApprovalPolicy("granular", table);
+						this.#reconfigured();
+						// 仓库配置关掉的类别放不开：显示实际生效的
+						const { granular } = this.#config;
+						if (granular !== undefined) {
+							this.#state.notice(`granular：${describeGranular(granular)}`);
+						}
+					});
+				},
+				onCancel: () => this.#closeOverlay(),
+			}),
+		);
+	}
+
+	/**
+	 * `/extensions` 不带参数：在列表里查看扩展和状态，Enter 打开选中的那一个：它的位置、内容摘要和
+	 * 能做的操作。`selected` 是一开始选中的扩展。
+	 */
+	async #openExtensions(selected?: string): Promise<void> {
+		const listed = await this.#extensions.list();
+		if (listed.length === 0) {
+			this.#overlay = undefined;
+			this.#state.notice("没有找到扩展");
+			return;
+		}
+		this.#overlay = new SettingsPanel({
+			title: "扩展",
+			hint: "↑↓ 选择 · Enter 查看，确认、启用或停用 · Esc 关闭 · 改动在 /reload 之后生效",
+			items: listed.map((entry) => ({
+				id: entry.item.id,
+				label: entry.label,
+				currentValue: entry.status,
+				submenu: (_value, done) => this.#extensionActions(entry, done),
+			})),
+			...(selected === undefined ? {} : { selected }),
+			onCancel: () => this.#closeOverlay(),
+		});
+	}
+
+	/**
+	 * 列表里的一个扩展：位置、内容摘要和能做的操作。做完之后按磁盘上现在的内容重新列出，还停在这个
+	 * 扩展上。
+	 */
+	#extensionActions(entry: ListedExtension, back: () => void): Picker {
+		const { item } = entry;
+		// 确认的是这里显示的这一份内容
+		this.#extensions.viewed(item);
+		return new Picker({
+			title: `${entry.label}  ${entry.status}`,
+			detail: entry.detail,
+			hint: "↑↓ 选择 · Enter 执行 · Esc 返回",
+			items: [
+				...(needsReview(item)
+					? [{ value: "confirm", label: "确认现在的内容" }]
+					: []),
+				item.status === "disabled"
+					? { value: "enable", label: "启用" }
+					: { value: "disable", label: "停用" },
+			],
+			onSelect: (action) =>
+				this.#guard(async () => {
+					if (action === "confirm") await this.#extensions.confirm(item);
+					else await this.#extensions.setEnabled(item, action === "enable");
+					await this.#openExtensions(item.id);
+				}),
+			onCancel: () => {
+				back();
+				this.#refresh();
+			},
+		});
 	}
 
 	/**
@@ -829,8 +1007,6 @@ class Interactive {
 	}
 
 	readonly #actions: CommandActions = {
-		notice: (text) => this.#state.notice(text),
-		current: () => this.#state.status,
 		setSandboxMode: (mode) =>
 			this.#serial(async () => {
 				const previous = this.#state.status.sandboxMode;
@@ -852,8 +1028,57 @@ class Interactive {
 				this.#reconfigured();
 				this.#state.notice(`推理强度换成 ${level}，从下一次模型请求起生效`);
 			}),
+		pickSandboxMode: () => {
+			// 换沙盒模式要重启 agent 进程：现在换不了的话不让用户白选一遍
+			if (this.#state.taskId !== undefined) {
+				throw new CommandUsageError(
+					"只能在 session 空闲时切换沙盒模式：等当前的 task 结束，或者先取消它",
+				);
+			}
+			this.#overlay = this.#picker({
+				title: "切换沙盒模式",
+				hint: "↑↓ 选择 · Enter 切换，agent 进程随之重启 · Esc 取消",
+				items: [
+					{
+						value: "read-only",
+						label: "read-only",
+						description: "工作区只读",
+					},
+					{
+						value: "workspace-write",
+						label: "workspace-write",
+						description: "工作区可写",
+					},
+					...Object.entries(this.#config.permissionProfiles).map(
+						([name, profile]) => ({
+							value: name,
+							label: name,
+							description: `命名权限配置，在 ${profile.extends} 上按路径和域名调整`,
+						}),
+					),
+				],
+				selected: this.#config.sandboxMode,
+				run: (mode) => this.#command("sandbox", mode),
+			});
+		},
+		pickApprovalPolicy: () => {
+			this.#overlay = this.#picker({
+				title: "切换审批策略",
+				hint: "↑↓ 选择 · Enter 切换 · Esc 取消",
+				items: approvalPolicies.map(({ policy, description }) => ({
+					value: policy,
+					label: policy,
+					description,
+				})),
+				selected: this.#config.approvalPolicy,
+				run: (policy) => {
+					if (policy === "granular") this.#openGranular();
+					else this.#command("approval", policy);
+				},
+			});
+		},
 		pickModel: () => {
-			this.#overlay = new Picker({
+			this.#overlay = this.#picker({
 				title: "切换模型",
 				hint: "↑↓ 选择 · Enter 切换 · Esc 取消",
 				items: this.#config.models.map((model) => ({
@@ -862,15 +1087,27 @@ class Interactive {
 					description: model.service,
 				})),
 				selected: this.#config.model.id,
-				onSelect: (model) => {
-					this.#overlay = undefined;
-					this.#guard(() => this.#setModel(model));
-				},
-				onCancel: () => this.#closeOverlay(),
+				run: (model) => this.#command("model", model),
+			});
+		},
+		pickReasoningEffort: () => {
+			const levels = effortLevels(this.#config.model);
+			// 和 Shift+Tab 一样：没有别的级别可换时说明原因
+			if (cycle(levels, this.#config.reasoningEffort, 1) === undefined) {
+				this.#state.notice(this.#fixedEffort(levels));
+				return;
+			}
+			this.#overlay = this.#picker({
+				title: `切换 ${this.#config.model.id} 的推理强度`,
+				hint: "↑↓ 选择 · Enter 切换 · Esc 取消",
+				items: levels.map((level) => ({ value: level, label: level })),
+				selected: this.#config.reasoningEffort,
+				run: (level) => this.#command("effort", level),
 			});
 		},
 		memory: (argument) => this.#memory.run(argument),
-		extensions: (argument) => this.#extensions.run(argument),
+		extensions: (argument) =>
+			argument === "" ? this.#openExtensions() : this.#extensions.run(argument),
 		// 进展和结果由事件显示：压缩 task 的开始、`context.compacted` 和 task 的结束
 		compact: () =>
 			this.#serial(async () => {
@@ -888,7 +1125,11 @@ class Interactive {
 		undo: async (argument) => {
 			const parsed = parseUndo(argument, this.#checkpoints);
 			if (parsed === undefined) {
-				this.#listCheckpoints();
+				this.#pickCheckpoint({
+					title: "把代码还原到哪次输入之前（对话不动）",
+					hint: "↑↓ 选择 · Enter 还原 · Esc 取消",
+					run: (number) => this.#command("undo", number),
+				});
 				return;
 			}
 			const { target, overwrite } = parsed;
@@ -907,7 +1148,30 @@ class Interactive {
 		rewind: async (argument) => {
 			const parsed = parseRewind(argument, this.#checkpoints);
 			if (parsed === undefined) {
-				this.#listCheckpoints();
+				this.#pickCheckpoint({
+					title: "把对话回退到哪次输入之前",
+					hint: "↑↓ 选择 · Enter 接着选要不要还原代码 · Esc 取消",
+					run: (number) =>
+						this.#show(
+							this.#picker({
+								title: `回退到第 ${number} 个检查点的输入之前`,
+								hint: "↑↓ 选择 · Enter 回退 · Esc 取消",
+								items: [
+									{
+										value: number,
+										label: "只回退对话",
+										description: "代码不动",
+									},
+									{
+										value: `${number} code`,
+										label: "回退对话并还原代码",
+										description: "工作区回到那次输入之前的样子",
+									},
+								],
+								run: (written) => this.#command("rewind", written),
+							}),
+						),
+				});
 				return;
 			}
 			const { target, ...options } = parsed;
@@ -916,7 +1180,17 @@ class Interactive {
 		branch: async (argument) => {
 			const target = parseBranch(argument, this.#branches);
 			if (target === undefined) {
-				this.#state.notice(this.#branches.show(this.#session.branches()));
+				const branches = this.#session.branches();
+				if (branches.length === 0 || !this.#selectable()) {
+					this.#state.notice(this.#branches.show(branches));
+					return;
+				}
+				this.#overlay = this.#picker({
+					title: "切回哪个被放弃的分支（写的是各自最后一次输入，代码不动）",
+					hint: "↑↓ 选择 · Enter 切换 · Esc 取消",
+					items: this.#branches.choices(branches),
+					run: (number) => this.#command("branch", number),
+				});
 				return;
 			}
 			await this.#serial(() => this.#switchBranch(target));
@@ -954,7 +1228,7 @@ class Interactive {
 				this.#state.notice("没有在运行的后台命令");
 				return;
 			}
-			this.#overlay = new Picker({
+			this.#overlay = this.#picker({
 				title: "后台命令",
 				hint: "↑↓ 选择 · Enter 停止选中的命令 · Esc 关闭",
 				items: running.map((command) => ({
@@ -962,16 +1236,13 @@ class Interactive {
 					label: `${command.background_id}  ${brief(command.command, 60)}`,
 					description: `${command.kind === "monitor" ? "监视" : "命令"} · ${command.started_at}`,
 				})),
-				onSelect: (id) => {
-					this.#overlay = undefined;
+				run: (id) =>
 					this.#guard(async () => {
 						const stopped = await this.#session.stopBackgroundCommand(id);
 						this.#state.notice(
 							stopped ? `已停止后台命令 ${id}` : `后台命令 ${id} 已经结束了`,
 						);
-					});
-				},
-				onCancel: () => this.#closeOverlay(),
+					}),
 			});
 		},
 		reload: () =>
@@ -1019,15 +1290,19 @@ class Interactive {
 			const levels = effortLevels(this.#config.model);
 			const next = cycle(levels, this.#config.reasoningEffort, 1);
 			if (next === undefined) {
-				this.#state.notice(
-					levels.length === 0
-						? `${this.#config.model.id} 不能调推理强度`
-						: `${this.#config.model.id} 只有 ${levels.join("、")} 这一级推理强度`,
-				);
+				this.#state.notice(this.#fixedEffort(levels));
 				return;
 			}
 			await this.#actions.setReasoningEffort(next);
 		});
+	}
+
+	/** 当前模型的推理强度没有可换的：它能区分的级别不到两个。 */
+	#fixedEffort(levels: readonly string[]): string {
+		const { id } = this.#config.model;
+		return levels.length === 0
+			? `${id} 不能调推理强度`
+			: `${id} 只有 ${levels.join("、")} 这一级推理强度`;
 	}
 
 	#pasteImage(): void {

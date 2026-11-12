@@ -41,7 +41,7 @@ const requestText = (requests: unknown[], index: number) =>
 	JSON.stringify(requests[index]);
 
 describe("扩展的确认", () => {
-	test("仓库自带的 skill 没确认时不启用，启动时提示；/extensions 里确认，/reload 之后模型看得到", async () => {
+	test("仓库自带的 skill 没确认时不启用，启动时提示；在 /extensions 的列表里查看内容并确认，/reload 之后模型看得到", async () => {
 		writeSkill(
 			join(fixture.dirs.workspace, ".agents", "skills"),
 			"review",
@@ -57,36 +57,58 @@ describe("扩展的确认", () => {
 
 		await terminal.type("/extensions");
 		await terminal.press(key.enter);
-		await terminal.waitFor("[1] skill review（仓库自带）  未确认");
-		// 要确认的扩展连内容摘要一起列出来：确认的就是看到的这一份
-		expect(terminal.text()).toContain("审阅改动");
-		expect(terminal.text()).toContain("/extensions confirm N 确认");
+		await terminal.waitForVisible("↑↓ 选择 · Enter 查看，确认、启用或停用");
+		expect(terminal.visible()).toMatch(
+			/→ \[1\] skill review（仓库自带） +未确认\n/,
+		);
+		// Enter 打开选中的扩展：位置、内容摘要和能做的操作。确认的就是看到的这一份
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ 确认现在的内容");
+		expect(terminal.visible()).toContain(
+			`位置：${join(fixture.dirs.workspace, ".agents", "skills", "review")}`,
+		);
+		expect(terminal.visible()).toContain("审阅改动");
+		expect(terminal.visible()).toMatch(/^ {2}停用$/m);
 
-		await terminal.type("/extensions confirm 1");
+		// Esc 回到列表，什么都没有确认
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("↑↓ 选择 · Enter 查看，确认、启用或停用");
+		expect(terminal.text()).not.toContain("已确认 review");
+
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ 确认现在的内容");
 		await terminal.press(key.enter);
 		await terminal.waitFor("已确认 review，/reload 之后生效");
+		// 做完回到列表，状态是磁盘上现在的
+		await terminal.waitForVisible("↑↓ 选择 · Enter 查看，确认、启用或停用");
+		expect(terminal.visible()).toMatch(
+			/→ \[1\] skill review（仓库自带） +已启用\n/,
+		);
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
+
 		await terminal.type("/reload");
 		await terminal.press(key.enter);
 		await terminal.waitFor("已重新读取配置、权限规则、规则文件和扩展");
-
-		await terminal.type("/extensions");
-		await terminal.press(key.enter);
-		await terminal.waitFor("[1] skill review（仓库自带）  已启用");
 		await terminal.type("看看改动");
 		await terminal.press(key.enter);
 		await terminal.waitFor("好的");
 		expect(requestText(server.requests, 0)).toContain("审阅改动");
 	});
 
-	test("/extensions 停用一个用户级的 MCP server：/reload 之后它的工具不再给模型", async () => {
+	test("/extensions disable N 停用一个用户级的 MCP server：/reload 之后它的工具不再给模型；在列表里再把它启用", async () => {
 		userServer();
 		const server = await fixture.useModel(() => textReply("好的"));
 		const { terminal } = await fixture.start();
 		await terminal.type("/extensions");
 		await terminal.press(key.enter);
-		await terminal.waitFor(
-			"[1] MCP server tools（用户级）  已启用 · 已连接，3 个工具",
+		await terminal.waitForVisible("↑↓ 选择 · Enter 查看，确认、启用或停用");
+		expect(terminal.visible()).toMatch(
+			/→ \[1\] MCP server tools（用户级） +已启用 · 已连接，3 个工具\n/,
 		);
+		// 序号照这份列表：关掉它，按序号操作
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
 		await terminal.type("/extensions show 1");
 		await terminal.press(key.enter);
 		await terminal.waitFor(`位置：${join(fixture.dirs.root, "mcp.json")}`);
@@ -97,14 +119,35 @@ describe("扩展的确认", () => {
 		await terminal.type("/reload");
 		await terminal.press(key.enter);
 		await terminal.waitFor("已重新读取配置");
-		await terminal.type("/extensions");
-		await terminal.press(key.enter);
-		await terminal.waitFor("[1] MCP server tools（用户级）  已停用");
-
 		await terminal.type("你好");
 		await terminal.press(key.enter);
 		await terminal.waitFor("好的");
+		await terminal.waitFor("完成");
 		expect(requestText(server.requests, 0)).not.toContain("tools__echo");
+
+		await terminal.type("/extensions");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("↑↓ 选择 · Enter 查看，确认、启用或停用");
+		expect(terminal.visible()).toMatch(
+			/→ \[1\] MCP server tools（用户级） +已停用\n/,
+		);
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ 启用");
+		await terminal.press(key.enter);
+		await terminal.waitFor("已启用 tools，/reload 之后生效");
+		await terminal.waitForVisible("↑↓ 选择 · Enter 查看，确认、启用或停用");
+		expect(terminal.visible()).toMatch(
+			/→ \[1\] MCP server tools（用户级） +已启用\n/,
+		);
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
+		await terminal.type("/reload");
+		await terminal.press(key.enter);
+		await terminal.waitFor(/(已重新读取配置[\s\S]*){2}/);
+		await terminal.type("再来");
+		await terminal.press(key.enter);
+		await expect.poll(() => server.requests.length).toBe(2);
+		expect(requestText(server.requests, 1)).toContain("tools__echo");
 	});
 
 	test("/extensions 写得不对时给出用法", async () => {
@@ -139,6 +182,33 @@ describe("MCP 工具", () => {
 		await terminal.press(key.enter);
 		await terminal.waitFor("做完了");
 		expect(requestText(server.requests, 1)).toContain("你好 MCP");
+	});
+
+	test("/approval 里把 granular 的 mcp_tools 关掉：MCP 工具调用不再询问，按策略直接拒绝", async () => {
+		userServer();
+		const server = await fixture.useModel((call) =>
+			call === 0 ? callTool("echo", { text: "你好 MCP" }) : textReply("做完了"),
+		);
+		const { terminal } = await fixture.start({ columns: 160 });
+		await terminal.type("/approval");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ on-request");
+		await terminal.press(key.down, key.enter);
+		await terminal.waitForVisible(
+			"↑↓ 选择 · 空格 切换 · Enter 应用 · Esc 取消",
+		);
+		// mcp_tools 是倒数第二项：↑ 从第一项绕到最后一项
+		await terminal.press(key.up, key.up, key.space);
+		await terminal.waitFor(/→ mcp_tools +直接拒绝/);
+		await terminal.press(key.enter);
+		await terminal.waitFor("直接拒绝 mcp_tools");
+
+		await terminal.type("打个招呼");
+		await terminal.press(key.enter);
+		await terminal.waitFor("做完了");
+		expect(terminal.text()).toContain("被审批策略拒绝");
+		expect(terminal.text()).not.toContain("需要确认：调用 MCP 工具");
+		expect(requestText(server.requests, 1)).toContain("mcp_tools");
 	});
 
 	test("server 的提问显示成表单：逐项填写、校验，核对之后才提交", async () => {

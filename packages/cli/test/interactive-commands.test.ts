@@ -46,19 +46,33 @@ describe("会话内命令", () => {
 		await terminal.waitForVisible("→ sandbox");
 
 		await terminal.pressTogether(..."approval", key.enter);
-		await terminal.waitFor(/审批策略：on-request$/m);
+		await terminal.waitForVisible("切换审批策略");
 		expect(terminal.text()).not.toContain("这个命令");
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
 
 		// Tab 也一样：列表过时了就不补全，输入的内容原样留着
 		await terminal.type("/");
 		await terminal.waitForVisible("→ sandbox");
 		await terminal.pressTogether(..."approval", key.tab);
 		await terminal.press(key.enter);
-		await terminal.waitFor(/(审批策略：on-request\n[\s\S]*){2}/);
+		await terminal.waitForVisible("切换审批策略");
 		expect(terminal.text()).not.toContain("这个命令");
 	});
 
-	test("/approval 换审批策略，状态行跟着变；不带参数时显示当前的策略", async () => {
+	test("输入 / 之后用方向键选中一条命令按 Enter：补全之后直接执行，不带参数的 /approval 弹出列表", async () => {
+		await fixture.useModel(() => textReply("好"));
+		const { terminal } = await fixture.start();
+		await terminal.type("/");
+		await terminal.waitForVisible("→ sandbox");
+		await terminal.press(key.down);
+		await terminal.waitForVisible("→ approval");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("切换审批策略");
+		expect(terminal.visible()).toContain("→ on-request");
+	});
+
+	test("/approval POLICY 换审批策略，状态行跟着变；不带参数时从列表里选，当前的策略选中着，Esc 关掉列表不换", async () => {
 		await fixture.useModel(() => textReply("好"));
 		const { terminal } = await fixture.start();
 		await terminal.type("/approval never");
@@ -68,7 +82,129 @@ describe("会话内命令", () => {
 
 		await terminal.type("/approval");
 		await terminal.press(key.enter);
-		await terminal.waitFor(/审批策略：never$/m);
+		await terminal.waitForVisible("切换审批策略");
+		// 三个策略各带一句说明
+		expect(terminal.visible()).toMatch(
+			/ {2}on-request +需要批准的动作都先询问\n {2}granular +按类别决定.*\n→ never +从不询问.*\n↑↓ 选择 · Enter 切换 · Esc 取消/,
+		);
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).toContain(" · 审批 never · ");
+		expect(terminal.text()).not.toContain("never → ");
+
+		await terminal.type("/approval");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ never");
+		await terminal.press(key.up, key.up);
+		await terminal.waitForVisible("→ on-request");
+		await terminal.press(key.enter);
+		await terminal.waitFor("审批策略：never → on-request");
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).toContain(" · 审批 on-request · ");
+	});
+
+	test("/approval 里选 granular：配置里没有 [approval_granular] 也能逐类设置，各类别从当前策略的等效值改起，Enter 应用、Esc 不改", async () => {
+		await fixture.useModel(() => textReply("好"));
+		// 结果里七个类别的名字写成一行：终端宽一些，它不折行
+		const { terminal } = await fixture.start({ columns: 160 });
+		const categories = [
+			"sandbox_approval",
+			"rules",
+			"request_permissions",
+			"skill_approval",
+			"mcp_elicitations",
+			"mcp_tools",
+			"network",
+		];
+		/** 面板上各类别现在的取值，按显示的顺序。 */
+		const shown = () =>
+			categories.map(
+				(category) =>
+					new RegExp(`${category} +(询问|直接拒绝)`).exec(
+						terminal.visible(),
+					)?.[1],
+			);
+
+		// 手写参数时七个类别要在配置里写全
+		await terminal.type("/approval granular");
+		await terminal.press(key.enter);
+		await terminal.waitFor(/✗ .*\[approval_granular\] 的七个类别/);
+		expect(terminal.visible()).toContain(" · 审批 on-request · ");
+
+		await terminal.type("/approval");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ on-request");
+		await terminal.press(key.down);
+		await terminal.waitForVisible("→ granular");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible(
+			"↑↓ 选择 · 空格 切换 · Enter 应用 · Esc 取消",
+		);
+		// on-request 相当于七个类别都询问
+		expect(shown()).toEqual(categories.map(() => "询问"));
+		// 选中的类别下面写着它管什么
+		expect(terminal.visible()).toContain("越界申请和内置的危险命令判断");
+
+		// 改了取值再按 Esc：策略没有换
+		await terminal.press(key.space);
+		await terminal.waitForVisible("→ sandbox_approval");
+		expect(shown()[0]).toBe("直接拒绝");
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).toContain(" · 审批 on-request · ");
+		expect(terminal.text()).not.toContain("on-request → granular");
+
+		// Ctrl+C 也只是关掉面板：不改策略，也不算要退出的第一下
+		await terminal.type("/approval");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ on-request");
+		await terminal.press(key.down, key.enter);
+		await terminal.waitForVisible(
+			"↑↓ 选择 · 空格 切换 · Enter 应用 · Esc 取消",
+		);
+		await terminal.press(key.space, key.ctrlC);
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).not.toContain("再按一次 Ctrl+C 退出");
+		expect(terminal.visible()).toContain(" · 审批 on-request · ");
+		expect(terminal.text()).not.toContain("on-request → granular");
+
+		await terminal.type("/approval");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ on-request");
+		await terminal.press(key.down, key.enter);
+		await terminal.waitForVisible(
+			"↑↓ 选择 · 空格 切换 · Enter 应用 · Esc 取消",
+		);
+		expect(shown()).toEqual(categories.map(() => "询问"));
+		// 关掉 mcp_tools 和 network：↑ 从第一项绕到最后一项
+		await terminal.press(key.up, key.space, key.up, key.space);
+		await terminal.waitForVisible("调用 MCP 工具");
+		expect(shown()).toEqual([
+			"询问",
+			"询问",
+			"询问",
+			"询问",
+			"询问",
+			"直接拒绝",
+			"直接拒绝",
+		]);
+		await terminal.press(key.enter);
+		await terminal.waitFor("审批策略：on-request → granular");
+		await terminal.waitFor(
+			"granular：询问 sandbox_approval、rules、request_permissions、skill_approval、mcp_elicitations；直接拒绝 mcp_tools、network",
+		);
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).toContain(" · 审批 granular · ");
+
+		// 再打开时 granular 选中着，各类别是它现在的取值
+		await terminal.type("/approval");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ granular");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible(
+			"↑↓ 选择 · 空格 切换 · Enter 应用 · Esc 取消",
+		);
+		expect(shown().slice(5)).toEqual(["直接拒绝", "直接拒绝"]);
 	});
 
 	test("/model 换模型：状态行跟着变，下一次模型请求用新的模型", async () => {
@@ -124,6 +260,82 @@ describe("会话内命令", () => {
 		await terminal.press(key.enter);
 		await terminal.waitFor("想过了");
 		expect(server.requests[0]).toMatchObject({ reasoning_effort: "high" });
+	});
+
+	test("/effort 不带参数时列出当前模型支持的推理强度，当前的强度选中着，选中一项就换；补全也只列这几项", async () => {
+		const server = await fixture.useModel(() => textReply("想过了"), {
+			extra: efforts,
+		});
+		const { terminal } = await fixture.start();
+		await terminal.type("/effort ");
+		await terminal.waitForVisible("→ low");
+		// 清单里的七档只有三档在这个模型的 thinking_level_map 里
+		expect(
+			terminal
+				.visible()
+				.split("\n")
+				.filter((line) => /^(→|\s) \S+\s*$/.test(line))
+				.map((line) => line.slice(2).trim()),
+		).toEqual(["low", "medium", "high"]);
+
+		await terminal.press(key.escape, key.enter);
+		await terminal.waitForVisible("切换 fake 的推理强度");
+		expect(terminal.visible()).toMatch(
+			/ {2}low\n→ medium\n {2}high\n↑↓ 选择 · Enter 切换 · Esc 取消/,
+		);
+		// Ctrl+C 和 Esc 一样关掉列表，不换
+		await terminal.press(key.down, key.ctrlC);
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).not.toContain("再按一次 Ctrl+C 退出");
+		expect(terminal.visible()).toContain(" · 推理 medium · ");
+
+		await terminal.type("/effort");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("→ medium");
+		await terminal.press(key.down);
+		await terminal.waitForVisible("→ high");
+		await terminal.press(key.enter);
+		await terminal.waitFor("推理强度换成 high");
+		await terminal.waitForVisible(" · 推理 high · ");
+
+		await terminal.type("你好");
+		await terminal.press(key.enter);
+		await terminal.waitFor("想过了");
+		expect(server.requests[0]).toMatchObject({ reasoning_effort: "high" });
+	});
+
+	test("/effort 不带参数而当前模型不能调推理强度：说明原因，不弹出列表", async () => {
+		await fixture.useModel(() => textReply("好"));
+		const { terminal } = await fixture.start();
+		await terminal.type("/effort");
+		await terminal.press(key.enter);
+		await terminal.waitFor("fake 不能调推理强度");
+		expect(terminal.visible()).toContain("Enter 发送");
+	});
+
+	test("/sandbox 不带参数时列出能换到的沙盒模式，没有只能在启动时指定的 danger-full-access；任务运行中不弹出列表，说明原因", async () => {
+		const server = await fixture.useModel((call) =>
+			call === 0 ? "hang" : textReply("好"),
+		);
+		const { terminal } = await fixture.start();
+		await terminal.type("/sandbox");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("切换沙盒模式");
+		expect(terminal.visible()).toMatch(
+			/切换沙盒模式\n.{2}read-only +工作区只读\n.{2}workspace-write +工作区可写\n↑↓ 选择 · Enter 切换，agent 进程随之重启 · Esc 取消/,
+		);
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).toContain(" · 沙盒 danger-full-access · ");
+
+		await terminal.type("你好");
+		await terminal.press(key.enter);
+		await expect.poll(() => server.requests.length).toBe(1);
+		await terminal.type("/sandbox");
+		await terminal.press(key.enter);
+		await terminal.waitFor("只能在 session 空闲时切换沙盒模式");
+		expect(terminal.visible()).not.toContain("↑↓ 选择 · Enter 切换");
+		expect(terminal.visible()).toContain("运行中");
 	});
 
 	test("状态行显示 session 当前生效的设置：配置文件改了、还没 /reload 时，换推理强度不带出没生效的改动", async () => {
@@ -455,9 +667,13 @@ extends = "read-only"
 			workspaceWritten: false,
 		});
 
+		// 列表里有命名权限配置，写着它继承的内置模式；正在用的那个选中着
 		await terminal.type("/sandbox");
 		await terminal.press(key.enter);
-		await terminal.waitFor(/沙盒模式：strict$/m);
+		await terminal.waitForVisible("切换沙盒模式");
+		expect(terminal.visible()).toMatch(
+			/ {2}read-only +工作区只读\n {2}workspace-write +工作区可写\n→ strict +命名权限配置，在 read-only 上按路径和域名调整\n/,
+		);
 	});
 
 	test("/sandbox 换成命名权限配置：补全里有它的名字，状态行跟着变，之后的命令按它的路径读写；已经在用时不再换，不存在的名字报错", async () => {
@@ -518,18 +734,25 @@ extends = "read-only"
 		expect(terminal.visible()).toContain(" · 沙盒 strict · ");
 	});
 
-	test("/sandbox 不带参数时显示当前的模式；不能在运行中换成 danger-full-access", async () => {
+	test("/sandbox 不带参数时从列表里选，当前的模式选中着，选中一项就换；不能在运行中换成 danger-full-access", async () => {
 		await fixture.useModel(() => textReply("好"));
 		const { terminal } = await fixture.start({
 			sandboxMode: "workspace-write",
 		});
 		await terminal.type("/sandbox");
 		await terminal.press(key.enter);
-		await terminal.waitFor(/沙盒模式：workspace-write$/m);
+		await terminal.waitForVisible("→ workspace-write");
+		await terminal.press(key.up);
+		await terminal.waitForVisible("→ read-only");
+		await terminal.press(key.enter);
+		await terminal.waitFor("沙盒模式：workspace-write → read-only");
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).toContain(" · 沙盒 read-only · ");
+		expect(terminal.text()).toContain("agent 进程已重启");
 
 		await terminal.type("/sandbox danger-full-access");
 		await terminal.press(key.enter);
 		await terminal.waitFor(/✗ .*danger-full-access/);
-		expect(terminal.visible()).toContain(" · 沙盒 workspace-write · ");
+		expect(terminal.visible()).toContain(" · 沙盒 read-only · ");
 	});
 });

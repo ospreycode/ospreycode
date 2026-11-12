@@ -1,3 +1,4 @@
+import type { SelectItem } from "@earendil-works/pi-tui";
 import type {
 	BranchInfo,
 	ChangesDiff,
@@ -14,11 +15,11 @@ const pathLimit = 20;
 
 const usage = {
 	diff: "/diff 的写法：/diff 查看本 session 的全部改动 · /diff N 查看第 N 个检查点以来的改动",
-	undo: "/undo 的写法：/undo 列出检查点 · /undo N 把代码还原到第 N 个检查点 · /undo N overwrite 连之后被别处改过的文件一起还原",
+	undo: "/undo 的写法：/undo 从列表里选检查点 · /undo N 把代码还原到第 N 个检查点 · /undo N overwrite 连之后被别处改过的文件一起还原",
 	rewind:
-		"/rewind 的写法：/rewind 列出检查点 · /rewind N 把对话回退到第 N 个检查点的输入之前 · /rewind N code 同时还原代码 · /rewind N code overwrite 连之后被别处改过的文件一起还原",
+		"/rewind 的写法：/rewind 从列表里选检查点 · /rewind N 把对话回退到第 N 个检查点的输入之前 · /rewind N code 同时还原代码 · /rewind N code overwrite 连之后被别处改过的文件一起还原",
 	branch:
-		"/branch 的写法：/branch 列出回退时放弃的分支 · /branch N 切回第 N 个",
+		"/branch 的写法：/branch 从列表里选回退时放弃的分支 · /branch N 切回第 N 个",
 	fork: "/fork 的写法：/fork 从当前位置分叉 · /fork N 从第 N 个检查点的输入之前分叉",
 };
 
@@ -28,17 +29,20 @@ export interface ListedCheckpoint {
 	checkpoint: CheckpointInfo;
 }
 
-function describe(checkpoint: CheckpointInfo): string {
+/** 一个检查点在列表里的两段：那次输入的时间，和输入的第一行加上它还能用来做什么。 */
+function describe(checkpoint: CheckpointInfo): { time: string; input: string } {
 	const input =
 		checkpoint.time === null || checkpoint.text === null
 			? "（来源 session 的检查点）"
-			: `${checkpoint.time} ${checkpoint.kind === "steering" ? "（steering）" : ""}${brief(checkpoint.text.split("\n", 1)[0] ?? "", 80)}`;
-	if (checkpoint.on_path && checkpoint.restorable) return input;
-	if (checkpoint.on_path) return `${input} · 快照已清理（只能回退对话）`;
-	if (checkpoint.restorable) {
-		return `${input} · 不在当前对话路径上（只能还原代码）`;
-	}
-	return `${input} · 不在当前对话路径上，快照已清理（不能再用）`;
+			: `${checkpoint.kind === "steering" ? "（steering）" : ""}${brief(checkpoint.text.split("\n", 1)[0] ?? "", 80)}`;
+	const usable = checkpoint.on_path
+		? checkpoint.restorable
+			? ""
+			: " · 快照已清理（只能回退对话）"
+		: checkpoint.restorable
+			? " · 不在当前对话路径上（只能还原代码）"
+			: " · 不在当前对话路径上，快照已清理（不能再用）";
+	return { time: checkpoint.time ?? "", input: `${input}${usable}` };
 }
 
 /**
@@ -56,12 +60,29 @@ export class CheckpointList {
 		}
 		return [
 			"检查点（每次输入一个，还原和回退都是回到那次输入之前）：",
-			...checkpoints.map(
-				(checkpoint, index) => `  [${index + 1}] ${describe(checkpoint)}`,
-			),
+			...checkpoints.map((checkpoint, index) => {
+				const { time, input } = describe(checkpoint);
+				return `  [${index + 1}] ${time === "" ? "" : `${time} `}${input}`;
+			}),
 			"/undo N 还原代码，对话不动（还在运行的后台命令会先结束） · /rewind N [code] 回退对话，code 同时还原代码",
 			"/diff N 查看之后的改动 · /fork N 从那里分叉",
 		].join("\n");
+	}
+
+	/**
+	 * 把 session 现在的检查点记成"上次列出的"，返回选择列表里的各项：取值是序号，和命令里写的 N
+	 * 是同一个。
+	 */
+	choices(checkpoints: CheckpointInfo[]): SelectItem[] {
+		this.#listed = checkpoints;
+		return checkpoints.map((checkpoint, index) => {
+			const { time, input } = describe(checkpoint);
+			return {
+				value: String(index + 1),
+				label: `[${index + 1}]${time === "" ? "" : ` ${time}`}`,
+				description: input,
+			};
+		});
 	}
 
 	/** 对话重画之后（回退、分叉）列表不在屏幕上了：要重新列出才能再按序号引用。 */
@@ -114,6 +135,16 @@ export class BranchList {
 		].join("\n");
 	}
 
+	/** 把 session 现在被放弃的分支记成"上次列出的"，返回选择列表里的各项：取值是序号。 */
+	choices(branches: BranchInfo[]): SelectItem[] {
+		this.#listed = branches;
+		return branches.map((branch, index) => ({
+			value: String(index + 1),
+			label: `[${index + 1}] ${branch.time}`,
+			description: brief(branch.text.split("\n", 1)[0] ?? "", 80),
+		}));
+	}
+
 	/** 对话重画之后（回退、切换分支、分叉）列表不在屏幕上了，分支也变了：要重新列出。 */
 	forget(): void {
 		this.#listed = [];
@@ -152,7 +183,7 @@ export function parseDiff(
 	return written === undefined ? undefined : list.at(written);
 }
 
-/** `/undo [N] [overwrite]` 的参数；不带参数（列出检查点）时为空。 */
+/** `/undo [N] [overwrite]` 的参数；不带参数（从列表里选）时为空。 */
 export function parseUndo(
 	argument: string,
 	list: CheckpointList,
@@ -165,7 +196,7 @@ export function parseUndo(
 	return { target: list.at(written), overwrite: flag !== undefined };
 }
 
-/** `/rewind [N] [code] [overwrite]` 的参数；不带参数（列出检查点）时为空。 */
+/** `/rewind [N] [code] [overwrite]` 的参数；不带参数（从列表里选）时为空。 */
 export function parseRewind(
 	argument: string,
 	list: CheckpointList,
@@ -184,7 +215,7 @@ export function parseRewind(
 	return { target: list.at(written), code, overwrite };
 }
 
-/** `/branch [N]` 的参数；不带参数（列出被放弃的分支）时为空。 */
+/** `/branch [N]` 的参数；不带参数（从列表里选）时为空。 */
 export function parseBranch(
 	argument: string,
 	list: BranchList,

@@ -39,12 +39,22 @@ export function originText(item: ExtensionInfo): string {
 		: originLabel[item.origin];
 }
 
-/** 列表里的一行：种类、名字、来源和状态；有说明时接在后面。 */
-export function extensionLine(item: ExtensionInfo): string {
+/** 是哪个扩展：种类、名字、版本和来源。 */
+export function extensionName(item: ExtensionInfo): string {
 	const version =
 		item.version === undefined ? "" : ` ${sanitize(item.version)}`;
+	return `${kindLabel[item.kind]} ${sanitize(item.name)}${version}（${originText(item)}）`;
+}
+
+/** 扩展的状态；有说明时接在后面。 */
+export function extensionStatus(item: ExtensionInfo): string {
 	const detail = item.detail === undefined ? "" : `：${sanitize(item.detail)}`;
-	return `${kindLabel[item.kind]} ${sanitize(item.name)}${version}（${originText(item)}）  ${statusLabel[item.status]}${detail}`;
+	return `${statusLabel[item.status]}${detail}`;
+}
+
+/** 列表里的一行：种类、名字、来源和状态；有说明时接在后面。 */
+export function extensionLine(item: ExtensionInfo): string {
+	return `${extensionName(item)}  ${extensionStatus(item)}`;
 }
 
 /** 一个扩展的位置和内容摘要，确认之前给用户看。扩展里的文字都去掉终端控制序列。 */
