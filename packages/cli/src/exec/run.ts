@@ -213,6 +213,12 @@ async function execute(
 					...sessionOptions,
 					sessionId: targetSessionId(task.resume, host, config.workspace),
 				});
+	output.opened({
+		sessionId: session.id,
+		config: session.config(),
+		home: context.env.HOME,
+		prompt,
+	});
 	// 到期的 session 在任务进行的同时清理，退出之前等它做完
 	const cleaned = startSessionCleanup(host, context);
 

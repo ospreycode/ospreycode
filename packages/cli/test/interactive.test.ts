@@ -9,6 +9,7 @@ import {
 	lastUserMessage,
 	lastUserParts,
 	selectFirstChoice,
+	stalledReply,
 	streamReply,
 	toolCallsReply,
 } from "./interactive-fixture.js";
@@ -62,7 +63,7 @@ describe("输入和回复", () => {
 });
 
 describe("对话区", () => {
-	test("工具调用显示名字、参数要点、输出、结果和耗时；任务结束显示用量和费用", async () => {
+	test("命令按做的事写标题：运行完写 Ran 和命令，下面是输出、退出码和耗时，没有输出时写明；任务结束显示结果、用时、用量和费用", async () => {
 		await fixture.useModel(
 			(call) =>
 				[
@@ -79,15 +80,72 @@ describe("对话区", () => {
 
 		const shown = terminal.text();
 		expect(shown).toMatch(
-			/● shell \$ echo from-shell; echo second >&2\n {2}│ from-shell\n {2}│ second\n {2}✓ 退出码 0 · \d+\.\ds/,
+			/^• Ran echo from-shell; echo second >&2\n {2}└ from-shell\n {4}second\n {4}✓ 退出码 0 · \d+\.\ds$/m,
 		);
 		expect(shown).toMatch(
-			/● shell \$ exit 3\n {2}✗ 失败 · 退出码 3 · \d+\.\ds/,
+			/^• Ran exit 3\n {2}└ （没有输出）\n {4}✗ 失败 · 退出码 3 · \d+\.\ds$/m,
 		);
-		expect(shown).toMatch(/— 完成 · 输入 30 · 输出 15 token · \$0\.\d+/);
+		// 模型的回复前面有圆点，和工具的块分得开
+		expect(shown).toMatch(/^• 做完了$/m);
+		expect(shown).toMatch(
+			/^— 完成 · 用时 \d+\.\ds · 输入 30 · 输出 15 token · \$0\.\d+$/m,
+		);
 	});
 
-	test("文件改动按 diff 的样子显示：换掉的内容标 -，新的内容标 +", async () => {
+	test("很长的命令输出留开头和末尾几行，中间写明省掉了多少行", async () => {
+		await fixture.useModel((call) =>
+			call === 0 ? shellCallReply("seq 1 40") : textReply("数完了"),
+		);
+		const { terminal } = await fixture.start();
+		await terminal.type("数数");
+		await terminal.press(key.enter);
+		await terminal.waitFor("数完了");
+
+		expect(terminal.text()).toMatch(
+			/^• Ran seq 1 40\n {2}└ 1\n {4}2\n {4}3\n {4}… \+32 行\n {4}36\n {4}37\n {4}38\n {4}39\n {4}40\n {4}✓ 退出码 0 · /m,
+		);
+	});
+
+	test("连着的几次查看聚合成一组：运行中是 Exploring，做完是 Explored，连着读的文件合并成一行，不逐条占行", async () => {
+		const { workspace } = fixture.dirs;
+		for (const name of ["a.ts", "b.ts", "c.ts"]) {
+			writeFileSync(join(workspace, name), `// ${name}\n`);
+		}
+		const read = (name: string) => ({
+			name: "read",
+			arguments: { path: name },
+		});
+		const server = await fixture.useModel(
+			(call) =>
+				[
+					toolCallsReply([read("a.ts")]),
+					toolCallsReply([read(join(workspace, "b.ts"))]),
+					toolCallsReply([
+						{ name: "grep", arguments: { pattern: "//", glob: "*.ts" } },
+					]),
+					toolCallsReply([{ name: "ls", arguments: { path: "." } }]),
+					toolCallsReply([read("c.ts")]),
+					"hang" as const,
+				][call] ?? textReply("好"),
+			{ extra: "[tools]\ngrep = true\nls = true\n" },
+		);
+		const { terminal } = await fixture.start();
+		await terminal.type("看一圈");
+		await terminal.press(key.enter);
+		await expect.poll(() => server.requests.length).toBe(6);
+		// 任务还在进行：这一组还可能接着加调用。工作区里的绝对路径写成相对的
+		await terminal.waitFor(
+			/^• Exploring\n {2}└ Read a\.ts, b\.ts\n {4}Search \/\/\/\/ in \. \(\*\.ts\)\n {4}List \.\n {4}Read c\.ts$/m,
+		);
+		expect(terminal.text()).not.toContain("✓");
+
+		await terminal.press(key.ctrlC);
+		await terminal.waitFor("已取消");
+		expect(terminal.text()).toMatch(/^• Explored\n {2}└ Read a\.ts, b\.ts\n/m);
+		expect(terminal.text()).not.toContain("Exploring");
+	});
+
+	test("文件改动的标题写新建还是修改、路径和增删的行数，下面是带行号和上下文的 diff；覆盖已有的文件只显示变了的行", async () => {
 		const { workspace } = fixture.dirs;
 		writeFileSync(join(workspace, "old.txt"), "甲\n乙\n丙\n");
 		await fixture.useModel(
@@ -109,6 +167,12 @@ describe("对话区", () => {
 							arguments: { path: "new.txt", content: "第一行\n第二行\n" },
 						},
 					]),
+					toolCallsReply([
+						{
+							name: "write",
+							arguments: { path: "old.txt", content: "甲\n改过的乙\n丁\n" },
+						},
+					]),
 					textReply("改好了"),
 				][call],
 		);
@@ -118,15 +182,23 @@ describe("对话区", () => {
 		await terminal.waitFor("改好了");
 
 		const shown = terminal.text();
-		expect(shown).toMatch(/● edit old\.txt\n\s+-乙\n\s+\+改过的乙\n {2}✓/);
-		expect(shown).toMatch(/● write new\.txt\n\s+\+第一行\n\s+\+第二行\n {2}✓/);
+		expect(shown).toMatch(
+			/^• Edited old\.txt \(\+1 -1\)\n {4}1 {3}甲\n {4}2 - 乙\n {4}2 \+ 改过的乙\n {4}3 {3}丙$/m,
+		);
+		expect(shown).toMatch(
+			/^• Added new\.txt \(\+2 -0\)\n {4}1 \+ 第一行\n {4}2 \+ 第二行$/m,
+		);
+		// 用 write 覆盖已有的文件：不是整份标成新增
+		expect(shown).toMatch(
+			/^• Edited old\.txt \(\+1 -1\)\n {4}1 {3}甲\n {4}2 {3}改过的乙\n {4}3 - 丙\n {4}3 \+ 丁$/m,
+		);
 		expect(readFileSync(join(workspace, "old.txt"), "utf8")).toBe(
-			"甲\n改过的乙\n丙\n",
+			"甲\n改过的乙\n丁\n",
 		);
 		expect(existsSync(join(workspace, "new.txt"))).toBe(true);
 	});
 
-	test("[tools] 打开的 grep 和 ls：调用显示搜索的模式、路径和 glob，ls 没写参数时只有名字；失败的显示原因", async () => {
+	test("[tools] 打开的 grep 和 ls：调用显示搜索的模式、路径和 glob，ls 没写参数时列的是工作区；失败的后面写原因", async () => {
 		const { workspace } = fixture.dirs;
 		mkdirSync(join(workspace, "src"));
 		writeFileSync(
@@ -168,10 +240,8 @@ describe("对话区", () => {
 		await terminal.waitFor("完成");
 
 		const shown = terminal.text();
-		expect(shown).toMatch(/● grep \/answer = \\d\+\/ src \*\.ts\n {2}✓ /);
-		expect(shown).toMatch(/● ls\n {2}✓ /);
 		expect(shown).toMatch(
-			/● grep \/answer\/i missing\n {2}✗ 失败 · [^\n]+\n\s+ENOENT: no such file or directory/,
+			/^• Explored\n {2}└ Search \/answer = \\d\+\/ in src \(\*\.ts\)\n {4}List \.\n {4}Search \/answer\/i in missing ✗ ENOENT: no such file or directory/m,
 		);
 		// 结果交回了模型
 		const last = JSON.stringify(server.requests.at(-1));
@@ -213,7 +283,7 @@ describe("对话区", () => {
 		await terminal.press(key.enter);
 		await terminal.waitFor("想好了");
 
-		expect(terminal.text()).toMatch(/先想一想\n想好了/);
+		expect(terminal.text()).toMatch(/^ {2}先想一想\n• 想好了$/m);
 	});
 
 	test("[ui] show_reasoning = false 时不显示推理内容", async () => {
@@ -227,6 +297,68 @@ describe("对话区", () => {
 		await terminal.waitFor("完成");
 
 		expect(terminal.text()).not.toContain("先想一想");
+	});
+
+	test("任务运行时输入框上面是活动行：模型在想的时候写推理内容里最近的标题，不显示推理内容时也写；秒表在走，任务结束就撤掉", async () => {
+		await fixture.useModel(
+			(call) =>
+				call === 0
+					? stalledReply([
+							{
+								role: "assistant",
+								reasoning_content: "**查资料**\n\n先看看有哪些文件",
+							},
+						])
+					: textReply("好"),
+			{ extra: `${reasoning.extra}\n[ui]\nshow_reasoning = false\n` },
+		);
+		const { terminal } = await fixture.start();
+		await terminal.type("干活");
+		await terminal.press(key.enter);
+		await terminal.waitFor(/^. 查资料 \(\d+s · Ctrl\+C 取消\)$/m);
+		expect(terminal.visible()).toContain(
+			"Enter 插入当前任务 · Alt+Enter 排到之后 · Alt+↑ 管理排队的输入",
+		);
+		expect(terminal.text()).not.toContain("先看看有哪些文件");
+		await terminal.waitFor(/查资料 \([1-9]\d*s · Ctrl\+C 取消\)/);
+
+		await terminal.press(key.ctrlC);
+		await terminal.waitFor("已取消");
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.visible()).not.toContain("Ctrl+C 取消");
+		// 任务结束的那一行写着实际用了多久
+		expect(terminal.text()).toMatch(/^— 已取消 · 用时 \d+\.\ds · /m);
+	});
+
+	test("工具在运行时活动行写它在做的事，后面是还在运行的后台命令的个数；模型还没有动静时写工作中", async () => {
+		const server = await fixture.useModel(
+			(call) =>
+				[
+					"hang" as const,
+					shellCallReply("sleep 58.13", { background: true }),
+					shellCallReply("sleep 57.29"),
+				][call] ?? textReply("好"),
+		);
+		const { terminal } = await fixture.start();
+		await terminal.type("第一件事");
+		await terminal.press(key.enter);
+		await terminal.waitFor(/^. 工作中 \(\d+s · Ctrl\+C 取消\)$/m);
+		await expect.poll(() => server.requests.length).toBe(1);
+		await terminal.press(key.ctrlC);
+		await terminal.waitFor("已取消");
+
+		await terminal.type("第二件事");
+		await terminal.press(key.enter);
+		await terminal.waitFor(
+			/^. Running sleep 57\.29 \(\d+s · Ctrl\+C 取消\) · 1 条后台命令在运行，\/bg 查看$/m,
+		);
+		// 对话区里这条命令的标题也是进行中的写法，后台的那条已经启动
+		expect(terminal.text()).toMatch(/^• Running sleep 57\.29$/m);
+		expect(terminal.text()).toMatch(
+			/^• Started sleep 58\.13\n {2}└ ↻ 转入后台运行：\S+$/m,
+		);
+		await terminal.press(key.ctrlC);
+		await terminal.waitFor(/^• Ran sleep 57\.29\n {2}└ ✗ 已取消 · /m);
 	});
 
 	test("后台命令的开始、结束和通知都显示出来，通知交给模型处理", async () => {
@@ -244,7 +376,9 @@ describe("对话区", () => {
 		await terminal.waitFor("收到通知了");
 
 		const shown = terminal.text();
-		expect(shown).toMatch(/↻ 转入后台运行：\S+/);
+		expect(shown).toMatch(
+			/^• Started sleep 0\.3; echo bg-done\n {2}└ ↻ 转入后台运行：\S+$/m,
+		);
 		expect(shown).toMatch(/· 后台命令 \S+ 开始运行：sleep 0\.3; echo bg-done/);
 		expect(shown).toMatch(/· 后台命令 \S+ 结束了（退出码 0）/);
 		expect(shown).toMatch(/· 后台通知：.*exited with code 0/);
@@ -525,7 +659,7 @@ describe("运行中的输入", () => {
 		const { terminal } = await fixture.start();
 		await terminal.type("任务一");
 		await terminal.press(key.enter);
-		await terminal.waitForVisible("运行中");
+		await terminal.waitForVisible("Ctrl+C 取消");
 		await expect.poll(() => server.requests.length).toBe(1);
 
 		await terminal.type("插进去的话");
@@ -556,7 +690,7 @@ describe("运行中的输入", () => {
 		const { terminal } = await fixture.start();
 		await terminal.type("任务一");
 		await terminal.press(key.enter);
-		await terminal.waitForVisible("运行中");
+		await terminal.waitForVisible("Ctrl+C 取消");
 		for (const text of ["甲", "乙", "丙"]) {
 			await terminal.type(text);
 			await terminal.press(key.altEnter);
@@ -691,7 +825,7 @@ describe("取消和退出", () => {
 		const first = await fixture.start();
 		await first.terminal.type("跑起来");
 		await first.terminal.press(key.enter);
-		await first.terminal.waitForVisible("运行中");
+		await first.terminal.waitForVisible("Ctrl+C 取消");
 		first.signal("SIGTERM");
 		expect(await fixture.exitCode()).toBe(143);
 

@@ -1,6 +1,5 @@
 import {
 	type EditorTheme,
-	indexedColor,
 	type MarkdownTheme,
 	type SelectListTheme,
 	type SettingsListTheme,
@@ -10,31 +9,14 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import type { Tone } from "../format.js";
+import { style } from "../../format/style.js";
+import type { Tone } from "../../format/text.js";
 
-/**
- * 只用终端自己的 16 色，写成 256 色的转义序列：颜色跟着用户的终端配色走，深色浅色背景都看得清，
- * 也不用探测终端支持哪种颜色。
- */
-const paint = (style: TextStyle) => (text: string) =>
-	styleText(text, style, "256color");
+export { style };
 
-/** 界面用到的几种文字样式。 */
-export const style = {
-	plain: (text: string) => text,
-	dim: paint({ dim: true }),
-	bold: paint({ bold: true }),
-	italic: paint({ italic: true, dim: true }),
-	accent: paint({ fg: indexedColor(6) }),
-	user: paint({ fg: indexedColor(6), bold: true }),
-	added: paint({ fg: indexedColor(2) }),
-	removed: paint({ fg: indexedColor(1) }),
-	hunk: paint({ fg: indexedColor(6), dim: true }),
-	success: paint({ fg: indexedColor(2) }),
-	warning: paint({ fg: indexedColor(3) }),
-	error: paint({ fg: indexedColor(1) }),
-	selected: paint({ fg: indexedColor(6), bold: true }),
-};
+/** Markdown 里另外用到的几种样式，写法同 `style`：只用终端自己的颜色。 */
+const paint = (textStyle: TextStyle) => (text: string) =>
+	styleText(text, textStyle, "256color");
 
 /** 一行的色调对应的样式。 */
 export const toneStyle: Record<Tone, (text: string) => string> = {

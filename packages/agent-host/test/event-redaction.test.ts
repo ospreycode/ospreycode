@@ -473,6 +473,47 @@ describe("工具调用", () => {
 		expect(body).toContain("第一次回答");
 	});
 
+	test("指名一次文件改动的结果：结果里给界面显示的 diff 是文件的内容，一起去掉", async () => {
+		host = scriptedHost((_request, call) =>
+			call === 0
+				? {
+						content: [
+							{
+								type: "tool_call",
+								call_id: "call_1",
+								name: "write",
+								arguments: JSON.stringify({
+									path: "notes.txt",
+									content: "DIFF-SECRET\n",
+								}),
+							},
+						],
+					}
+				: reply("写好了"),
+		);
+		const session = await record(["写文件"]);
+		const completed = only(stored(session), "tool_call.completed");
+		expect(completed.data).toMatchObject({
+			result: {
+				status: "succeeded",
+				diff: expect.stringContaining("+DIFF-SECRET"),
+			},
+		});
+
+		await host.redactEvents({
+			...ref(session),
+			eventIds: [completed.event_id],
+		});
+		expect(only(stored(session), "tool_call.completed").data).toMatchObject({
+			redacted: true,
+			result: { status: "succeeded", content: covered },
+		});
+		expect(
+			(only(stored(session), "tool_call.completed").data as { result: object })
+				.result,
+		).not.toHaveProperty("diff");
+	});
+
 	test("指名一次调用登记的参数：回复里只覆盖这一次调用的参数，询问里的命令一起覆盖；再指名回复，文字也覆盖", async () => {
 		host = scriptedHost((_request, call) =>
 			call === 0

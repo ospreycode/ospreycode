@@ -1,6 +1,6 @@
 import type { Component } from "@earendil-works/pi-tui";
 import type { QueuedInput } from "@ospreycode/agent-host";
-import { brief } from "../format.js";
+import { brief } from "../../format/text.js";
 import { displayInput } from "../input.js";
 import type { InteractiveState } from "../state.js";
 import { clipped, style } from "./theme.js";

@@ -9,8 +9,8 @@ import {
 	extensionName,
 	extensionStatus,
 } from "../extension-text.js";
+import { sanitize } from "../format/text.js";
 import { CommandUsageError } from "./commands.js";
-import { sanitize } from "./format.js";
 
 const usage = `/extensions 的用法：
   /extensions              在列表里查看扩展和状态，选中一个查看内容摘要，确认、启用或停用

@@ -117,6 +117,13 @@ function results(): ToolResult[] {
 	);
 }
 
+/** 各次工具调用的结果里给界面显示的 diff，按完成的顺序；没有成功或没有改文件的调用没有。 */
+function diffs(): (string | undefined)[] {
+	return results().map((result) =>
+		result.status === "succeeded" ? result.diff : undefined,
+	);
+}
+
 /** 这个 session 里的询问。 */
 function asked(): ApprovalRequestedEvent[] {
 	return log.events.filter((event) => event.type === "approval.requested");
@@ -161,6 +168,13 @@ test("模型用 write、edit 和 read 改工作区里的文件，调用由 runti
 		is_error: false,
 		content: [{ type: "text", text: "hello\nosprey" }],
 	});
+	// 改动的 unified diff 随结果发给前端，不交给模型
+	expect(diffs()).toEqual([
+		`--- /dev/null\n+++ ${file}\n@@ -0,0 +1,2 @@\n+hello\n+world\n`,
+		`--- ${file}\n+++ ${file}\n@@ -1,2 +1,2 @@\n hello\n-world\n+osprey\n`,
+		undefined,
+	]);
+	expect(JSON.stringify(requests)).not.toContain("+osprey");
 });
 
 test("系统指令里有五个默认启用的工具", async () => {
@@ -254,6 +268,14 @@ describe.runIf(onMac)("沙盒里的文件工具（macOS 真实沙盒，脚本模
 				reasons: [`申请修改 ${outsideFile}`],
 				diff: `--- ${outsideFile}\n+++ ${outsideFile}\n@@ -1,1 +1,1 @@\n-one\n+two\n`,
 			},
+		]);
+		// 结果里的 diff：在沙盒里写的和经 apply-edits 写的是同一种写法，没问过的那一次也有
+		const insideFile = join(dirs.workspace, "inside.txt");
+		expect(diffs()).toEqual([
+			`--- /dev/null\n+++ ${insideFile}\n@@ -0,0 +1,1 @@\n+in\n\\ No newline at end of file\n`,
+			`--- /dev/null\n+++ ${outsideFile}\n@@ -0,0 +1,1 @@\n+one\n`,
+			`--- ${outsideFile}\n+++ ${outsideFile}\n@@ -1,1 +1,1 @@\n-one\n+two\n`,
+			`--- ${outsideFile}\n+++ ${outsideFile}\n@@ -1,1 +1,1 @@\n-two\n+three\n`,
 		]);
 	});
 

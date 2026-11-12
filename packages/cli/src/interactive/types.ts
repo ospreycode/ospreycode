@@ -4,7 +4,6 @@ import type {
 	ApprovalRequestedEvent,
 	QueuedInput,
 	SessionConfig,
-	ToolCallCompletedEvent,
 } from "@ospreycode/agent-host";
 
 export type {
@@ -12,6 +11,7 @@ export type {
 	ApprovalPolicy,
 	ReasoningEffort,
 } from "@ospreycode/agent-host";
+export type { ToolResult } from "../format/result.js";
 
 // 下面这些类型定义在 sandbox、api 和 agent-runtime 包里，agent-host 的入口没有单独导出，
 // CLI 又只依赖 agent-host：从用到它们的事件和配置的类型里取出来。
@@ -41,9 +41,6 @@ export type GrantedPermissions = NonNullable<
 
 /** 询问可以保存成的命令规则。 */
 export type CommandRule = NonNullable<ToolCallApproval["suggested_rule"]>;
-
-/** 一次工具调用的结果。 */
-export type ToolResult = ToolCallCompletedEvent["result"];
 
 /** 事件里的用户输入的一段：文字、提及的路径、图片或图片的引用。 */
 export type InputBlock = QueuedInput["input"][number];

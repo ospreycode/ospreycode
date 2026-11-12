@@ -335,7 +335,7 @@ describe("会话内命令", () => {
 		await terminal.press(key.enter);
 		await terminal.waitFor("只能在 session 空闲时切换沙盒模式");
 		expect(terminal.visible()).not.toContain("↑↓ 选择 · Enter 切换");
-		expect(terminal.visible()).toContain("运行中");
+		expect(terminal.visible()).toContain("Ctrl+C 取消");
 	});
 
 	test("状态行显示 session 当前生效的设置：配置文件改了、还没 /reload 时，换推理强度不带出没生效的改动", async () => {

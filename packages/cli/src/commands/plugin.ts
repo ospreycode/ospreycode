@@ -4,8 +4,8 @@ import { flag, type ParsedArgs, value } from "../args/parse.js";
 import type { CliContext } from "../context.js";
 import { UsageError } from "../errors.js";
 import { stageDiff, stageLines, statusLabel } from "../extension-text.js";
+import { sanitize } from "../format/text.js";
 import { openHost } from "../host.js";
-import { sanitize } from "../interactive/format.js";
 import { agreed, prompting, requireTerminal } from "./confirm.js";
 
 /**

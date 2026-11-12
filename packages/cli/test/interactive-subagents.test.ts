@@ -52,10 +52,10 @@ test("子 agent 的进展压成一项：不逐条显示它的回复和工具调�
 	await terminal.waitFor("主 agent 的结论");
 
 	const screen = terminal.text();
-	// 启动它的那次调用写的是哪个子 agent、交给它什么
-	expect(screen).toContain("spawn_agent explorer：Find the entry point.");
+	// 启动它的那次调用写的是哪个子 agent；交给它的任务写在它自己的那一块里
+	expect(screen).toMatch(/^• Spawned explorer$/m);
 	expect(screen).toMatch(
-		/子 agent explorer（fake） 完成 · 1 次工具调用 · 输入 \d+ · 输出 \d+ token/,
+		/^• 子 agent explorer（fake） 完成 · 1 次工具调用 · 输入 \d+ · 输出 \d+ token.*\n {2}└ 任务：Find the entry point\.$/m,
 	);
 	// 它的工具调用不占对话区的一项，结束之后那一行也不再写"最近"
 	expect(screen).not.toContain("echo from-child");

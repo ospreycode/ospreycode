@@ -173,7 +173,7 @@ test("任务运行中进程收到 SIGINT：取消任务，正在运行的命令�
 	const command = "sleep 271828";
 	reply = () => shellCallReply(command);
 	const terminal = start("跑一条长命令");
-	await terminal.waitFor(`$ ${command}`);
+	await terminal.waitFor(`Running ${command}`);
 	await vi.waitFor(() => expect(processesMatching(command)).not.toEqual([]));
 	const children = childrenOf(await terminal.pid);
 	expect(children).not.toEqual([]);

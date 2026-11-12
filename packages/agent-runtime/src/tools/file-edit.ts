@@ -5,6 +5,7 @@ import type {
 	PreparedCall,
 	ToolContext,
 } from "../tool-executor/local-tool.js";
+import { resultDiff } from "./diff.js";
 import {
 	isFileSystemError,
 	isInside,
@@ -72,8 +73,11 @@ export async function prepareFileEdit(
 		};
 	}
 	const edit: FileEdit = { path, old_sha256: oldHash, new_sha256: newHash };
+	// 按登记时读到的旧内容算：执行时再核对一次，旧内容变了就不写，也就没有这份 diff
+	const diff = resultDiff([{ path, before: current, after: content }]);
 	return {
 		edit,
+		...(diff === undefined ? {} : { diff }),
 		async run() {
 			const latest = await currentContent(path);
 			if ((latest === undefined ? null : sha256(latest)) !== oldHash) {

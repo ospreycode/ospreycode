@@ -1,4 +1,3 @@
-import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import {
 	closeSync,
@@ -7,12 +6,13 @@ import {
 	openSync,
 	readFileSync,
 } from "node:fs";
-import type {
-	FileEditOp,
-	ToolCallRegisterParams,
-	ToolResult,
+import {
+	type FileChange,
+	type FileEditOp,
+	fileDiff,
+	type ToolCallRegisterParams,
+	type ToolResult,
 } from "@ospreycode/agent-runtime";
-import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 
 /** 编辑工具登记的文件改动：路径和改动前后的哈希。 */
 export type RegisteredEdit = NonNullable<ToolCallRegisterParams["edit"]>;
@@ -44,23 +44,24 @@ export function readTarget(path: string): Buffer | null | undefined {
 	}
 }
 
+/** 申请的一个文件改动和 Host 核对过哈希的那份旧内容（文件原来不存在时为 `null`）。 */
+export function editChange(
+	edit: FileEditOp,
+	current: Buffer | null,
+): FileChange {
+	return {
+		path: edit.path,
+		before: current ?? undefined,
+		after: Buffer.from(edit.content, "utf8"),
+	};
+}
+
 /**
  * 一个文件改动的统一 diff，按 Host 核对过哈希的那份旧内容算出：用户批准时看到的改动就是将要
- * 写入的改动。旧内容不是合法的 UTF-8 时没法按行比较，照 git 的写法只说明两者不同。
+ * 写入的改动。和编辑工具在沙盒里写入时附在结果上的 diff 是同一种写法。
  */
 export function editDiff(edit: FileEditOp, current: Buffer | null): string {
-	if (current !== null && !isUtf8(current)) {
-		return `Binary files ${edit.path} and ${edit.path} differ\n`;
-	}
-	return createTwoFilesPatch(
-		current === null ? "/dev/null" : edit.path,
-		edit.path,
-		current === null ? "" : current.toString("utf8"),
-		edit.content,
-		undefined,
-		undefined,
-		{ headerOptions: FILE_HEADERS_ONLY },
-	);
+	return fileDiff(editChange(edit, current));
 }
 
 /** 磁盘上这个文件现在是改动后的内容、改动前的内容，还是都不是。 */

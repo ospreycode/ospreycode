@@ -6,7 +6,7 @@ import type {
 	PluginFileChange,
 	PluginStage,
 } from "@ospreycode/agent-host";
-import { sanitize } from "./interactive/format.js";
+import { sanitize } from "./format/text.js";
 
 /** 扩展的种类在列表里的写法。 */
 export const kindLabel: Readonly<Record<ExtensionKind, string>> = {

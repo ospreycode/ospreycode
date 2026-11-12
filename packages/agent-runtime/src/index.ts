@@ -144,6 +144,12 @@ export {
 export { maxRuleFilesBytes, ruleFileNames } from "./instructions/rule-files.js";
 export { runAgent, toolRegistry } from "./runtime/run-agent.js";
 export {
+	type FileChange,
+	fileDiff,
+	resultDiff,
+	resultDiffLimit,
+} from "./tools/diff.js";
+export {
 	type MemoryProposeArguments,
 	type MemoryReadArguments,
 	type MemorySearchArguments,

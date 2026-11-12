@@ -12,8 +12,11 @@ import type {
 	TaskEndedEvent,
 	TaskSource,
 } from "@ospreycode/agent-host";
+import { OutputBuffer } from "../format/output.js";
+import { elapsedBetween } from "../format/result.js";
+import { type DetailLine, parseArguments } from "../format/text.js";
+import { exploreTools } from "../format/tools.js";
 import { beyondTaskFailure } from "../task-failure.js";
-import type { DetailLine } from "./format.js";
 import { displayInput } from "./input.js";
 import type { ApprovalEvent, ReasoningEffort, ToolResult } from "./types.js";
 
@@ -37,10 +40,21 @@ export interface ToolEntry {
 	name: string;
 	/** 模型写出的参数原文。 */
 	arguments: string;
-	/** 流式输出的末尾一段。 */
-	output: string;
+	/** 流式输出的开头和末尾。 */
+	output: OutputBuffer;
 	result?: ToolResult;
 	durationMs?: number;
+}
+
+/**
+ * 连着的几次只读的查看（读文件、搜索、列目录）聚合成的一组：逐条显示的话，定位一段代码读的十几个
+ * 文件会把模型的结论挤出屏幕。
+ */
+export interface ExploreEntry {
+	kind: "explore";
+	calls: ToolEntry[];
+	/** 还可能有调用接着加进来：后面还没有别的条目，task 也没有结束。 */
+	open: boolean;
 }
 
 /** 一次询问和它的结果。 */
@@ -62,6 +76,8 @@ export interface SubagentEntry {
 	model: string;
 	/** worker 自己的工作区；和主 agent 共用工作区的没有。 */
 	workspace?: string;
+	/** 主 agent 交给它的任务；恢复时补记的结束没有对应的启动调用，没有。 */
+	prompt?: string;
 	/** 它开始过的工具调用的个数。 */
 	toolCalls: number;
 	/** 最近开始的一次工具调用。 */
@@ -78,10 +94,12 @@ export interface NoticeEntry {
 	detail?: readonly DetailLine[];
 }
 
-/** task 的结果、用量和费用。 */
+/** task 的结果、用时、用量和费用。 */
 export interface TaskEndedEntry {
 	kind: "task_ended";
 	event: TaskEndedEvent;
+	/** 从 `task.started` 到 `task.ended` 的毫秒数，按两个事件记的时间算：按记录重画时也一样。 */
+	durationMs: number;
 }
 
 /** 对话区的一项，按时间排列。 */
@@ -89,6 +107,7 @@ export type Entry =
 	| UserEntry
 	| AssistantEntry
 	| ToolEntry
+	| ExploreEntry
 	| ApprovalEntry
 	| SubagentEntry
 	| NoticeEntry
@@ -115,8 +134,14 @@ export interface Status {
 	workspace: string;
 }
 
-/** 流式输出只留末尾这么多字符：界面只显示最后几行。 */
-const outputLimit = 16_000;
+/** 推理内容只留末尾这么多字符：只用来找最近的一个标题。 */
+const reasoningLimit = 4_000;
+
+/** 推理内容里最近的一个标题：模型按 `**标题**` 的写法给每一段思考起的名字；没有时为空串。 */
+function latestHeading(reasoning: string): string {
+	const headings = [...reasoning.matchAll(/\*\*([^*\n]+)\*\*/g)];
+	return headings.at(-1)?.[1]?.trim() ?? "";
+}
 
 function describeBackgroundEnd(ended: BackgroundEnded): string {
 	switch (ended.reason) {
@@ -155,12 +180,29 @@ export class InteractiveState {
 	serverQuestions: ServerQuestion[] = [];
 	/** 进行中的 task；空闲时为空。 */
 	taskId: string | undefined;
+	/** 进行中的 task 开始的时间（`task.started` 记的）和它是不是只压缩上下文；空闲时为空。 */
+	task: { startedAt: string; compact: boolean } | undefined;
+	/**
+	 * 模型正在思考时，推理内容里最近的一个标题（没有标题时是空串）；没有在思考时为空。不显示推理
+	 * 内容时也记着：活动行靠它说明模型在想什么。
+	 */
+	thinking: string | undefined;
+	/** 主 agent 还没有结果的工具调用，按开始的先后。 */
+	readonly running: ToolEntry[] = [];
 	/** session 已经关闭时的原因。 */
 	ended: SessionEndReason | undefined;
 	#showReasoning: boolean;
 	readonly #changed = new Set<Entry>();
 	readonly #replies = new Map<string, AssistantEntry>();
 	readonly #tools = new Map<string, ToolEntry>();
+	/** 聚合在一组里的查看调用各自属于哪一组。 */
+	readonly #groups = new Map<ToolEntry, ExploreEntry>();
+	/** 各个 task 开始的时间，结束时算用时。 */
+	readonly #taskStarted = new Map<string, string>();
+	/** 子 agent 是哪次 `spawn_agent` 调用启动的，按 `agent_id`。 */
+	readonly #spawnedBy = new Map<string, string>();
+	/** 这条回复到现在为止的推理内容的末尾。 */
+	#reasoning = "";
 	readonly #asked = new Map<string, ApprovalEntry>();
 	/** 见过的子 agent，按 `agent_id`。 */
 	readonly #subagents = new Map<string, SubagentEntry>();
@@ -207,11 +249,16 @@ export class InteractiveState {
 		this.#changed.clear();
 		this.#replies.clear();
 		this.#tools.clear();
+		this.#groups.clear();
+		this.#taskStarted.clear();
+		this.#spawnedBy.clear();
+		this.running.length = 0;
 		this.#asked.clear();
 		this.#subagents.clear();
 		// `#background` 留着：回退时结束的后台命令，结束的事件在重画之后才处理，说明里要写出是哪条命令
 		for (const event of events) this.apply(event);
 		this.taskId = undefined;
+		this.#idle();
 		this.approvals = [];
 		this.#failure = undefined;
 		this.queue = now.queue;
@@ -254,6 +301,11 @@ export class InteractiveState {
 		return this.#tools.get(toolCallId);
 	}
 
+	/** 还在运行的后台命令的个数。 */
+	get backgroundCount(): number {
+		return this.#background.size;
+	}
+
 	/** 这个 `agent_id` 是子 agent 时它的名字；主 agent 没有。 */
 	subagentName(agentId: string): string | undefined {
 		return this.#subagents.get(agentId)?.name;
@@ -274,7 +326,7 @@ export class InteractiveState {
 					kind: "tool",
 					name: event.name,
 					arguments: event.arguments,
-					output: "",
+					output: new OutputBuffer(),
 				});
 				this.#changed.add(entry);
 				return true;
@@ -316,6 +368,11 @@ export class InteractiveState {
 				break;
 			case "task.started":
 				this.taskId = event.task_id;
+				this.task = {
+					startedAt: event.time,
+					compact: event.kind === "compact",
+				};
+				this.#taskStarted.set(event.task_id, event.time);
 				this.#failure = undefined;
 				if (event.kind === "compact") {
 					this.notice("正在压缩上下文…");
@@ -331,18 +388,36 @@ export class InteractiveState {
 							: displayInput(event.input),
 				});
 				break;
-			case "task.ended":
-				if (this.taskId === event.task_id) this.taskId = undefined;
+			case "task.ended": {
+				if (this.taskId === event.task_id) {
+					this.taskId = undefined;
+					this.#idle();
+				}
 				this.#failure = event.error;
-				this.#add({ kind: "task_ended", event });
+				const startedAt = this.#taskStarted.get(event.task_id);
+				this.#taskStarted.delete(event.task_id);
+				this.#add({
+					kind: "task_ended",
+					event,
+					// 每个 task 都以 `task.started` 开头：记录里没有它的开始时按没有用时算
+					durationMs:
+						startedAt === undefined ? 0 : elapsedBetween(startedAt, event.time),
+				});
 				break;
+			}
 			case "model.delta": {
 				const delta = event.event;
 				if (delta.type === "text_delta") {
+					this.thinking = undefined;
 					const reply = this.#reply(event.message_id);
 					reply.text += delta.text;
 					this.#changed.add(reply);
-				} else if (delta.type === "reasoning_delta" && this.#showReasoning) {
+				} else if (delta.type === "reasoning_delta") {
+					this.#reasoning = (this.#reasoning + delta.text).slice(
+						-reasoningLimit,
+					);
+					this.thinking = latestHeading(this.#reasoning);
+					if (!this.#showReasoning) break;
 					const reply = this.#reply(event.message_id);
 					reply.reasoning += delta.text;
 					this.#changed.add(reply);
@@ -351,6 +426,8 @@ export class InteractiveState {
 			}
 			case "message.completed": {
 				const { message } = event;
+				this.#reasoning = "";
+				this.thinking = undefined;
 				const text = message.content
 					.flatMap((block) => (block.type === "text" ? [block.text] : []))
 					.join("");
@@ -383,23 +460,27 @@ export class InteractiveState {
 					kind: "tool",
 					name: event.name,
 					arguments: event.arguments,
-					output: "",
+					output: new OutputBuffer(),
 				};
 				this.#tools.set(event.tool_call_id, call);
-				this.#add(call);
+				this.running.push(call);
+				if (exploreTools.has(event.name)) this.#explore(call);
+				else this.#add(call);
 				break;
 			}
 			case "tool_call.output": {
 				const call = this.#tool(event.tool_call_id);
-				call.output = (call.output + event.text).slice(-outputLimit);
-				this.#changed.add(call);
+				call.output.append(event.text);
+				this.#changed.add(this.#groups.get(call) ?? call);
 				break;
 			}
 			case "tool_call.completed": {
 				const call = this.#tool(event.tool_call_id);
 				call.result = event.result;
 				call.durationMs = event.duration_ms;
-				this.#changed.add(call);
+				const at = this.running.indexOf(call);
+				if (at !== -1) this.running.splice(at, 1);
+				this.#changed.add(this.#groups.get(call) ?? call);
 				break;
 			}
 			case "approval.requested": {
@@ -492,6 +573,7 @@ export class InteractiveState {
 				);
 				break;
 			case "subagent.started": {
+				const prompt = this.#spawnPrompt(event.agent_id);
 				const started: SubagentEntry = {
 					kind: "subagent",
 					name: event.name,
@@ -499,6 +581,7 @@ export class InteractiveState {
 					...(event.workspace === this.status.workspace
 						? {}
 						: { workspace: event.workspace }),
+					...(prompt === undefined ? {} : { prompt }),
 					toolCalls: 0,
 				};
 				this.#subagents.set(event.agent_id, started);
@@ -564,6 +647,11 @@ export class InteractiveState {
 				break;
 			}
 			case "run.started":
+				// 子 agent 的 run 带着启动它的那次调用：它那一项上写交给它的任务
+				if (event.parent_tool_call_id !== undefined) {
+					this.#spawnedBy.set(event.agent_id, event.parent_tool_call_id);
+				}
+				break;
 			// 子 agent 的结束在它那一项上显示。到这里的只有恢复时补记的：它的开始在上一次运行里，另有通知说明
 			case "subagent.ended":
 			case "process.exited":
@@ -593,8 +681,55 @@ export class InteractiveState {
 	}
 
 	#add(entry: Entry): void {
+		this.#closeExplore();
 		this.entries.push(entry);
 		this.#changed.add(entry);
+	}
+
+	/** 一次查看的调用：接在前一项是还开着的那一组后面，否则另起一组。 */
+	#explore(call: ToolEntry): void {
+		const last = this.entries.at(-1);
+		let group: ExploreEntry;
+		if (last?.kind === "explore" && last.open) {
+			group = last;
+			group.calls.push(call);
+			this.#changed.add(group);
+		} else {
+			group = { kind: "explore", calls: [call], open: true };
+			this.#add(group);
+		}
+		this.#groups.set(call, group);
+	}
+
+	/** 最后一项是还开着的一组查看时把它合上：后面来了别的内容，或者 task 结束了。 */
+	#closeExplore(): void {
+		const last = this.entries.at(-1);
+		if (last?.kind !== "explore" || !last.open) return;
+		last.open = false;
+		this.#changed.add(last);
+	}
+
+	/** 没有进行中的 task 了：活动行要的那几项都清掉。 */
+	#idle(): void {
+		this.task = undefined;
+		this.thinking = undefined;
+		this.#reasoning = "";
+		// 一直没有结果的调用不再算进行中：标题跟着变
+		for (const call of this.running) {
+			this.#changed.add(this.#groups.get(call) ?? call);
+		}
+		this.running.length = 0;
+		this.#closeExplore();
+	}
+
+	/** 启动这个子 agent 的那次 `spawn_agent` 调用里交给它的任务。 */
+	#spawnPrompt(agentId: string): string | undefined {
+		const toolCallId = this.#spawnedBy.get(agentId);
+		const call =
+			toolCallId === undefined ? undefined : this.#tools.get(toolCallId);
+		const prompt =
+			call === undefined ? undefined : parseArguments(call.arguments)?.prompt;
+		return typeof prompt === "string" ? prompt : undefined;
 	}
 
 	#reply(messageId: string): AssistantEntry {

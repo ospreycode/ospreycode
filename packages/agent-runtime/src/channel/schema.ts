@@ -311,6 +311,7 @@ const ToolResult = Type.Union([
 			status: Type.Literal("succeeded"),
 			content: Content,
 			shell: Type.Optional(ShellOutcome),
+			diff: Type.Optional(Type.String()),
 		},
 		closed,
 	),

@@ -1,8 +1,8 @@
 import type { Terminal } from "@earendil-works/pi-tui";
 import type { SessionInfo, TuiMode } from "@ospreycode/agent-host";
 import type { CliContext, CliSignal } from "../context.js";
+import { brief } from "../format/text.js";
 import type { Clipboard } from "./clipboard.js";
-import { brief } from "./format.js";
 import { createScreen } from "./screen.js";
 import { Picker } from "./view/picker.js";
 

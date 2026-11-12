@@ -16,6 +16,7 @@
 
 ### Added
 
+- `ToolResult` 成功的结果多了可选的 `diff`：`edit` 和 `write` 写成的改动的 unified diff（文件头里是绝对路径，新建的文件改动前写 `/dev/null`），只给界面显示，不交给模型；改动前后的内容有一份超过 `resultDiffLimit`（256 KiB）时不带。通道的 schema 同步多了这一项。新导出 `fileDiff`、`resultDiff`、`resultDiffLimit` 和类型 `FileChange`：Host 给越界写入的改动算同样写法的 diff。新增运行时依赖 `diff` 9.0.0（agent-host 已经在用）。
 - 扩展（skills、MCP 工具、hooks），都由 Host 经启动配置启用，runtime 自己不读扩展的文件：
   - skills：启动配置和 `config/update` 多了可选的 `skills`（`SkillInfo[]`：名字、说明和目录）。会话开始的上下文消息里多了单独的一块 `<skills>`，每个 skill 一行；之后列表变了，在下一个 task 的输入前面追加 `<skills_update>`，已经告诉模型的列表经 `instructions.recorded` 的 `skills`（`RecordedSkill[]`）上报。
   - 工具 `skill_load`（`skillLoadTool`，参数的 schema `skillLoadArgumentsSchema`）：有启用的 skill 时 Host 在启动配置的 `tools` 里列出它。和文件工具一样先用 `tool_call/register` 登记，允许后经通道新增的 `skill/load`（`SkillLoadParams`、`SkillLoadResult`）取内容：内容由 Host 读取并核对，是用户确认过的那一份；加载不了时结果是失败，带 Host 给的原因。

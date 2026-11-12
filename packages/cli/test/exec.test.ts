@@ -15,7 +15,7 @@ import {
 	testDirectories,
 	textReply,
 } from "./harness.js";
-import { toolCallsReply } from "./interactive-fixture.js";
+import { streamReply, toolCallsReply } from "./interactive-fixture.js";
 
 let dirs: TestDirectories;
 let model: FakeModelServer | undefined;
@@ -83,16 +83,112 @@ describe("完成的任务", () => {
 		expect(model?.requests).toHaveLength(2);
 	});
 
-	test("文本模式下标准输出只有最后的回复，过程写到 stderr", async () => {
-		await useModel((call) =>
-			call === 0 ? shellCallReply("echo from-shell") : textReply("做完了"),
+	test("文本模式下标准输出只有最后的回复；stderr 上先是这次运行的配置和任务，再是每一步的结果和耗时，最后是结果、用时、用量和费用", async () => {
+		await useModel(
+			(call) =>
+				[
+					streamReply(
+						[
+							{ role: "assistant", content: "先看一下" },
+							{
+								tool_calls: [
+									{
+										index: 0,
+										id: "call_1",
+										type: "function",
+										function: {
+											name: "shell",
+											arguments: JSON.stringify({ command: "seq 1 12" }),
+										},
+									},
+								],
+							},
+						],
+						"tool_calls",
+					),
+					toolCallsReply([
+						{
+							name: "write",
+							arguments: { path: "note.txt", content: "一\n二\n" },
+						},
+					]),
+					shellCallReply("exit 3"),
+				][call] ?? textReply("做完了"),
 		);
-		const result = await exec("跑一下 echo");
+		const result = await exec("跑一下\n再写个文件");
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("做完了\n");
-		expect(result.stderr).toContain("shell");
-		expect(result.stderr).toContain("echo from-shell");
+		const [sessionId] = (
+			JSON.parse(
+				(
+					await runCli(["session", "list", "--json"], {
+						cwd: dirs.workspace,
+						env: dirs.env,
+					})
+				).stdout,
+			) as { session_id: string }[]
+		).map((session) => session.session_id);
+		// 输出不是终端：没有颜色的控制序列
+		expect(result.stderr).not.toContain("\x1b");
+		const seconds = String.raw`\d+\.\ds`;
+		expect(result.stderr).toMatch(
+			new RegExp(
+				[
+					String.raw`^Osprey Code \S+`,
+					`工作目录：${dirs.workspace}`,
+					String.raw`模型：fake · 推理 \w+`,
+					"沙盒：danger-full-access · 审批 never",
+					`session：${sessionId}`,
+					"─+",
+					"› 跑一下",
+					"  再写个文件",
+					// 中间一轮的回复写在过程里
+					"• 先看一下",
+					"• Running seq 1 12",
+					`• Ran seq 1 12 · ✓ 退出码 0 · ${seconds}`,
+					"  1",
+					"  2",
+					"  3",
+					String.raw`  … \+4 行`,
+					"  8",
+					"  9",
+					"  10",
+					"  11",
+					"  12",
+					String.raw`• Added note\.txt \(\+2 -0\) · ✓ ${seconds}`,
+					"• Running exit 3",
+					`• Ran exit 3 · ✗ 失败 · 退出码 3 · ${seconds}`,
+					"  （没有输出）",
+					String.raw`— 完成 · 用时 ${seconds} · 输入 40 · 输出 20 token · \$0\.\d+`,
+					"$",
+				].join("\n"),
+			),
+		);
+		// 最后一条回复只在 stdout 上
+		expect(result.stderr).not.toContain("做完了");
+	});
+
+	test("模型的推理内容按 [ui] show_reasoning 写在过程里，不进标准输出", async () => {
+		const server = await useModel(() =>
+			streamReply([
+				{ role: "assistant", reasoning_content: "先想一想" },
+				{ content: "想好了" },
+			]),
+		);
+		const compat =
+			'\n[models.fake.compat]\nreasoning_field = "reasoning_content"\n';
+		dirs.writeConfig(`${server.config}${compat}`);
+		const shown = await exec("想");
+		expect(shown.stdout).toBe("想好了\n");
+		expect(shown.stderr).toMatch(/^ {2}先想一想$/m);
+
+		dirs.writeConfig(
+			`${server.config}${compat}\n[ui]\nshow_reasoning = false\n`,
+		);
+		const hidden = await exec("想");
+		expect(hidden.stdout).toBe("想好了\n");
+		expect(hidden.stderr).not.toContain("先想一想");
 	});
 
 	test("上下文接近模型的上限时自动压缩：过程里有一行说明，任务从摘要接着做完", async () => {
@@ -170,9 +266,11 @@ describe("完成的任务", () => {
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("找到了\n");
-		expect(result.stderr).toBe(
-			'工具 grep：{"pattern":"answer","glob":"*.ts"}\n工具 ls：{}\n',
+		expect(result.stderr).toMatch(
+			/\n• Search \/answer\/ in \. \(\*\.ts\) · ✓ \d+\.\ds\n• List \. · ✓ \d+\.\ds\n— 完成 · /,
 		);
+		// 参数的原文不写出来
+		expect(result.stderr).not.toContain('{"pattern"');
 		const last = JSON.stringify(server.requests.at(-1));
 		expect(last).toContain("main.ts:1:export const answer = 42;");
 	});
@@ -398,9 +496,7 @@ describe("没有完成的任务", () => {
 		expect(result.code).toBe(1);
 		expect(result.stdout).toBe("");
 		expect(result.stderr.split("agent 进程意外退出")).toHaveLength(2);
-		expect(result.stderr).toContain(
-			"任务没有完成（failed）：agent 进程意外退出",
-		);
+		expect(result.stderr).toMatch(/^— 失败：agent 进程意外退出.* · 用时 /m);
 	});
 
 	test("SIGTERM 取消任务，退出码 143", async () => {
@@ -487,7 +583,9 @@ describe("参数和配置的错误", () => {
 			execArgs("-C", dirs.workspace, "--rules", "extra.toml", "任务"),
 			{ cwd: dirs.home.replace(/home$/, "secrets"), env: dirs.env },
 		);
-		expect(loaded.stderr).toBe("");
+		// 文件找到了：过程里没有警告和错误
+		expect(loaded.stderr).not.toContain("extra.toml");
+		expect(loaded.stderr).not.toMatch(/警告|错误|ospreycode:/);
 		expect(loaded.code).toBe(0);
 	});
 

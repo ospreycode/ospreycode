@@ -34,6 +34,9 @@ import {
 import { startSessionCleanup } from "../cleanup.js";
 import type { CliContext, CliSignal } from "../context.js";
 import { writeExportFile } from "../export-file.js";
+import type { PathContext } from "../format/paths.js";
+import { brief, toolSummary } from "../format/text.js";
+import { actionTitle, describeTool } from "../format/tools.js";
 import { openHost } from "../host.js";
 import { resumableSessions, targetSessionId } from "../resume.js";
 import {
@@ -69,7 +72,6 @@ import {
 	type ListedExtension,
 	needsReview,
 } from "./extensions.js";
-import { brief, toolSummary } from "./format.js";
 import type { InteractiveOptions } from "./index.js";
 import { Attachments, composeInput, editorText } from "./input.js";
 import { MemoryCommands } from "./memory.js";
@@ -98,7 +100,12 @@ import { Picker } from "./view/picker.js";
 import { QueueView } from "./view/queue.js";
 import { QueuePanel } from "./view/queue-panel.js";
 import { SettingsPanel } from "./view/settings-panel.js";
-import { HintLine, StatusLine } from "./view/status.js";
+import {
+	activityFrameMs,
+	type Hint,
+	HintLine,
+	StatusLine,
+} from "./view/status.js";
 
 /** 被信号结束时的退出码：128 加信号的编号。 */
 const signalExitCode: Record<CliSignal, number> = {
@@ -164,6 +171,10 @@ class Interactive {
 	readonly #state: InteractiveState;
 	readonly #tui: Screen;
 	readonly #conversation: ConversationView;
+	/** 显示路径时相对的工作区和主目录。 */
+	readonly #paths: PathContext;
+	/** task 运行时按帧重画的定时器：活动行的秒表和指示符靠它走。 */
+	#ticker: NodeJS.Timeout | undefined;
 	readonly #editor: PromptEditor;
 	/** 输入框的位置：有询问时换成询问的面板，打开列表时换成列表。 */
 	readonly #bottom = new Container();
@@ -232,7 +243,11 @@ class Interactive {
 		});
 
 		this.#tui = createScreen(parts.terminal, parts.mode, parts.clipboard);
-		this.#conversation = new ConversationView(this.#state);
+		this.#paths = {
+			workspace: parts.config.workspace,
+			home: parts.context.env.HOME,
+		};
+		this.#conversation = new ConversationView(this.#state, this.#paths);
 		this.#editor = new PromptEditor(this.#tui, {
 			followUp: (text) => this.#send(text, "follow_up"),
 			quit: () => this.#finish(0),
@@ -304,6 +319,7 @@ class Interactive {
 		} finally {
 			unsubscribe();
 			this.#stopped = true;
+			clearInterval(this.#ticker);
 			await this.#terminal.drainInput();
 			stopScreen(this.#tui);
 		}
@@ -389,7 +405,35 @@ class Interactive {
 			this.#tui.setFocus(shown);
 		}
 		this.#conversation.sync();
+		this.#tick();
 		this.#tui.requestRender();
+	}
+
+	/** task 运行时让活动行走起来，结束时停下。 */
+	#tick(): void {
+		const running = this.#state.task !== undefined;
+		if (running && this.#ticker === undefined) {
+			this.#ticker = setInterval(
+				() => this.#tui.requestRender(),
+				activityFrameMs,
+			);
+		} else if (!running && this.#ticker !== undefined) {
+			clearInterval(this.#ticker);
+			this.#ticker = undefined;
+		}
+	}
+
+	/** 活动行上写的现在在做的事：压缩上下文、最近开始的工具调用、模型在想的事，都没有时是一句"工作中"。 */
+	#activityTitle(): string {
+		const { task, running, thinking } = this.#state;
+		if (task?.compact === true) return "正在压缩上下文";
+		const call = running.at(-1);
+		if (call !== undefined) {
+			const action = describeTool(call.name, call.arguments, this.#paths);
+			return brief(actionTitle(action.running, action.target), 80);
+		}
+		if (thinking === undefined) return "工作中";
+		return thinking === "" ? "思考中" : brief(thinking, 80);
 	}
 
 	/** MCP server 的一个问题的面板：它的提问是一张表单，它要访问的域名和命令的网络询问一样回答。 */
@@ -426,7 +470,7 @@ class Interactive {
 		};
 	}
 
-	#hint(): { text: string; emphasis: boolean } {
+	#hint(): Hint {
 		if (this.#closing) return { text: "正在退出…", emphasis: false };
 		if (this.#switching !== undefined) {
 			return { text: "正在分叉…", emphasis: false };
@@ -438,12 +482,18 @@ class Interactive {
 		if (this.#exitArmed) {
 			return { text: "再按一次 Ctrl+C 退出", emphasis: true };
 		}
-		if (this.#state.taskId !== undefined) {
+		const { task } = this.#state;
+		if (task !== undefined) {
 			return this.#cancelling
 				? { text: "正在取消…", emphasis: true }
 				: {
-						text: "运行中 · Enter 插入当前任务 · Alt+Enter 排到之后 · Alt+↑ 管理排队的输入 · Ctrl+C 取消",
+						text: "Enter 插入当前任务 · Alt+Enter 排到之后 · Alt+↑ 管理排队的输入",
 						emphasis: false,
+						activity: {
+							title: this.#activityTitle(),
+							startedAt: Date.parse(task.startedAt),
+							background: this.#state.backgroundCount,
+						},
 					};
 		}
 		if (this.#state.queue.follow_up_paused) {

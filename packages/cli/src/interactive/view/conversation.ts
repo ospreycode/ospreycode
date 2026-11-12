@@ -2,31 +2,49 @@ import {
 	type Component,
 	Markdown,
 	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
-import type {
-	SubagentEndedEvent,
-	TaskEndedEvent,
-} from "@ospreycode/agent-host";
+import { diffRows, type FileDiff, parseDiff } from "../../format/diff.js";
+import {
+	type OutputPreview,
+	previewRows,
+	previewText,
+} from "../../format/output.js";
+import type { PathContext } from "../../format/paths.js";
+import {
+	changeTarget,
+	changeVerb,
+	outcomeText,
+	type ResultTone,
+	resultStatus,
+	resultText,
+	settledVerb,
+	subagentOutcomeText,
+	usageParts,
+} from "../../format/result.js";
+import {
+	brief,
+	type DetailLine,
+	formatDuration,
+	headLines,
+	sanitize,
+	toolSummary,
+} from "../../format/text.js";
+import {
+	actionTitle,
+	describeTool,
+	type ToolAction,
+} from "../../format/tools.js";
 import {
 	type ApprovalDescription,
 	attributed,
 	decisionText,
 	describeApproval,
 } from "../approval.js";
-import {
-	brief,
-	type DetailLine,
-	formatDuration,
-	formatUsd,
-	headLines,
-	markedLines,
-	parseArguments,
-	sanitize,
-	toolSummary,
-} from "../format.js";
 import type {
 	ApprovalEntry,
 	Entry,
+	ExploreEntry,
 	InteractiveState,
 	NoticeEntry,
 	SubagentEntry,
@@ -37,10 +55,26 @@ import type {
 import type { ToolResult } from "../types.js";
 import { markdownTheme, style, toneStyle, wrapped } from "./theme.js";
 
-/** 工具输出只显示末尾这么多行：完整的输出在 Host 保存的文件里。 */
-const outputTail = 8;
-/** 文件改动的预览和失败结果的内容最多显示这么多行。 */
-const previewLimit = 40;
+/** 命令的输出留开头这么多行。 */
+const outputHead = 3;
+/** 命令的输出留末尾这么多行：完整的输出在 Host 保存的文件里。 */
+const outputTail = 5;
+/** 别的工具给人看的结果留开头这么多行。 */
+const previewHead = 5;
+/** 文件改动的 diff 最多显示这么多行。 */
+const diffLimit = 40;
+/** 没做成的调用，交给模型的说明显示开头这么多行。 */
+const failureLines = 6;
+
+/** 每一块开头的圆点：一块是模型的一条回复、一次工具调用或者一组查看。 */
+const mark = "•";
+
+const toneOf: Record<ResultTone, (text: string) => string> = {
+	success: style.success,
+	error: style.error,
+	warning: style.warning,
+	accent: style.accent,
+};
 
 function detailLines(
 	lines: readonly DetailLine[],
@@ -50,6 +84,33 @@ function detailLines(
 	return lines.flatMap((line) =>
 		wrapped(line.text, width, toneStyle[line.tone], indent),
 	);
+}
+
+/** 一块的标题：圆点、加粗的动词和后面的对象，折行时缩进两格。 */
+function heading(
+	paint: (text: string) => string,
+	verb: string,
+	rest: string,
+	width: number,
+): string[] {
+	return wrapped(
+		`${style.bold(verb)}${rest === "" ? "" : ` ${rest}`}`,
+		width,
+		style.plain,
+		"  ",
+		`${paint(mark)} `,
+	);
+}
+
+/** 标题下面的几行：第一行前面画 `└`，其余缩进对齐；每行各自上色，放不下的截掉。 */
+function children(
+	rows: readonly { text: string; paint: (text: string) => string }[],
+	width: number,
+): string[] {
+	return rows.map(({ text, paint }, index) => {
+		const prefix = index === 0 ? "  └ " : "    ";
+		return `${style.dim(prefix)}${paint(truncateToWidth(text, Math.max(1, width - 4), "…"))}`;
+	});
 }
 
 function userLines(entry: UserEntry, width: number): string[] {
@@ -71,113 +132,279 @@ function userLines(entry: UserEntry, width: number): string[] {
 	];
 }
 
-/** `edit` 和 `write` 的参数里要写进文件的内容，按 diff 的样子显示；别的工具没有。 */
-function editPreview(entry: ToolEntry): DetailLine[] {
-	const args = parseArguments(entry.arguments);
-	if (args === undefined) return [];
-	if (entry.name === "write" && typeof args.content === "string") {
-		return markedLines(args.content, "added");
-	}
-	if (entry.name !== "edit" || !Array.isArray(args.edits)) return [];
-	return args.edits.flatMap((edit: unknown) => {
-		if (typeof edit !== "object" || edit === null) return [];
-		const { old_text: before, new_text: after } = edit as Record<
-			string,
-			unknown
-		>;
-		return [
-			...(typeof before === "string" ? markedLines(before, "removed") : []),
-			...(typeof after === "string" ? markedLines(after, "added") : []),
-		];
-	});
+/** 结果的那一行：成功与否、退出码和耗时。 */
+function statusRow(result: ToolResult, durationMs: number) {
+	const { text, tone } = resultStatus(result, durationMs);
+	return { text, paint: toneOf[tone] };
 }
 
-function resultText(result: ToolResult): string {
-	return result.content
-		.flatMap((block) => (block.type === "text" ? [block.text] : []))
-		.join("\n");
+/** 圆点的颜色：进行中、做成了、没做成；task 结束了还没有结果的调用是暗的。 */
+function markPaint(
+	result: ToolResult | undefined,
+	active: boolean,
+): (text: string) => string {
+	if (result !== undefined) return toneOf[resultStatus(result, 0).tone];
+	return active ? style.accent : style.dim;
 }
 
-function resultLine(result: ToolResult, durationMs: number): string {
-	const shell =
-		"shell" in result && result.shell !== undefined ? result.shell : undefined;
-	const exit =
-		shell === undefined
-			? []
-			: [
-					shell.signal === null
-						? `退出码 ${shell.exit_code}`
-						: `信号 ${shell.signal}`,
-				];
-	const timing = [...exit, formatDuration(durationMs)].join(" · ");
-	switch (result.status) {
-		case "succeeded":
-			return style.success(`✓ ${timing}`);
-		case "failed":
-			return style.error(
-				`✗ 失败${result.reason === undefined ? "" : `（${result.reason}）`} · ${timing}`,
-			);
-		case "running":
-			return style.accent(`↻ 转入后台运行：${result.background_id}`);
-		case "timed_out":
-			return style.error(`✗ 超时 · ${timing}`);
-		case "cancelled":
-			return style.warning(`✗ 已取消 · ${timing}`);
-		case "interrupted":
-			return style.warning(`✗ 中断，结果不确定 · ${timing}`);
-		case "denied": {
-			const by = {
-				policy: "审批策略",
-				user: "用户",
-				hook: "hook",
-				forbidden_rule: "禁止规则",
-			}[result.reason];
-			return style.error(
-				`✗ 被${by}拒绝${result.message === undefined ? "" : `：${sanitize(result.message)}`}`,
-			);
-		}
-	}
+/** 没做成的调用交给模型的说明，开头几行。 */
+function failureRows(result: ToolResult) {
+	const text = sanitize(resultText(result)).trimEnd();
+	return text === ""
+		? []
+		: headLines(text.split("\n"), failureLines).map((line) => ({
+				text: line,
+				paint: style.dim,
+			}));
 }
 
-function toolLines(entry: ToolEntry, width: number): string[] {
-	const summary = toolSummary(entry.arguments);
-	const lines = wrapped(
-		`${style.bold(sanitize(entry.name))}${summary === "" ? "" : ` ${summary}`}`,
-		width,
-		style.plain,
-		"  ",
-		`${style.accent("●")} `,
-	);
-	const preview = editPreview(entry);
-	lines.push(
-		...detailLines(preview.slice(0, previewLimit), width, "    "),
-		...(preview.length > previewLimit
-			? [style.dim(`    … 还有 ${preview.length - previewLimit} 行`)]
-			: []),
-	);
-	const output = sanitize(entry.output).split("\n");
-	if (output.at(-1) === "") output.pop();
-	if (output.length > outputTail) lines.push(style.dim("  │ …"));
-	for (const line of output.slice(-outputTail)) {
-		lines.push(style.dim(`  │ ${truncateToWidth(line, width - 4, "…")}`));
-	}
+/**
+ * 命令的输出：流式到达的那一份；按记录重画时没有流式的输出，运行完的命令取结果里交给模型的那一份
+ * （第一行是退出码的说明，不算输出）。
+ */
+function commandOutput(entry: ToolEntry): OutputPreview {
 	const { result } = entry;
-	if (result === undefined || entry.durationMs === undefined) return lines;
-	lines.push(
-		...wrapped(resultLine(result, entry.durationMs), width, style.plain, "  "),
-	);
-	// 命令的输出已经流式显示过；别的工具失败时把交给模型的说明显示出来
-	if (result.status !== "succeeded" && entry.output === "") {
-		const text = sanitize(resultText(result)).trimEnd();
-		if (text !== "") {
-			lines.push(
-				...headLines(text.split("\n"), 6).flatMap((line) =>
-					wrapped(line, width, style.dim, "    "),
-				),
-			);
-		}
+	if (!entry.output.empty || result === undefined || !("shell" in result)) {
+		return entry.output.preview(outputHead, outputTail);
 	}
-	return lines;
+	const [, ...output] = resultText(result).split("\n");
+	return previewText(output.join("\n"), outputHead, outputTail);
+}
+
+function commandLines(
+	entry: ToolEntry,
+	action: ToolAction,
+	active: boolean,
+	width: number,
+): string[] {
+	const { result, durationMs } = entry;
+	const output = previewRows(commandOutput(entry));
+	const ran = result !== undefined && "shell" in result;
+	const rows = [
+		...output.map((text) => ({ text, paint: style.dim })),
+		// 运行完了一行输出也没有：写明，不让人以为输出还没显示出来
+		...(ran && output.length === 0
+			? [{ text: "（没有输出）", paint: style.dim }]
+			: []),
+		...(result === undefined || durationMs === undefined
+			? []
+			: [statusRow(result, durationMs)]),
+		// 没有启动起来的命令没有输出：把交给模型的说明显示出来
+		...(result !== undefined &&
+		!ran &&
+		result.status !== "running" &&
+		entry.output.empty
+			? failureRows(result)
+			: []),
+	];
+	return [
+		...heading(
+			markPaint(result, active),
+			settledVerb(action, result, active),
+			`${action.target}${action.workdir === undefined ? "" : style.dim(`（在 ${action.workdir}）`)}`,
+			width,
+		),
+		...children(rows, width),
+	];
+}
+
+/** 一个文件的改动：标题是新建还是修改、路径和增删的行数，下面是带行号的各行。 */
+function changeLines(
+	file: FileDiff,
+	paths: PathContext,
+	width: number,
+): string[] {
+	const rows = diffRows(file);
+	const paint = {
+		context: style.plain,
+		added: style.added,
+		removed: style.removed,
+	};
+	const lines = rows.slice(0, diffLimit).flatMap((row) => {
+		const gutter = `    ${style.dim(row.gutter)} `;
+		if (row.kind === "gap") return [gutter];
+		// 折行的部分缩进到内容那一栏：行号栏不被长行打乱
+		const indent = " ".repeat(visibleWidth(gutter) + 2);
+		return wrapped(
+			row.text,
+			width,
+			paint[row.kind],
+			indent,
+			`${gutter}${paint[row.kind](row.sign)} `,
+		);
+	});
+	return [
+		...heading(
+			style.success,
+			changeVerb(file),
+			changeTarget(file, paths),
+			width,
+		),
+		...lines,
+		...(rows.length > diffLimit
+			? [style.dim(`    … +${rows.length - diffLimit} 行`)]
+			: []),
+	];
+}
+
+function editLines(
+	entry: ToolEntry,
+	action: ToolAction,
+	active: boolean,
+	paths: PathContext,
+	width: number,
+): string[] {
+	const { result, durationMs } = entry;
+	const files =
+		result?.status === "succeeded" && result.diff !== undefined
+			? parseDiff(result.diff)
+			: [];
+	if (files.length > 0) {
+		return files.flatMap((file) => changeLines(file, paths, width));
+	}
+	return [
+		...heading(
+			markPaint(result, active),
+			settledVerb(action, result, active),
+			action.target,
+			width,
+		),
+		...children(
+			result === undefined ||
+				durationMs === undefined ||
+				result.status === "succeeded"
+				? []
+				: [statusRow(result, durationMs), ...failureRows(result)],
+			width,
+		),
+	];
+}
+
+/** 结果里给人看的内容的开头几行；图片各占一行。 */
+function resultPreview(result: ToolResult): string[] {
+	const text = result.content
+		.map((block) => (block.type === "text" ? block.text : "[图片]"))
+		.join("\n");
+	return previewRows(previewText(text, previewHead, 0));
+}
+
+function callLines(
+	entry: ToolEntry,
+	action: ToolAction,
+	active: boolean,
+	width: number,
+): string[] {
+	const { result, durationMs } = entry;
+	const succeeded = result?.status === "succeeded";
+	// 交给子 agent 的任务写在它自己的那一块里：启动成了就不在这里重复
+	const detail =
+		action.detail === undefined || (entry.name === "spawn_agent" && succeeded)
+			? []
+			: [{ text: action.detail, paint: style.dim }];
+	const rows =
+		result === undefined || durationMs === undefined
+			? detail
+			: succeeded
+				? [
+						...detail,
+						...(action.preview === true
+							? resultPreview(result).map((text) => ({
+									text,
+									paint: style.dim,
+								}))
+							: []),
+					]
+				: [...detail, statusRow(result, durationMs), ...failureRows(result)];
+	return [
+		...heading(
+			markPaint(result, active),
+			settledVerb(action, result, active),
+			action.target,
+			width,
+		),
+		...children(rows, width),
+	];
+}
+
+/** 一次工具调用的那一块。`active` 为假是 task 已经结束而它一直没有结果：不再写成进行中。 */
+function toolLines(
+	entry: ToolEntry,
+	active: boolean,
+	paths: PathContext,
+	width: number,
+): string[] {
+	const action = describeTool(entry.name, entry.arguments, paths);
+	switch (action.kind) {
+		case "command":
+			return commandLines(entry, action, active, width);
+		case "edit":
+			return editLines(entry, action, active, paths, width);
+		case "explore":
+		case "call":
+			return callLines(entry, action, active, width);
+	}
+}
+
+/** 没做成的查看后面写的原因：交给模型的说明的第一行。 */
+function exploreFailure(result: ToolResult, durationMs: number): string {
+	const [reason = ""] = sanitize(resultText(result)).trim().split("\n");
+	return reason === "" ? resultStatus(result, durationMs).text : `✗ ${reason}`;
+}
+
+/**
+ * 一组查看：标题随状态从 `Exploring` 变成 `Explored`，下面每个动作一行。连着的几次读文件合并成
+ * 一行；没做成的单独一行，后面写原因。
+ */
+function exploreLines(
+	entry: ExploreEntry,
+	paths: PathContext,
+	width: number,
+): string[] {
+	const items: { verb: string; targets: string[]; failure?: string }[] = [];
+	for (const call of entry.calls) {
+		const action = describeTool(call.name, call.arguments, paths);
+		const { result, durationMs } = call;
+		const failure =
+			result === undefined || result.status === "succeeded"
+				? undefined
+				: exploreFailure(result, durationMs ?? 0);
+		const last = items.at(-1);
+		if (
+			action.read === true &&
+			failure === undefined &&
+			last?.verb === action.base &&
+			last.failure === undefined
+		) {
+			if (!last.targets.includes(action.target)) {
+				last.targets.push(action.target);
+			}
+			continue;
+		}
+		items.push({
+			verb: action.base,
+			targets: [action.target],
+			...(failure === undefined ? {} : { failure }),
+		});
+	}
+	const rows = items.flatMap((item, index) => {
+		const prefix = index === 0 ? "  └ " : "    ";
+		return wrapped(
+			`${style.bold(item.verb)} ${item.targets.join(style.dim(", "))}${item.failure === undefined ? "" : ` ${style.error(brief(item.failure, 120))}`}`,
+			width,
+			style.plain,
+			"      ",
+			style.dim(prefix),
+		);
+	});
+	return [
+		...heading(
+			entry.open ? style.accent : style.dim,
+			entry.open ? "Exploring" : "Explored",
+			"",
+			width,
+		),
+		...rows,
+	];
 }
 
 function approvalLines(
@@ -207,71 +434,66 @@ function approvalLines(
 	];
 }
 
-function subagentEndText(ended: SubagentEndedEvent): string {
-	switch (ended.outcome) {
-		case "completed":
-			return "完成";
-		case "failed":
-			return `失败${ended.error === undefined ? "" : `：${sanitize(ended.error)}`}`;
-		case "cancelled":
-			return "已停止";
-		case "refused":
-			return "模型拒绝回答";
-	}
-}
-
-/** 子 agent 的进展压成一项：运行中写最近的一次工具调用，结束后写结果和它的用量。 */
-function subagentLines(entry: SubagentEntry, width: number): string[] {
+/**
+ * 子 agent 的一块：标题是它的名字、模型和现在的情况，下面是交给它的任务、最近的一次工具调用（运行中）
+ * 和 worker 自己的工作区。
+ */
+function subagentLines(
+	entry: SubagentEntry,
+	paths: PathContext,
+	width: number,
+): string[] {
 	const { ended, last } = entry;
-	const head = `${style.bold(`子 agent ${sanitize(entry.name)}`)}（${sanitize(entry.model)}）`;
 	const calls = entry.toolCalls === 0 ? [] : [`${entry.toolCalls} 次工具调用`];
-	const lines =
+	const state =
 		ended === undefined
-			? wrapped(
-					[
-						`${head} 运行中`,
-						...calls,
-						...(last === undefined
-							? []
-							: [
-									`最近：${sanitize(last.name)} ${brief(toolSummary(last.arguments), 80)}`,
-								]),
-					].join(" · "),
-					width,
-					style.plain,
-					"  ",
-					`${style.accent("◆")} `,
-				)
-			: wrapped(
-					[
-						`${head} ${subagentEndText(ended)}`,
-						...calls,
-						`输入 ${ended.usage.input} · 输出 ${ended.usage.output} token`,
-						...(ended.usage.cost_usd === undefined
-							? []
-							: [formatUsd(ended.usage.cost_usd)]),
-					].join(" · "),
-					width,
-					{
-						completed: style.plain,
-						failed: style.error,
-						cancelled: style.warning,
-						refused: style.warning,
-					}[ended.outcome],
-					"  ",
-					`${style.accent("◆")} `,
-				);
-	return entry.workspace === undefined
-		? lines
-		: [
-				...lines,
-				...wrapped(
-					`它自己的工作区：${sanitize(entry.workspace)}`,
-					width,
-					style.dim,
-					"    ",
-				),
-			];
+			? ["运行中", ...calls]
+			: [subagentOutcomeText(ended), ...calls, ...usageParts(ended.usage)];
+	const paint =
+		ended === undefined
+			? style.accent
+			: {
+					completed: style.success,
+					failed: style.error,
+					cancelled: style.warning,
+					refused: style.warning,
+				}[ended.outcome];
+	const recent =
+		last === undefined
+			? undefined
+			: describeTool(last.name, last.arguments, paths);
+	return [
+		...heading(
+			paint,
+			`子 agent ${sanitize(entry.name)}（${sanitize(entry.model)}）`,
+			state.join(" · "),
+			width,
+		),
+		...children(
+			[
+				...(entry.prompt === undefined
+					? []
+					: [{ text: `任务：${brief(entry.prompt)}`, paint: style.plain }]),
+				...(ended !== undefined || recent === undefined
+					? []
+					: [
+							{
+								text: `最近：${actionTitle(recent.running, recent.target)}`,
+								paint: style.dim,
+							},
+						]),
+				...(entry.workspace === undefined
+					? []
+					: [
+							{
+								text: `它自己的工作区：${sanitize(entry.workspace)}`,
+								paint: style.dim,
+							},
+						]),
+			],
+			width,
+		),
+	];
 }
 
 function noticeLines(entry: NoticeEntry, width: number): string[] {
@@ -286,35 +508,11 @@ function noticeLines(entry: NoticeEntry, width: number): string[] {
 	];
 }
 
-function outcomeText(event: TaskEndedEvent): string {
-	switch (event.outcome) {
-		case "completed":
-			return "完成";
-		case "failed":
-			return `失败${event.error === undefined ? "" : `：${sanitize(event.error)}`}`;
-		case "budget_exceeded": {
-			const limit = {
-				cost: "费用",
-				requests: "模型请求次数",
-				duration: "运行时间",
-			};
-			return `超出预算${event.limit === undefined ? "" : `（${limit[event.limit]}）`}，任务已停止`;
-		}
-		case "cancelled":
-			return "已取消";
-		case "refused":
-			// 触发拒绝的输入留在对话里，之后的请求会接着被拒
-			return "模型拒绝回答：用 /rewind 回退到这次输入之前，改写后重发";
-	}
-}
-
 function taskEndedLines(entry: TaskEndedEntry, width: number): string[] {
-	const { usage } = entry.event;
 	const parts = [
 		outcomeText(entry.event),
-		`输入 ${usage.input} · 输出 ${usage.output} token`,
-		...(usage.cache_read > 0 ? [`缓存读取 ${usage.cache_read}`] : []),
-		...(usage.cost_usd === undefined ? [] : [formatUsd(usage.cost_usd)]),
+		`用时 ${formatDuration(entry.durationMs)}`,
+		...usageParts(entry.event.usage),
 	];
 	const paint = {
 		completed: style.dim,
@@ -330,14 +528,16 @@ function taskEndedLines(entry: TaskEndedEntry, width: number): string[] {
 class EntryView implements Component {
 	readonly #entry: Entry;
 	readonly #state: InteractiveState;
+	readonly #paths: PathContext;
 	/** 模型的回复按 Markdown 显示。 */
 	readonly #markdown = new Markdown("", 0, 0, markdownTheme);
 	#width = 0;
 	#lines: string[] | undefined;
 
-	constructor(entry: Entry, state: InteractiveState) {
+	constructor(entry: Entry, state: InteractiveState, paths: PathContext) {
 		this.#entry = entry;
 		this.#state = state;
+		this.#paths = paths;
 	}
 
 	invalidate(): void {
@@ -352,6 +552,16 @@ class EntryView implements Component {
 		return this.#lines;
 	}
 
+	/** 模型的回复：前面画圆点，和工具的块分得开；后面的行缩进对齐。 */
+	#reply(text: string, width: number): string[] {
+		this.#markdown.setText(sanitize(text));
+		return this.#markdown
+			.render(Math.max(1, width - 2))
+			.map(
+				(line, index) => `${index === 0 ? `${style.dim(mark)} ` : "  "}${line}`,
+			);
+	}
+
 	#draw(width: number): string[] {
 		const entry = this.#entry;
 		switch (entry.kind) {
@@ -359,15 +569,23 @@ class EntryView implements Component {
 				return userLines(entry, width);
 			case "assistant": {
 				const reasoning = sanitize(entry.reasoning).trim();
-				this.#markdown.setText(sanitize(entry.text));
 				return [
 					"",
-					...(reasoning === "" ? [] : wrapped(reasoning, width, style.italic)),
-					...(entry.text === "" ? [] : this.#markdown.render(width)),
+					...(reasoning === ""
+						? []
+						: wrapped(reasoning, width, style.italic, "  ")),
+					...(entry.text === "" ? [] : this.#reply(entry.text, width)),
 				];
 			}
 			case "tool":
-				return toolLines(entry, width);
+				return toolLines(
+					entry,
+					entry.result !== undefined || this.#state.running.includes(entry),
+					this.#paths,
+					width,
+				);
+			case "explore":
+				return exploreLines(entry, this.#paths, width);
 			case "approval":
 				return approvalLines(
 					entry,
@@ -383,7 +601,7 @@ class EntryView implements Component {
 					width,
 				);
 			case "subagent":
-				return subagentLines(entry, width);
+				return subagentLines(entry, this.#paths, width);
 			case "notice":
 				return noticeLines(entry, width);
 			case "task_ended":
@@ -395,10 +613,12 @@ class EntryView implements Component {
 /** 对话区：按时间显示状态里的各项。 */
 export class ConversationView implements Component {
 	readonly #state: InteractiveState;
+	readonly #paths: PathContext;
 	readonly #views = new Map<Entry, EntryView>();
 
-	constructor(state: InteractiveState) {
+	constructor(state: InteractiveState, paths: PathContext) {
 		this.#state = state;
+		this.#paths = paths;
 	}
 
 	/** 状态变了之后调用：内容变了的条目下次重画。 */
@@ -421,7 +641,7 @@ export class ConversationView implements Component {
 		return this.#state.entries.flatMap((entry) => {
 			let view = this.#views.get(entry);
 			if (view === undefined) {
-				view = new EntryView(entry, this.#state);
+				view = new EntryView(entry, this.#state, this.#paths);
 				this.#views.set(entry, view);
 			}
 			return view.render(width);

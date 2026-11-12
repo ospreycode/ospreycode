@@ -44,6 +44,8 @@ ospreycode "把 README 里的安装步骤补全"     # 带着第一条输入打�
 ospreycode -C ~/code/app -m claude-haiku-5-5 --sandbox workspace-write --approval on-request
 ```
 
+界面显示模型的回复和每一步在做什么：连着的读文件、搜索和列目录聚合成一组（`Explored`），命令写成 `Ran <命令>`，下面是输出的开头和末尾几行、退出码和耗时，文件改动写成 `Edited <路径> (+N -M)` 和带行号的 diff。任务运行时输入框上面的活动行写着现在在做的事、已经运行的时间和怎样取消；任务结束的那一行有结果、用时、用量和费用。
+
 要在终端里运行，接受 `-C/--cd`、`-m/--model`、`--sandbox`、`--approval`（`on-request`、`granular`、`never`）、`--tui-mode`（`fullscreen`、`regular`）、`--rules`、`--credential-file` 和 `--credential-env`。界面显示模型的回复和每次工具调用的过程；需要批准的动作（命令、文件改动、权限申请、访问没有放行的域名、超出预算）在输入框的位置询问，写明要做的具体内容，可以批准这一次、本任务内批准、保存为规则、拒绝或拒绝并告诉模型原因。询问出现时没有选中的选项：先按 ↑↓ 选择，再按 Enter 确认，Esc 是拒绝。
 
 | 按键 | 作用 |
@@ -127,7 +129,7 @@ ospreycode exec -C ~/code/app -m claude-haiku-5-5 --sandbox workspace-write \
 ospreycode exec --json "列出 TODO" | jq -r 'select(.type == "task.ended") | .outcome'
 ```
 
-`exec` 不询问：需要批准的动作只有被权限规则放行才执行，其余直接拒绝。不带 `--json` 时标准输出只有最后一条回复，过程（工具调用、警告和错误）写到标准错误。`--json` 每行输出一个事件，第一条是 `session.started`，最后一条是带主任务 `outcome` 和 `exit_code` 的 `session.ended`；session 打开之前就失败时只有一条不带 `session_id` 的 `error` 事件。
+`exec` 不询问：需要批准的动作只有被权限规则放行才执行，其余直接拒绝。不带 `--json` 时标准输出只有最后一条回复，过程写到标准错误：开头是这次运行的配置（工作目录、模型、沙盒模式、审批策略、session 的标识）和任务，接着是每一步的结果和耗时（命令的输出留开头和末尾几行，文件改动写增删的行数）、中间几轮的回复，最后一行是结果、用时、用量和费用。标准错误是终端时上色。`--json` 每行输出一个事件，第一条是 `session.started`，最后一条是带主任务 `outcome` 和 `exit_code` 的 `session.ended`；session 打开之前就失败时只有一条不带 `session_id` 的 `error` 事件。
 
 | 选项 | 作用 |
 |---|---|

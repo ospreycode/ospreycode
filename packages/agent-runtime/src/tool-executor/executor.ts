@@ -160,6 +160,7 @@ export class ToolExecutor {
 			return {
 				status: "succeeded",
 				content: await prepared.run(signal, toolCallId),
+				...(prepared.diff === undefined ? {} : { diff: prepared.diff }),
 			};
 		} catch (error) {
 			// 工具在途中发现被取消时抛出的是取消的原因，不是它自己的失败

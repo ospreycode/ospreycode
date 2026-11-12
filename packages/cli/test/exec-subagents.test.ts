@@ -83,12 +83,21 @@ test("文本模式下标准输出只有主 agent 的最后一条回复，子 age
 
 	expect(result.code).toBe(0);
 	expect(result.stdout).toBe("主 agent 的结论\n");
-	expect(result.stderr).toContain("工具 spawn_agent：");
-	expect(result.stderr).toContain(
-		"子 agent explorer 开始运行（模型 fake，沙盒模式 danger-full-access）",
+	// 启动它的调用写着交给它的任务；它的工具调用前面写明是它的
+	expect(result.stderr).toMatch(
+		/^• Spawning explorer: Find the entry point\.\n/m,
 	);
-	expect(result.stderr).toContain("子 agent explorer 的工具 shell：");
-	expect(result.stderr).toContain("子 agent explorer 结束了（completed）");
+	expect(result.stderr).toContain(
+		"• 子 agent explorer 开始运行（模型 fake，沙盒模式 danger-full-access）",
+	);
+	expect(result.stderr).toMatch(
+		/^• \[explorer\] Ran echo from-child · ✓ 退出码 0 · \d+\.\ds\n {2}from-child$/m,
+	);
+	expect(result.stderr).toMatch(
+		/^• 子 agent explorer 完成 · 输入 \d+ · 输出 \d+ token/m,
+	);
+	// 子 agent 的回复不逐条写出来
+	expect(result.stderr).not.toMatch(/^• 子 agent 的回复$/m);
 });
 
 test("--json 里子 agent 的事件带着它自己的 agent_id，起止各有一个事件", async () => {
@@ -139,6 +148,6 @@ test("任务在子 agent 回复之后停下时，输出的仍是主 agent 的最
 	const result = await exec("--max-requests", "3", "找入口");
 
 	expect(result.code).not.toBe(0);
-	expect(result.stderr).toContain("任务没有完成（budget_exceeded）");
+	expect(result.stderr).toMatch(/^— 超出预算（模型请求次数），任务已停止 · /m);
 	expect(result.stdout).toBe("主 agent 的回复\n");
 });

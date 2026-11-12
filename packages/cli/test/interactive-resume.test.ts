@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { shellCallReply, textReply } from "./harness.js";
@@ -8,6 +8,7 @@ import {
 	lastUserMessage,
 	requestedModel,
 	selectFirstChoice,
+	toolCallsReply,
 } from "./interactive-fixture.js";
 import { key } from "./interactive-terminal.js";
 import { finishedSession, interruptedSession } from "./sessions.js";
@@ -51,10 +52,14 @@ describe("恢复之后的对话区", () => {
 		await terminal.waitForVisible("Enter 发送");
 
 		const shown = terminal.text();
-		expect(shown).toMatch(/● shell \$ echo from-shell\n {2}✓ 退出码 0/);
+		// 按记录重画的命令照样有输出、退出码和耗时，任务结束的那一行有当时的用时
+		expect(shown).toMatch(
+			/^• Ran echo from-shell\n {2}└ from-shell\n {4}✓ 退出码 0 · \d+\.\ds$/m,
+		);
+		expect(shown).toMatch(/^— 完成 · 用时 \d+\.\ds · 输入 /m);
 		expectInOrder(shown, [
 			"› 第一个任务",
-			"● shell",
+			"• Ran echo from-shell",
 			"第一次的回复",
 			"— 完成",
 			`已恢复 session ${sessionId}，上面是之前的对话`,
@@ -62,7 +67,12 @@ describe("恢复之后的对话区", () => {
 			"Osprey Code",
 		]);
 		// 之前的每一项只显示一次
-		for (const once of ["› 第一个任务", "● shell", "第一次的回复", "— 完成"]) {
+		for (const once of [
+			"› 第一个任务",
+			"• Ran echo from-shell",
+			"第一次的回复",
+			"— 完成",
+		]) {
 			expect(count(shown, once)).toBe(1);
 		}
 		expect(server.requests).toHaveLength(2);
@@ -175,6 +185,37 @@ describe("选择要恢复的 session", () => {
 	});
 });
 
+describe("按记录重画的工具调用", () => {
+	test("连着的查看聚合成一组，文件改动带着 diff 和增删的行数：和当时显示的一样", async () => {
+		writeFileSync(join(fixture.dirs.workspace, "a.txt"), "甲\n丙\n");
+		await fixture.useModel(
+			(call) =>
+				[
+					toolCallsReply([{ name: "read", arguments: { path: "a.txt" } }]),
+					toolCallsReply([
+						{
+							name: "edit",
+							arguments: {
+								path: "a.txt",
+								edits: [{ old_text: "甲", new_text: "乙" }],
+							},
+						},
+					]),
+					textReply("改好了"),
+				][call] ?? textReply("好"),
+		);
+		const sessionId = await finishedSession(fixture.dirs, "改一下");
+
+		const { terminal } = await fixture.start({
+			resume: { kind: "id", sessionId },
+		});
+		await terminal.waitForVisible("Enter 发送");
+		expect(terminal.text()).toMatch(
+			/^• Explored\n {2}└ Read a\.txt\n• Edited a\.txt \(\+1 -1\)\n {4}1 - 甲\n {4}1 \+ 乙\n {4}2 {3}丙$/m,
+		);
+	});
+});
+
 describe("上次没有正常关闭的 session", () => {
 	test("中断的任务以失败结束，接在之前的对话后面；恢复时记下的事件只显示一次", async () => {
 		const server = await fixture.useModel((call) =>
@@ -239,7 +280,8 @@ describe("上次没有正常关闭的 session", () => {
 		// 之前的对话在询问之前已经显示出来
 		expectInOrder(terminal.text(), [
 			"› 跑一条长命令",
-			`● shell $ ${longCommand}`,
+			// 上次中断时没有结果的调用现在没在运行
+			`• Run ${longCommand}`,
 			`已恢复 session ${sessionId}`,
 			"需要确认：",
 		]);
@@ -254,7 +296,8 @@ describe("上次没有正常关闭的 session", () => {
 		await terminal.press(key.enter);
 		await terminal.waitFor("接着做完了");
 		// 跳过的调用没有重新执行：模型看到的是"结果不确定"
-		expect(count(terminal.text(), "● shell")).toBe(1);
+		expect(count(terminal.text(), `• Ran ${longCommand}`)).toBe(1);
+		expect(terminal.text()).not.toContain(`• Running ${longCommand}`);
 		expect(JSON.stringify(server.requests.at(-1))).toContain(
 			"The user chose not to run it again",
 		);
@@ -290,7 +333,7 @@ describe("上次没有正常关闭的 session", () => {
 		await terminal.type("接着做");
 		await terminal.press(key.enter);
 		await terminal.waitFor("接着做完了");
-		expect(terminal.text()).toContain("│ ran-again");
+		expect(terminal.text()).toMatch(/^ {2}└ ran-again\n {4}✓ 退出码 0 · /m);
 		expect(JSON.stringify(server.requests.at(-1))).toContain("ran-again");
 	});
 });

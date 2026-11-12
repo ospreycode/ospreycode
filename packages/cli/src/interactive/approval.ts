@@ -11,7 +11,7 @@ import {
 	formatUsd,
 	markedLines,
 	sanitize,
-} from "./format.js";
+} from "../format/text.js";
 import type {
 	ApprovalAnswer,
 	CommandRule,

@@ -7,6 +7,7 @@ import {
 	SelectList,
 } from "@earendil-works/pi-tui";
 import type { ElicitationAnswer } from "@ospreycode/agent-host";
+import { sanitize } from "../../format/text.js";
 import {
 	chosenError,
 	type Field,
@@ -14,7 +15,6 @@ import {
 	typedValue,
 	valueText,
 } from "../elicitation.js";
-import { sanitize } from "../format.js";
 import { clipped, selectListTheme, style, wrapped } from "./theme.js";
 
 /** 列表里最多同时显示的行数，多出来的滚动。 */

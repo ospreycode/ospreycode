@@ -918,7 +918,7 @@ describe("task 运行中", () => {
 		const { terminal } = await fixture.start(wide);
 		await terminal.type("跑一条长命令");
 		await terminal.press(key.enter);
-		await terminal.waitFor(`$ ${longCommand}`);
+		await terminal.waitFor(`Running ${longCommand}`);
 
 		// 现在选了也做不了：不弹出列表，输入框还在
 		await enter(terminal, "/undo", /\[1\] \S+ 跑一条长命令\n/);
@@ -932,7 +932,7 @@ describe("task 运行中", () => {
 
 		// 对话没有被重画，任务还在运行
 		expect(terminal.text()).toContain("› 跑一条长命令");
-		expect(terminal.visible()).toContain("运行中");
+		expect(terminal.visible()).toContain("Ctrl+C 取消");
 		await terminal.press(key.ctrlC);
 		await terminal.waitFor("已取消");
 	});

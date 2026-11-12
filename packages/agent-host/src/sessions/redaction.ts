@@ -679,7 +679,8 @@ function cover(view: View, mark: Mark): object | undefined {
 			return {
 				...data,
 				result: {
-					...data.result,
+					// 文件改动的 diff 里是文件的内容
+					...without(data.result, ["diff"]),
 					content: [placeholderBlock],
 					...(data.result.message === undefined
 						? {}

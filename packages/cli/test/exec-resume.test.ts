@@ -119,7 +119,10 @@ describe("接着原来的对话", () => {
 			input: "标准输入里的任务",
 		});
 
-		expect(result.stderr).toBe("");
+		// 过程里是这次的任务和结果，没有警告和错误，也不重复之前的对话
+		expect(result.stderr).toContain("› 标准输入里的任务");
+		expect(result.stderr).toMatch(/^— 完成 · 用时 /m);
+		expect(result.stderr).not.toMatch(/警告|错误|ospreycode:|乙的回复/);
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("接着做完了\n");
 		expect(readFileSync(replyFile, "utf8")).toBe("接着做完了");

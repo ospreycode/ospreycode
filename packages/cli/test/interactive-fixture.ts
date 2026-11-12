@@ -264,6 +264,23 @@ export function streamReply(
 	};
 }
 
+/** Chat Completions 的流式响应停在半路：`deltas` 都到了，之后既没有新的数据块也不结束。 */
+export function stalledReply(
+	deltas: readonly Record<string, unknown>[],
+): ModelReply {
+	return {
+		status: 200,
+		contentType: "text/event-stream",
+		body: deltas
+			.map(
+				(delta) =>
+					`data: ${JSON.stringify({ choices: [{ index: 0, delta }] })}\n\n`,
+			)
+			.join(""),
+		stalled: true,
+	};
+}
+
 /** Chat Completions 的流式响应：一次回复里调用几个工具。 */
 export function toolCallsReply(
 	calls: readonly { name: string; arguments: Record<string, unknown> }[],

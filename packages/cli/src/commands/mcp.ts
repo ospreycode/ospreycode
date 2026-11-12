@@ -10,8 +10,8 @@ import { credentialArgs } from "../args/session.js";
 import type { CliContext } from "../context.js";
 import { UsageError } from "../errors.js";
 import { extensionDetail, originText, statusLabel } from "../extension-text.js";
+import { sanitize } from "../format/text.js";
 import { openHost } from "../host.js";
-import { sanitize } from "../interactive/format.js";
 import { readHidden } from "./login.js";
 
 /** 系统凭据库只在 macOS 上有：先说明，不等读完令牌再让 Host 报错。 */

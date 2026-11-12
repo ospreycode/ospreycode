@@ -65,7 +65,17 @@ export interface ShellOutcome {
  * - `interrupted`：结果不确定，例如异常退出时核对不上的文件工具、恢复时选择跳过的调用
  */
 export type ToolResult =
-	| { status: "succeeded"; content: UserContent[]; shell?: ShellOutcome }
+	| {
+			status: "succeeded";
+			content: UserContent[];
+			shell?: ShellOutcome;
+			/**
+			 * 这次调用做的文件改动的 unified diff（`edit`、`write`，含可写范围之外经批准写入的）：
+			 * 文件头里是绝对路径，新建的文件改动前写 `/dev/null`。只给界面显示，不交给模型；改动的
+			 * 文件太大时不带。
+			 */
+			diff?: string;
+	  }
 	| {
 			status: "failed";
 			content: UserContent[];

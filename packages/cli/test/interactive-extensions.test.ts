@@ -182,6 +182,10 @@ describe("MCP 工具", () => {
 		await terminal.press(key.enter);
 		await terminal.waitFor("做完了");
 		expect(requestText(server.requests, 1)).toContain("你好 MCP");
+		// 调用写成 server/工具名 和压成一行的参数，下面是结果的开头几行
+		expect(terminal.text()).toMatch(
+			/^• Called tools\/echo\(text: "你好 MCP"\)\n {2}└ 你好 MCP$/m,
+		);
 	});
 
 	test("/approval 里把 granular 的 mcp_tools 关掉：MCP 工具调用不再询问，按策略直接拒绝", async () => {

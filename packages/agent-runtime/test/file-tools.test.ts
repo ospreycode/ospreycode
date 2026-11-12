@@ -80,6 +80,11 @@ function sha256(content: string | Buffer): string {
 	return createHash("sha256").update(content).digest("hex");
 }
 
+/** 结果里给界面显示的 diff；没有成功或没有改文件的调用没有。 */
+function diffOf(result: ToolResult | undefined): string | undefined {
+	return result?.status === "succeeded" ? result.diff : undefined;
+}
+
 function output(result: ToolResult | undefined): string {
 	return (result?.content ?? [])
 		.map((block) => (block.type === "text" ? block.text : ""))
@@ -257,6 +262,41 @@ test("write 新建文件和上级目录，登记改动前后的哈希；之后�
 		undefined,
 	]);
 	expect(output(trace.results[2])).toBe("hello\nosprey");
+	// 写成的改动带上 unified diff 给界面显示：新建的文件改动前是 /dev/null；读取没有
+	expect(trace.results.map(diffOf)).toEqual([
+		`--- /dev/null\n+++ ${file}\n@@ -0,0 +1,2 @@\n+hello\n+world\n`,
+		`--- ${file}\n+++ ${file}\n@@ -1,2 +1,2 @@\n hello\n-world\n+osprey\n`,
+		undefined,
+	]);
+});
+
+test("write 覆盖已有的文件：结果里的 diff 是和原来内容的差异，不是整份新内容；文件太大时不带 diff", async () => {
+	const file = join(workspace, "notes.txt");
+	writeFileSync(file, "one\ntwo\nthree\n");
+	const large = join(workspace, "large.txt");
+	const content = `${"x".repeat(1023)}\n`.repeat(257);
+	const trace = await run([
+		[{ name: "read", arguments: { path: "notes.txt" } }],
+		[
+			{
+				name: "write",
+				arguments: { path: "notes.txt", content: "one\n2\nthree\n" },
+			},
+		],
+		[{ name: "write", arguments: { path: "large.txt", content } }],
+	]);
+
+	expect(trace.results.map((result) => result?.status)).toEqual([
+		"succeeded",
+		"succeeded",
+		"succeeded",
+	]);
+	expect(diffOf(trace.results[1])).toBe(
+		`--- ${file}\n+++ ${file}\n@@ -1,3 +1,3 @@\n one\n-two\n+2\n three\n`,
+	);
+	// 超过上限的文件照常写入，只是结果里没有 diff
+	expect(readFileSync(large, "utf8")).toBe(content);
+	expect(diffOf(trace.results[2])).toBeUndefined();
 });
 
 test("已有的文件要先读过才能改；读过以后被别人改了，要重新读", async () => {

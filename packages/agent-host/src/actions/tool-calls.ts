@@ -2,12 +2,14 @@ import { realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	ChannelRequestError,
+	type FileChange,
 	type FileEditOp,
 	type HandlerContext,
 	ProtocolError,
 	type RequestPermissionsArguments,
 	type RuntimeRequests,
 	requestPermissionsArgumentsSchema,
+	resultDiff,
 	type SandboxSummary,
 	type ShellArguments,
 	shellArgumentsSchema,
@@ -61,6 +63,7 @@ import type { Run } from "../sessions/run.js";
 import type { ToolSnapshots } from "../workspace/session-snapshots.js";
 import type { Approvals } from "./approvals.js";
 import {
+	editChange,
 	editDiff,
 	type RegisteredEdit,
 	readTarget,
@@ -1219,6 +1222,7 @@ export class ToolCalls {
 			throw new Error("没有沙盒时不会走到文件改动的申请");
 		}
 		const diffs: string[] = [];
+		const changes: FileChange[] = [];
 		for (const edit of edits) {
 			const { path } = edit;
 			const parent = dirname(path);
@@ -1249,6 +1253,7 @@ export class ToolCalls {
 			}
 			// 用核对过哈希的这份旧内容算 diff：用户看到的改动就是将要写入的改动
 			diffs.push(editDiff(edit, current));
+			changes.push(editChange(edit, current));
 		}
 		// 用户选过"本任务内允许"的路径，和 request_permissions 批下来的可写路径里的文件，不再询问
 		const approved = ({ path }: FileEditOp) =>
@@ -1324,6 +1329,8 @@ export class ToolCalls {
 		} finally {
 			await launch.release();
 		}
+		// apply-edits 写入之前又核对了一次旧内容：写成了，改动就是按这份旧内容算的
+		const diff = resultDiff(changes);
 		return {
 			status: "succeeded",
 			content: text(
@@ -1334,6 +1341,7 @@ export class ToolCalls {
 					)
 					.join("\n"),
 			),
+			...(diff === undefined ? {} : { diff }),
 		};
 	}
 

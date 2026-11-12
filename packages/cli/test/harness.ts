@@ -152,7 +152,13 @@ export function parseEvents(stdout: string): HostEvent[] {
 
 /** 模型服务对一次请求的回应：脚本里写好的响应，或者一直不回应。 */
 export type ModelReply =
-	| { status: number; body: string; contentType: string }
+	| {
+			status: number;
+			body: string;
+			contentType: string;
+			/** 写出这些内容之后不结束响应：流式的回复停在半路，连接留到测试结束。 */
+			stalled?: true;
+	  }
 	| "hang";
 
 function sse(chunks: readonly unknown[]): ModelReply {
@@ -249,9 +255,11 @@ export async function fakeModelServer(
 				requests.push(body);
 				// 不回应：连接留到测试结束时由 close() 断开
 				if (reply === "hang") return;
-				response
-					.writeHead(reply.status, { "content-type": reply.contentType })
-					.end(reply.body);
+				response.writeHead(reply.status, {
+					"content-type": reply.contentType,
+				});
+				if (reply.stalled === true) response.write(reply.body);
+				else response.end(reply.body);
 			})();
 		},
 	);

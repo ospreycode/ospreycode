@@ -1,8 +1,8 @@
 import { flag, type ParsedArgs } from "../args/parse.js";
 import type { CliContext } from "../context.js";
 import { extensionDetail, originText, statusLabel } from "../extension-text.js";
+import { sanitize } from "../format/text.js";
 import { openHost } from "../host.js";
-import { sanitize } from "../interactive/format.js";
 
 /**
  * `ospreycode hooks list`：当前目录下找到的每一份 hooks 配置（用户级、仓库自带和插件里的）和它的

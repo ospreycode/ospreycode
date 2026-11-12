@@ -5,8 +5,13 @@ import type {
 	CheckpointInfo,
 	UndoResult,
 } from "@ospreycode/agent-host";
+import {
+	brief,
+	type DetailLine,
+	diffLines,
+	headLines,
+} from "../format/text.js";
 import { CommandUsageError } from "./commands.js";
-import { brief, type DetailLine, diffLines, headLines } from "./format.js";
 
 /** `/diff` 最多显示这么多行，其余只写行数：再长的 diff 在对话区里看不过来。 */
 const diffLimit = 200;
