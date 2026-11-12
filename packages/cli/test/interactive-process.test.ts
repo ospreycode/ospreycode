@@ -132,9 +132,8 @@ test("在支持 Kitty 图形协议的终端里预览拖进来的 JPEG：打包�
 	await cli.waitFor("Ctrl+O 预览图片 #1");
 	expect(cli.output()).not.toContain(picture);
 	cli.write("\x0f");
-	await cli.waitFor("Esc 关闭");
+	await cli.waitFor("Esc 关闭图片的预览");
 
-	expect(cli.output()).toContain("图片 #1 · JPEG · 8×4");
 	// f=100 是 PNG：Kitty 图形协议只收这一种
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
 	const placed = /\x1b_Ga=T,f=100,[^;]*\bi=(\d+)/.exec(cli.raw());

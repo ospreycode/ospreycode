@@ -7,9 +7,15 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	getCellDimensions,
+	getPngDimensions,
+	setCapabilities,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import photon from "@silvia-odwyer/photon-node";
 import { describe, expect, test, vi } from "vitest";
+import { loadPreview } from "../src/interactive/image-data.js";
 import { errorReply, shellCallReply, textReply } from "./harness.js";
 import {
 	interactiveFixture,
@@ -714,24 +720,53 @@ describe("图片的预览", () => {
 	/** 支持 Kitty 图形协议的终端。 */
 	const kitty = { images: "kitty", trueColor: true, hyperlinks: true } as const;
 
-	/** 界面往终端上放过几次图片。 */
-	function placed(terminal: { graphics: readonly string[] }): number {
-		return terminal.graphics.filter((command) => /\ba=T\b/.test(command))
-			.length;
+	/** 预览开着时按键提示上写的话。 */
+	const open = "Esc 关闭图片的预览";
+	/** 删掉一张放过的图片的命令。 */
+	const deleted = /^a=d,d=I,i=\d+/;
+
+	/** 界面往终端上放过的图片，按先后：各占几列几行。 */
+	function placements(terminal: {
+		graphics: readonly string[];
+	}): { columns: number; rows: number }[] {
+		return terminal.graphics.flatMap((command) => {
+			const size = /\ba=T\b.*\bc=(\d+),r=(\d+)/.exec(command);
+			return size === null
+				? []
+				: [{ columns: Number(size[1]), rows: Number(size[2]) }];
+		});
 	}
 
-	/** 一张 JPEG：Kitty 图形协议不收，要转成 PNG 才能画。 */
-	function jpeg(width: number, height: number): Uint8Array {
+	/** 界面往终端上放过几次图片。 */
+	function placed(terminal: { graphics: readonly string[] }): number {
+		return placements(terminal).length;
+	}
+
+	/** 一张这么大的图片，按 photon 的编码器写出来。 */
+	function picture(
+		width: number,
+		height: number,
+		encode: (image: InstanceType<typeof photon.PhotonImage>) => Uint8Array,
+	): Uint8Array {
 		const pixels = new Uint8Array(width * height * 4).fill(200);
 		const image = new photon.PhotonImage(pixels, width, height);
 		try {
-			return image.get_bytes_jpeg(80);
+			return encode(image);
 		} finally {
 			image.free();
 		}
 	}
 
-	test("光标在图片标签上时 Ctrl+O 打开预览：画出图片，写着编号、格式、尺寸和大小；Esc 关掉、删掉图片，输入框照旧", async () => {
+	function png(width: number, height: number): Uint8Array {
+		return picture(width, height, (image) => image.get_bytes());
+	}
+
+	/** 一张 JPEG：Kitty 图形协议不收，要转成 PNG 才能画。 */
+	function jpeg(width: number, height: number): Uint8Array {
+		return picture(width, height, (image) => image.get_bytes_jpeg(80));
+	}
+
+	test("光标在图片标签上时 Ctrl+O 打开预览：只画图片，旁边不写编号、格式和路径；Esc 关掉、删掉图片，输入框照旧", async () => {
 		setCapabilities(kitty);
 		await fixture.useModel(() => textReply("好"));
 		const { terminal } = await fixture.start({ clipboardImage: pixel });
@@ -740,22 +775,44 @@ describe("图片的预览", () => {
 		await terminal.waitForVisible("Ctrl+O 预览图片 #1");
 		expect(placed(terminal)).toBe(0);
 		await terminal.press(key.ctrlO);
-		await terminal.waitForVisible("Esc 关闭");
+		await terminal.waitForVisible(open);
 
-		expect(terminal.visible()).toContain(
-			`图片 #1 · PNG · 1×1 · ${pixel.length} B`,
-		);
-		expect(placed(terminal)).toBeGreaterThan(0);
+		expect(placements(terminal)).toContainEqual({ columns: 1, rows: 1 });
+		expect(terminal.visible()).not.toContain("图片 #1 · PNG");
+		expect(terminal.visible()).not.toContain("─ Esc 关闭");
 		// 预览开着时按键不进输入框
 		await terminal.type("x");
 		await terminal.press(key.escape);
-		await terminal.waitForGone("Esc 关闭");
-		expect(terminal.graphics).toContainEqual(
-			expect.stringMatching(/^a=d,d=I,i=\d+/),
-		);
+		await terminal.waitForGone(open);
+		expect(terminal.graphics).toContainEqual(expect.stringMatching(deleted));
 		await terminal.type("完");
 		await terminal.waitForVisible("看[图片 #1]完");
 	});
+
+	// 格子是 9×18 像素，屏幕左右各留 2 列、上下各留 1 行
+	test.each([
+		{ width: 2000, height: 1000, columns: 160, rows: 50, shown: "156×39" },
+		{ width: 2000, height: 1000, columns: 100, rows: 40, shown: "96×24" },
+		{ width: 500, height: 2000, columns: 160, rows: 50, shown: "24×48" },
+	])(
+		"大图缩到正好放得进屏幕，不限制在 100 列以内：$width×$height 像素的图片在 $columns×$rows 的终端上占 $shown 格",
+		async ({ width, height, columns, rows, shown }) => {
+			setCapabilities(kitty);
+			await fixture.useModel(() => textReply("好"));
+			const { terminal } = await fixture.start({
+				clipboardImage: png(width, height),
+				columns,
+				rows,
+			});
+			await terminal.press(key.ctrlV);
+			await terminal.waitForVisible("Ctrl+O 预览图片 #1");
+			await terminal.press(key.ctrlO);
+			await expect.poll(() => placed(terminal)).toBeGreaterThan(0);
+
+			const last = placements(terminal).at(-1);
+			expect(`${last?.columns}×${last?.rows}`).toBe(shown);
+		},
+	);
 
 	test("点对话区里的图片标签打开预览；task 运行时 Ctrl+C 先关预览，不取消 task", async () => {
 		setCapabilities(kitty);
@@ -769,52 +826,80 @@ describe("图片的预览", () => {
 		await terminal.waitForVisible("› [图片 #1] 这是什么");
 		await expect.poll(() => server.requests.length).toBe(1);
 		await terminal.click(terminal.locate("[图片 #1] 这是什么"));
-		await terminal.waitForVisible("Esc 关闭");
-		expect(terminal.visible()).toContain("图片 #1 · PNG · 1×1");
+		await terminal.waitForVisible(open);
+		expect(placed(terminal)).toBeGreaterThan(0);
 
 		await terminal.press(key.ctrlC);
-		await terminal.waitForGone("Esc 关闭");
-		expect(terminal.graphics).toContainEqual(
-			expect.stringMatching(/^a=d,d=I,i=\d+/),
-		);
+		await terminal.waitForGone(open);
+		expect(terminal.graphics).toContainEqual(expect.stringMatching(deleted));
 		expect(terminal.visible()).toContain("Ctrl+C 取消");
 		expect(terminal.visible()).not.toContain("正在取消");
 	});
 
-	test("点输入框里的图片标签打开预览，点预览外面关掉", async () => {
+	test("点输入框里的图片标签打开预览；点在图片上不关，紧挨着图片的那一格已经在预览外面，点它关掉", async () => {
 		setCapabilities(kitty);
 		await fixture.useModel(() => textReply("好"));
-		const { terminal } = await fixture.start({ clipboardImage: pixel });
+		// 格子是 9×18 像素：这张图片占 10 列 2 行，画在屏幕正中间
+		const { terminal } = await fixture.start({ clipboardImage: png(90, 36) });
 		await terminal.press(key.ctrlV);
 		await terminal.type(" 后面的字");
 		await terminal.waitForVisible("[图片 #1] 后面的字");
 		// 光标不在标签上：键盘打不开，鼠标能
 		expect(terminal.visible()).not.toContain("Ctrl+O 预览图片");
 		await terminal.click(terminal.locate("[图片 #1] 后面的字"));
-		await terminal.waitForVisible("Esc 关闭");
+		await terminal.waitForVisible(open);
+		expect(placements(terminal).at(-1)).toEqual({ columns: 10, rows: 2 });
 
-		// 点在预览里面不关
-		await terminal.click(terminal.locate("图片 #1 · PNG"));
-		expect(terminal.visible()).toContain("Esc 关闭");
-		await terminal.click({ x: 0, y: 0 });
-		await terminal.waitForGone("Esc 关闭");
+		const left = (terminal.columns - 10) / 2;
+		const top = (terminal.rows - 2) / 2;
+		await terminal.click({ x: left + 9, y: top + 1 });
+		expect(terminal.graphics).not.toContainEqual(
+			expect.stringMatching(deleted),
+		);
+		// 换一行点：界面库把同一行上连着的两次点击当成双击
+		await terminal.click({ x: left + 10, y: top });
+		await terminal.waitForGone(open);
+		expect(terminal.graphics).toContainEqual(expect.stringMatching(deleted));
 		expect(terminal.visible()).toContain("[图片 #1] 后面的字");
 	});
 
 	test("粘贴的 JPEG 在只收 PNG 的终端上转成 PNG 画出来", async () => {
 		setCapabilities(kitty);
-		const picture = jpeg(4, 2);
 		await fixture.useModel(() => textReply("好"));
-		const { terminal } = await fixture.start({ clipboardImage: picture });
+		const { terminal } = await fixture.start({ clipboardImage: jpeg(4, 2) });
 		await terminal.press(key.ctrlV);
 		await terminal.waitForVisible("[图片 #1]");
 		await terminal.press(key.ctrlO);
-		await terminal.waitForVisible("Esc 关闭");
+		await terminal.waitForVisible(open);
 
-		expect(terminal.visible()).toContain(
-			`图片 #1 · JPEG · 4×2 · ${picture.length} B`,
-		);
-		expect(placed(terminal)).toBeGreaterThan(0);
+		// 没转成 PNG 的话界面库不往终端上放
+		expect(placements(terminal)).toContainEqual({ columns: 1, rows: 1 });
+	});
+
+	test("转成 PNG 时大图缩到预览画得出的像素数以内，小图不放大", async () => {
+		setCapabilities(kitty);
+		const cell = getCellDimensions();
+		const converted = async (bytes: Uint8Array) => {
+			const { pixels } = await loadPreview(
+				{
+					number: 1,
+					mediaType: "image/jpeg",
+					data: Buffer.from(bytes).toString("base64"),
+				},
+				"画不了",
+				{ columns: 10, rows: 10 },
+			);
+			if (pixels === undefined) throw new Error("这张图片没有转出来");
+			return getPngDimensions(pixels.data);
+		};
+
+		// 宽是高的两倍、有预览的四倍宽：缩到和预览一样宽
+		const side = 10 * cell.widthPx;
+		expect(await converted(jpeg(4 * side, 2 * side))).toEqual({
+			widthPx: side,
+			heightPx: side / 2,
+		});
+		expect(await converted(jpeg(8, 4))).toEqual({ widthPx: 8, heightPx: 4 });
 	});
 
 	test("终端画不了图片时预览显示格式、尺寸、大小和路径，路径是能点开的链接", async () => {
@@ -832,6 +917,7 @@ describe("图片的预览", () => {
 		await terminal.waitForVisible("Esc 关闭");
 
 		const shown = terminal.visible();
+		expect(shown).toContain(`图片 #1 · PNG · 1×1 · ${pixel.length} B`);
 		expect(shown).toContain("格式：PNG");
 		expect(shown).toContain("尺寸：1×1");
 		expect(shown).toContain(`大小：${pixel.length} B`);
@@ -893,9 +979,8 @@ describe("图片的预览", () => {
 		await terminal.waitFor("看过了");
 		await terminal.waitForVisible("[图片 #1]");
 		await terminal.click(terminal.locate("[图片 #1]"));
-		await terminal.waitForVisible("Esc 关闭");
+		await terminal.waitForVisible(open);
 
-		expect(terminal.visible()).toContain("图片 #1 · PNG · 1×1");
 		expect(placed(terminal)).toBeGreaterThan(0);
 	});
 });

@@ -507,6 +507,10 @@ class Interactive {
 		if (this.#switching !== undefined) {
 			return { text: "正在分叉…", emphasis: false };
 		}
+		// 图片的预览开着时按键都归它，画出来的图片旁边又不写字：怎样关掉写在这里
+		if (this.#preview !== undefined) {
+			return { text: "Esc 关闭图片的预览", emphasis: false };
+		}
 		// 询问的面板和列表自己写着按键
 		if (this.#bottom.children[0] !== this.#editor) {
 			return { text: "", emphasis: false };
@@ -1361,27 +1365,30 @@ class Interactive {
 		const image = this.#attachments.get(number);
 		// 标签是按上一次画出来的位置点中的：这之间输入框清空了的话，它的图片已经不在
 		if (image === undefined) return;
+		// 预览开着时看的只有这张图片，能占的地方是整个屏幕；四周留一圈，全屏时点那里关掉
+		const { columns, rows } = this.#terminal;
+		const box = {
+			columns: Math.max(1, columns - 4),
+			rows: Math.max(1, rows - 2),
+		};
 		this.#guard(async () => {
-			const preview = await loadPreview(image, this.#cannotDraw);
+			const preview = await loadPreview(image, this.#cannotDraw, box);
 			// 读图片的这一会儿界面可能已经开始退出
 			if (this.#closing) return;
 			this.#closePreview();
-			const { columns, rows } = this.#terminal;
-			const width = Math.max(1, Math.min(columns - 4, 100));
 			const close = () => {
 				this.#closePreview();
 				this.#refresh();
 			};
 			const component = new ImagePreview(preview, {
 				home: this.#paths.home,
-				maxColumns: width,
-				// 上下各一条边，再给界面留出几行
-				maxRows: Math.max(1, rows - 6),
+				maxColumns: box.columns,
+				maxRows: box.rows,
 				close,
 			});
 			this.#preview = {
 				component,
-				handle: this.#tui.showOverlay(component, { width }),
+				handle: this.#tui.showOverlay(component, { width: component.columns }),
 			};
 			onClickOutsideOverlay(this.#tui, close);
 		});

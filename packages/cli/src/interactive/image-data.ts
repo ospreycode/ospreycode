@@ -1,5 +1,9 @@
 import { readFile, stat } from "node:fs/promises";
-import { getCapabilities, getImageDimensions } from "@earendil-works/pi-tui";
+import {
+	getCapabilities,
+	getCellDimensions,
+	getImageDimensions,
+} from "@earendil-works/pi-tui";
 import {
 	type ImageMediaType,
 	imageMediaType,
@@ -10,8 +14,18 @@ import {
 const maxFileBytes = 32 * 1024 * 1024;
 /** 转成 PNG 之前像素数超过它的图片不解码：解码后每个像素占 4 字节。 */
 const maxDecodedPixels = 50_000_000;
-/** 转成 PNG 时长边超过它的先缩小：预览用不着原来的分辨率，交给终端的数据小得多。 */
-const maxPixelSide = 1600;
+/**
+ * 转成 PNG 时长边超过它的先缩小：交给终端的数据按像素数涨，一张 4032×4032 的 JPEG 转出来的 PNG
+ * 有 16 MiB，缩到 3200 是 10 MiB（2026-11-12 实测）。预览不放大图片，这个数小了，高分屏上全屏的
+ * 终端里照片占不满：16 寸 MacBook Pro 和 4K 屏高 2200 px 上下，3:2、4:3 的照片缩到 3200 还够高。
+ */
+const maxPixelSide = 3200;
+
+/** 预览最多占的地方，按终端的格子算。 */
+export interface PreviewBox {
+	columns: number;
+	rows: number;
+}
 
 /** 预览一张图片要显示的内容。 */
 export interface ImagePreviewData {
@@ -47,11 +61,12 @@ async function readImageFile(
 
 /**
  * 把图片转成 PNG（base64）：Kitty 图形协议只收 PNG。解不开时为空。用 photon（WASM），第一次用到
- * 时才加载。
+ * 时才加载。比 `most` 大的先缩到它以内：预览画不出更多的像素，交给终端的数据小得多。
  */
 async function toPng(
 	bytes: Uint8Array,
 	size: { width: number; height: number },
+	most: { width: number; height: number },
 ): Promise<string | undefined> {
 	const { default: photon } = await import("@silvia-odwyer/photon-node");
 	let decoded: InstanceType<typeof photon.PhotonImage>;
@@ -62,7 +77,12 @@ async function toPng(
 		return undefined;
 	}
 	try {
-		const scale = Math.min(1, maxPixelSide / Math.max(size.width, size.height));
+		const scale = Math.min(
+			1,
+			maxPixelSide / Math.max(size.width, size.height),
+			most.width / size.width,
+			most.height / size.height,
+		);
 		if (scale === 1) return Buffer.from(decoded.get_bytes()).toString("base64");
 		const resized = photon.resize(
 			decoded,
@@ -84,13 +104,15 @@ async function toPng(
  * 准备一张图片的预览：读进它的字节（本地文件这时才读），认出格式和尺寸，按终端支持的图形协议
  * （界面库按环境变量认出来的）决定能不能画出来。画不了时 `note` 写原因，预览只显示它的信息。
  *
- * Kitty 图形协议只收 PNG：用户自己粘贴、拖进来和提及的别的格式在这里转码。工具结果里的图片是
- * 模型从仓库里读的，不转：不可信的图片不在 Host 进程里解码，放开的只有用户自己挑、自己点开的。
+ * Kitty 图形协议只收 PNG：用户自己粘贴、拖进来和提及的别的格式在这里转码，比 `box` 大的缩到它
+ * 以内。工具结果里的图片是模型从仓库里读的，不转：不可信的图片不在 Host 进程里解码，放开的只有
+ * 用户自己挑、自己点开的。
  */
 export async function loadPreview(
 	image: KnownImage,
 	/** 终端画不了图片时写的原因。 */
 	cannotDraw: string,
+	box: PreviewBox,
 ): Promise<ImagePreviewData> {
 	const preview: ImagePreviewData = {
 		number: image.number,
@@ -144,7 +166,11 @@ export async function loadPreview(
 	) {
 		return { ...preview, note: "这个终端只能显示 PNG；这张图片太大，没有转码" };
 	}
-	const png = await toPng(Buffer.from(data, "base64"), dimensions);
+	const cell = getCellDimensions();
+	const png = await toPng(Buffer.from(data, "base64"), dimensions, {
+		width: box.columns * cell.widthPx,
+		height: box.rows * cell.heightPx,
+	});
 	return png === undefined
 		? { ...preview, note: "这张图片解不开" }
 		: { ...preview, pixels: { data: png, mediaType: "image/png" } };

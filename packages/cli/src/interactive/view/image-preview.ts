@@ -22,18 +22,50 @@ const formatName = {
 	"image/webp": "WebP",
 };
 
-/** 一条横线，开头嵌着一段文字：浮层的上下两条边。 */
+/** 画不了图片时那张写着信息的卡片最多这么宽：都是文字，再宽不好读。 */
+const maxCardColumns = 100;
+
+/** 一条横线，开头嵌着一段文字：卡片的上下两条边。 */
 function rule(text: string, width: number): string {
 	const label = truncateToWidth(`─ ${text} `, width, "…");
 	return `${style.dim(label)}${style.dim("─".repeat(Math.max(0, width - visibleWidth(label))))}`;
 }
 
 /**
- * 图片的预览，显示在屏幕中间的浮层里：上面一条边写着是第几张图片、格式、像素尺寸和大小，中间是
- * 图片，下面一条边写着它的路径。终端画不了图片（不支持图形协议、格式不收、读不到字节）时中间换成
- * 这些信息和原因，路径是能点开的链接。
+ * 一张图片按比例缩到放得进 `maxColumns` 列、`maxRows` 行时占的列数和行数。只缩小不放大：小图按原来
+ * 的大小画，放大了是糊的。
+ */
+function fit(
+	size: { widthPx: number; heightPx: number },
+	maxColumns: number,
+	maxRows: number,
+): { columns: number; rows: number } {
+	const cell = getCellDimensions();
+	const scale = Math.min(
+		1,
+		(maxColumns * cell.widthPx) / size.widthPx,
+		(maxRows * cell.heightPx) / size.heightPx,
+	);
+	// 除出来的数差一点点就会多进一格，所以再按上限截一次
+	const cells = (pixels: number, cellPixels: number, most: number) =>
+		Math.max(1, Math.min(most, Math.ceil((pixels * scale) / cellPixels)));
+	return {
+		columns: cells(size.widthPx, cell.widthPx, maxColumns),
+		rows: cells(size.heightPx, cell.heightPx, maxRows),
+	};
+}
+
+/**
+ * 图片的预览，显示在屏幕中间的浮层里。终端画得出图片时浮层里只有图片，旁边不写字：打开预览就是
+ * 为了看图。画不了（不支持图形协议、格式不收、读不到字节）时是一张卡片：上面一条边写着是第几张
+ * 图片、格式、像素尺寸和大小，中间是这些信息和原因，路径是能点开的链接，下面一条边写着它的路径
+ * 和怎样关闭。
  */
 export class ImagePreview implements Component {
+	/**
+	 * 浮层的宽度（列）。画图片时是图片占的列数：浮层和图片一样大，点在图片旁边就是点在浮层外面。
+	 */
+	readonly columns: number;
 	readonly #preview: ImagePreviewData;
 	readonly #home: string | undefined;
 	readonly #close: () => void;
@@ -44,7 +76,7 @@ export class ImagePreview implements Component {
 		options: {
 			/** 主目录，路径里用 `~` 代替。 */
 			home: string | undefined;
-			/** 图片最多占的列数和行数。 */
+			/** 预览最多占的列数和行数。 */
 			maxColumns: number;
 			maxRows: number;
 			close(): void;
@@ -54,25 +86,22 @@ export class ImagePreview implements Component {
 		this.#home = options.home;
 		this.#close = options.close;
 		const { pixels } = preview;
-		if (pixels === undefined) return;
-		// 小图按原来的大小画，不放大到占满浮层：放大了是糊的
+		if (pixels === undefined) {
+			this.columns = Math.min(options.maxColumns, maxCardColumns);
+			return;
+		}
 		const size = getImageDimensions(pixels.data, pixels.mediaType);
-		const cell = getCellDimensions();
-		const natural =
+		// 文件头里读不出尺寸时不知道它占多大，把能占的地方都给它
+		const box =
 			size === null
 				? { columns: options.maxColumns, rows: options.maxRows }
-				: {
-						columns: Math.ceil(size.widthPx / cell.widthPx),
-						rows: Math.ceil(size.heightPx / cell.heightPx),
-					};
+				: fit(size, options.maxColumns, options.maxRows);
+		this.columns = box.columns;
 		this.#image = new Image(
 			pixels.data,
 			pixels.mediaType,
 			{ fallbackColor: style.dim },
-			{
-				maxWidthCells: Math.min(options.maxColumns, natural.columns),
-				maxHeightCells: Math.min(options.maxRows, natural.rows),
-			},
+			{ maxWidthCells: box.columns, maxHeightCells: box.rows },
 		);
 	}
 
@@ -114,6 +143,9 @@ export class ImagePreview implements Component {
 	}
 
 	render(width: number): string[] {
+		// 只有图片那几行，由界面库原样输出。`Image` 自己从宽度里留出 2 列，这里补回去：浮层有多宽
+		// 图片就画多宽
+		if (this.#image !== undefined) return this.#image.render(width + 2);
 		const { number, mediaType, dimensions, bytes, path } = this.#preview;
 		const title = [
 			`图片 #${number}`,
@@ -131,9 +163,7 @@ export class ImagePreview implements Component {
 				: `${tailPath(sanitize(shortPath(path, this.#home)), width - visibleWidth(hint) - 7, visibleWidth)} · `;
 		return [
 			rule(title, width),
-			...(this.#image === undefined
-				? this.#card(width)
-				: this.#image.render(width)),
+			...this.#card(width),
 			clipped(rule(`${location}${hint}`, width), width),
 		];
 	}
