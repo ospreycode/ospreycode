@@ -388,7 +388,7 @@ npx vitest run packages/evaluation/test/mem0.test.ts
 
 ## LongMemEval 的检索专项
 
-单独量 `@ospreycode/memory` 的检索有多准：不调用模型，不联网。做法和指标照 LongMemEval 官方的检索评测，见设计文档的"首批 benchmark"。代码和测试已经有了，完整的数据还没有运行过。
+单独量 `@ospreycode/memory` 的检索有多准：不调用模型，不联网。做法和指标照 LongMemEval 官方的检索评测，见设计文档的"首批 benchmark"。完整的数据运行过一遍（约两分钟），结果和同一个文件上官方 BM25 的对照也写在那里。
 
 - 数据是 `xiaowu0162/longmemeval-cleaned` 里的 `longmemeval_s_cleaned.json`（277 MB），不随代码提交：按 `longMemEvalData` 里的 revision 从 Hugging Face 下载。`loadLongMemEval(路径, longMemEvalData.sha256)` 读入并核对 SHA-256，对不上就报错。
 - `rankLongMemEval(题目, 目录)` 每道题用一个临时的记忆库：用户一侧的每个轮次写成一条记忆，用问题作查询经 `MemoryStore.search` 排序。拒答题和用户一侧没有证据轮次的题跳过。

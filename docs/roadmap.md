@@ -58,7 +58,7 @@
 | 上下文压缩，经 Host 的 token 计数接口 | P3 | 进行中 | api 的[上下文压缩](packages/api.md#上下文压缩)和 [token 计数](packages/api.md#token-计数) |
 | 保留题集、memory 连续场景、逐项关闭模块的对比、开关沙盒的对比、版本对比；DeepSWE v1.1 作主 benchmark | P4 | 进行中 | evaluation 的[防止刷分](packages/evaluation.md#防止刷分)、[Memory 评测](packages/evaluation.md#memory-评测)、[对比实验](packages/evaluation.md#对比实验)和[首批 benchmark](packages/evaluation.md#首批-benchmark) |
 | Mem0 作记忆评测的外部系统对照组 | P4 | 进行中 | evaluation 的 [Memory 评测](packages/evaluation.md#memory-评测) |
-| 更多 benchmark：LongMemEval 的检索专项 | P5 | 进行中 | evaluation 的[首批 benchmark](packages/evaluation.md#首批-benchmark)；overview 的[实施阶段](overview.md#实施阶段) |
+| 更多 benchmark：LongMemEval 的检索专项 | P5 | 已完成 | evaluation 的[首批 benchmark](packages/evaluation.md#首批-benchmark)；overview 的[实施阶段](overview.md#实施阶段) |
 | 更多模型服务（Azure、Foundry、AWS、Vertex、Gemini） | P5 | 进行中 | api 的 [P5 增加的服务](packages/api.md#p5-增加的服务)、[认证](packages/api.md#认证)和 [Gemini 的转换规则](packages/api.md#gemini-的转换规则)；overview 的[实施阶段](overview.md#实施阶段) |
 | 输出凭据的命令（云厂商的短期凭据） | P5 | 已完成 | agent-host 的[凭据和登录](packages/agent-host.md#凭据和登录) |
 | 更多平台（Windows、Intel Mac、musl、Ubuntu 26.04、Debian 和 Fedora、Linux 桌面；条件见下表） | P5 | 未开始 | overview 的[支持的平台](overview.md#支持的平台)和[实施阶段](overview.md#实施阶段) |
