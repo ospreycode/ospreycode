@@ -1,0 +1,109 @@
+import {
+	type Component,
+	isViewportTUI,
+	ScrollView,
+	type Terminal,
+	TuiAltScreen,
+	TuiMainScreen,
+	VStack,
+} from "@earendil-works/pi-tui";
+import type { TuiMode } from "@ospreycode/agent-host";
+import type { Clipboard } from "./clipboard.js";
+import { style } from "./view/theme.js";
+
+/** 交互界面的渲染器：`regular` 写在终端的主缓冲区里，`fullscreen` 占着备用缓冲区。 */
+export type Screen = TuiMainScreen | TuiAltScreen;
+
+/**
+ * 按渲染方式建渲染器。全屏时界面库接管鼠标：滚轮滚动对话区，拖动框选的文字交给系统剪贴板；这个
+ * 环境写不了剪贴板时由界面库改用终端的 OSC 52。
+ */
+export function createScreen(
+	terminal: Terminal,
+	mode: TuiMode,
+	clipboard: Clipboard,
+): Screen {
+	if (mode === "regular") return new TuiMainScreen(terminal);
+	const { writeText } = clipboard;
+	return new TuiAltScreen(terminal, undefined, undefined, {
+		wheelScrollLines: "auto",
+		scrollToEndIndicator: () => style.selected(" ↓ 回到最新的内容 · Ctrl+End "),
+		...(writeText === undefined
+			? {}
+			: {
+					copySelection: async (text: string) => {
+						try {
+							await writeText(text);
+							return true;
+						} catch (error) {
+							// 剪贴板是外部的：写不进去时把原因显示在界面上，session 照常继续
+							return (error as Error).message;
+						}
+					},
+				}),
+	});
+}
+
+/** 交互界面从上到下的几个部分。 */
+export interface ScreenParts {
+	/** 对话区：高度不封顶。 */
+	conversation: Component;
+	/** 排队的输入。 */
+	queue: Component;
+	/** 一行按键提示。 */
+	hint: Component;
+	/** 输入框的位置：输入框、询问的面板或者列表。 */
+	bottom: Component;
+	/** 状态行。 */
+	status: Component;
+}
+
+/**
+ * 把界面的各个部分放到渲染器上。主缓冲区里从上到下排开，滚动交给终端。全屏时屏幕只有终端那么高：
+ * 对话区占满剩下的高度、自己滚动，其余几项固定在屏幕底部，不会被变长的对话顶出去。
+ */
+export function mountScreen(screen: Screen, parts: ScreenParts): void {
+	// 全屏时也照从上到下的顺序挂着：停下时按这个顺序把完整的对话写回主缓冲区（见 stopScreen）
+	for (const component of [
+		parts.conversation,
+		parts.queue,
+		parts.hint,
+		parts.bottom,
+		parts.status,
+	]) {
+		screen.addChild(component);
+	}
+	if (!isViewportTUI(screen)) return;
+	const transcript = new ScrollView(parts.conversation, {
+		follow: "end",
+		primary: true,
+		overscroll: "chain",
+		scrollbar: "auto",
+	});
+	const dock = new VStack([
+		{ component: parts.queue, shrink: 1, minSize: 0 },
+		{ component: parts.hint, shrink: 0 },
+		// 询问的面板比屏幕还高时留下末尾：选项和按键提示在那里，被裁掉的开头用滚轮看
+		{
+			component: new ScrollView(parts.bottom, { follow: "end" }),
+			shrink: 1,
+			minSize: 3,
+		},
+		{ component: parts.status, shrink: 0 },
+	]);
+	screen.setLayoutRoot(
+		new VStack([
+			{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+		]),
+	);
+}
+
+/**
+ * 停下界面、放开终端。全屏时回到主缓冲区，由界面库把最后一份完整的内容写在原来的终端内容后面：
+ * 先撤掉布局，布局里对话区的高度从 0 算起，照它写回去只有一行。
+ */
+export function stopScreen(screen: Screen): void {
+	if (isViewportTUI(screen)) screen.setLayoutRoot(undefined);
+	screen.stop();
+}

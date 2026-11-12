@@ -10,6 +10,8 @@ const visibleItems = 10;
 
 /** 从列表里选一项：`/model` 的模型列表和 `/bg` 的后台命令列表。 */
 export class Picker implements Component {
+	/** 全屏时翻页键归列表，不滚动对话区：界面库只看拿着焦点的这一层。 */
+	readonly capturesViewportInput = true;
 	readonly #title: string;
 	readonly #hint: string;
 	readonly #list: SelectList;

@@ -44,7 +44,7 @@ ospreycode "把 README 里的安装步骤补全"     # 带着第一条输入打�
 ospreycode -C ~/code/app -m claude-haiku-5-5 --sandbox workspace-write --approval on-request
 ```
 
-要在终端里运行，接受 `-C/--cd`、`-m/--model`、`--sandbox`、`--approval`（`on-request`、`granular`、`never`）、`--rules`、`--credential-file` 和 `--credential-env`。界面显示模型的回复和每次工具调用的过程；需要批准的动作（命令、文件改动、权限申请、访问没有放行的域名、超出预算）在输入框的位置询问，写明要做的具体内容，可以批准这一次、本任务内批准、保存为规则、拒绝或拒绝并告诉模型原因。询问出现时没有选中的选项：先按 ↑↓ 选择，再按 Enter 确认，Esc 是拒绝。
+要在终端里运行，接受 `-C/--cd`、`-m/--model`、`--sandbox`、`--approval`（`on-request`、`granular`、`never`）、`--tui-mode`（`fullscreen`、`regular`）、`--rules`、`--credential-file` 和 `--credential-env`。界面显示模型的回复和每次工具调用的过程；需要批准的动作（命令、文件改动、权限申请、访问没有放行的域名、超出预算）在输入框的位置询问，写明要做的具体内容，可以批准这一次、本任务内批准、保存为规则、拒绝或拒绝并告诉模型原因。询问出现时没有选中的选项：先按 ↑↓ 选择，再按 Enter 确认，Esc 是拒绝。
 
 | 按键 | 作用 |
 |---|---|
@@ -58,6 +58,15 @@ ospreycode -C ~/code/app -m claude-haiku-5-5 --sandbox workspace-write --approva
 | Shift+Tab | 切换推理强度 |
 | Ctrl+C | 取消当前的动作（关掉列表、取消任务、清空输入框）；空闲时连按两次退出 |
 | Ctrl+D | 输入框为空时退出 |
+| 滚轮、PageUp、PageDown | 全屏时滚动对话区；Ctrl+Home、Ctrl+End 到开头和末尾 |
+| Ctrl+Shift+F | 全屏时在对话里搜索，Enter 和 Shift+Enter 到下一处、上一处，Esc 关闭 |
+
+界面默认全屏：占着终端的备用缓冲区，对话区自己滚动，输入框和状态行固定在屏幕底部；拖动鼠标框选的文字复制到剪贴板。退出后终端回到原来的内容，这次会话的完整对话写在后面。要让界面写在终端的主缓冲区里、用终端自己的滚动和选择（比如在 Zellij 里），加 `--tui-mode regular`，或者在 `config.toml` 里写：
+
+```toml
+[ui]
+tui_mode = "regular"
+```
 
 | 会话内命令 | 作用 |
 |---|---|

@@ -1,4 +1,5 @@
 import { ProcessTerminal } from "@earendil-works/pi-tui";
+import type { TuiMode } from "@ospreycode/agent-host";
 import type { ResumeTarget } from "../args/resume.js";
 import type { ApprovalPolicy, SessionArgs } from "../args/session.js";
 import type { CliContext } from "../context.js";
@@ -12,6 +13,8 @@ export interface InteractiveOptions {
 	session: SessionArgs;
 	/** `--approval`；没有写时按配置。 */
 	approvalPolicy?: ApprovalPolicy;
+	/** `--tui-mode`；没有写时按配置的 `[ui] tui_mode`，默认全屏。 */
+	tuiMode?: TuiMode;
 	/** 命令行里写的第一条输入；没有写时等用户输入。 */
 	prompt?: string;
 	/**

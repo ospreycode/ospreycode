@@ -4,7 +4,6 @@ import {
 	isKeyRelease,
 	matchesKey,
 	type Terminal,
-	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import {
 	AgentStartError,
@@ -26,6 +25,7 @@ import {
 	type SessionConfig,
 	type SessionOptions,
 	SnapshotError,
+	type TuiMode,
 	type UndoResult,
 	WorkspaceError,
 } from "@ospreycode/agent-host";
@@ -68,6 +68,12 @@ import type { InteractiveOptions } from "./index.js";
 import { Attachments, composeInput, editorText } from "./input.js";
 import { MemoryCommands } from "./memory.js";
 import { cycle, effortLevels, usableModels } from "./models.js";
+import {
+	createScreen,
+	mountScreen,
+	type Screen,
+	stopScreen,
+} from "./screen.js";
 import { pickSession } from "./session-picker.js";
 import { InteractiveState, type ServerQuestion } from "./state.js";
 import type { ApprovalAnswer, InputBlock } from "./types.js";
@@ -142,7 +148,7 @@ class Interactive {
 	readonly #clipboard: Clipboard;
 	readonly #terminal: Terminal;
 	readonly #state: InteractiveState;
-	readonly #tui: TuiMainScreen;
+	readonly #tui: Screen;
 	readonly #conversation: ConversationView;
 	readonly #editor: PromptEditor;
 	/** 输入框的位置：有询问时换成询问的面板，打开列表时换成列表。 */
@@ -188,6 +194,8 @@ class Interactive {
 		context: CliContext;
 		clipboard: Clipboard;
 		terminal: Terminal;
+		/** 界面的渲染方式：启动时定下，会话中不变。 */
+		mode: TuiMode;
 		state: InteractiveState;
 		options: SessionOptions;
 		config: SessionConfig;
@@ -208,7 +216,7 @@ class Interactive {
 			notice: (text) => this.#state.notice(text),
 		});
 
-		this.#tui = new TuiMainScreen(parts.terminal);
+		this.#tui = createScreen(parts.terminal, parts.mode, parts.clipboard);
 		this.#conversation = new ConversationView(this.#state);
 		this.#editor = new PromptEditor(this.#tui, {
 			followUp: (text) => this.#send(text, "follow_up"),
@@ -232,13 +240,13 @@ class Interactive {
 				this.#config.workspace,
 			),
 		);
-		this.#tui.addChild(this.#conversation);
-		this.#tui.addChild(new QueueView(this.#state));
-		this.#tui.addChild(new HintLine(() => this.#hint()));
-		this.#tui.addChild(this.#bottom);
-		this.#tui.addChild(
-			new StatusLine(this.#state.status, parts.context.env.HOME),
-		);
+		mountScreen(this.#tui, {
+			conversation: this.#conversation,
+			queue: new QueueView(this.#state),
+			hint: new HintLine(() => this.#hint()),
+			bottom: this.#bottom,
+			status: new StatusLine(this.#state.status, parts.context.env.HOME),
+		});
 		this.#tui.addInputListener((data) => this.#intercept(data));
 	}
 
@@ -281,7 +289,7 @@ class Interactive {
 			unsubscribe();
 			this.#stopped = true;
 			await this.#terminal.drainInput();
-			this.#tui.stop();
+			stopScreen(this.#tui);
 		}
 	}
 
@@ -531,6 +539,7 @@ class Interactive {
 		const command = parseCommand(text);
 		if (command !== undefined) {
 			this.#editor.addToHistory(text);
+			this.#latest();
 			this.#guard(() => runCommand(command, this.#actions));
 			return;
 		}
@@ -540,6 +549,7 @@ class Interactive {
 		});
 		if (input.length === 0) return;
 		this.#editor.addToHistory(text);
+		this.#latest();
 		this.#guard(() =>
 			this.#serial(async () => {
 				const { taskId, queue } = this.#state;
@@ -562,6 +572,11 @@ class Interactive {
 				}
 			}),
 		);
+	}
+
+	/** 全屏时把滚上去的对话区带回末尾：刚提交的输入和对它的回应都显示在那里。 */
+	#latest(): void {
+		if (this.#tui.mode === "fullscreen") this.#tui.scrollToBottom();
 	}
 
 	/** 记下一条刚交给 session 的 steering 或 follow-up：没有 hooks 要检查时它已经在队列里，不用记。 */
@@ -617,6 +632,8 @@ class Interactive {
 		this.#config = this.#session.config();
 		replay(this.#state, this.#session, this.#held);
 		this.#conversation.clear();
+		// 框选的范围是按原来的对话记的
+		if (this.#tui.mode === "fullscreen") this.#tui.resetTextSelection();
 		// 列表不在屏幕上了：要重新列出才能再按序号引用
 		this.#checkpoints.forget();
 		this.#branches.forget();
@@ -1112,6 +1129,8 @@ async function chooseSession(
 		host: Host;
 		workspace: string;
 		terminal: Terminal;
+		mode: TuiMode;
+		clipboard: Clipboard;
 		context: CliContext;
 	},
 ): Promise<{ sessionId: string } | { exitCode: number }> {
@@ -1120,7 +1139,7 @@ async function chooseSession(
 		return { sessionId: targetSessionId(resume, host, workspace) };
 	}
 	const picked = await pickSession(
-		parts.terminal,
+		parts,
 		parts.context,
 		resumableSessions(host, workspace),
 	);
@@ -1153,12 +1172,15 @@ export async function runInteractiveOn(
 	};
 	const config = host.resolveConfig(sessionOptions);
 	context.useProxy(config.proxy);
+	const mode = options.tuiMode ?? config.ui.tuiMode;
 	let sessionId: string | undefined;
 	if (options.resume !== undefined) {
 		const chosen = await chooseSession(options.resume, {
 			host,
 			workspace: config.workspace,
 			terminal,
+			mode,
+			clipboard,
 			context,
 		});
 		if ("exitCode" in chosen) return chosen.exitCode;
@@ -1194,6 +1216,7 @@ export async function runInteractiveOn(
 			context,
 			clipboard,
 			terminal,
+			mode,
 			state,
 			options: sessionOptions,
 			// 恢复的 session 的模型和推理强度按记录，不一定是启动参数解析出来的那一份

@@ -35,6 +35,12 @@ type Step =
  */
 export class ElicitationPanel implements Component, Focusable {
 	focused = false;
+
+	/** 全屏时翻页键归打开着的选择列表，不滚动对话区：界面库只看拿着焦点的这一层。 */
+	get capturesViewportInput(): boolean {
+		return this.#list !== undefined;
+	}
+
 	readonly #server: string;
 	readonly #message: string;
 	readonly #fields: readonly Field[] | undefined;

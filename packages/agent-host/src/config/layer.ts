@@ -108,10 +108,17 @@ export interface McpClientLayer {
 	callback_port?: number;
 }
 
+/** 交互界面的渲染方式：`fullscreen` 用终端的备用缓冲区，对话区由界面自己滚动；`regular` 写在主缓冲区里，滚动交给终端。 */
+export type TuiMode = "fullscreen" | "regular";
+
+const tuiModes: readonly TuiMode[] = ["fullscreen", "regular"];
+
 /** `[ui]`：交互界面的显示设置。 */
 export interface UiLayer {
 	/** 是否显示模型的推理内容。 */
 	show_reasoning?: boolean;
+	/** 交互界面的渲染方式。 */
+	tui_mode?: TuiMode;
 }
 
 /**
@@ -491,11 +498,24 @@ function ui(value: unknown, key: string): UiLayer {
 	const result: UiLayer = {};
 	for (const [name, item] of Object.entries(table(value, key))) {
 		const itemKey = joinKey(key, name);
-		if (name !== "show_reasoning") throw new KeyError(itemKey, "不认识的键");
-		if (typeof item !== "boolean") {
-			throw new KeyError(itemKey, "要是 true 或 false");
+		switch (name) {
+			case "show_reasoning":
+				if (typeof item !== "boolean") {
+					throw new KeyError(itemKey, "要是 true 或 false");
+				}
+				result.show_reasoning = item;
+				break;
+			case "tui_mode": {
+				const mode = tuiModes.find((candidate) => candidate === item);
+				if (mode === undefined) {
+					throw new KeyError(itemKey, `要是 ${tuiModes.join("、")} 之一`);
+				}
+				result.tui_mode = mode;
+				break;
+			}
+			default:
+				throw new KeyError(itemKey, "不认识的键");
 		}
-		result.show_reasoning = item;
 	}
 	return result;
 }

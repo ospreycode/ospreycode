@@ -189,7 +189,8 @@ describe("/diff", () => {
 					textReply("写好了"),
 				][call] ?? textReply("好"),
 		);
-		const { terminal } = await fixture.start();
+		// 两百行的 diff 比屏幕长：在主缓冲区里从终端的滚动历史看全
+		const { terminal } = await fixture.start({ tuiMode: "regular" });
 		await enter(terminal, "写一个长文件", "写好了");
 		await finished(terminal, 1);
 

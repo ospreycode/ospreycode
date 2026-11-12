@@ -95,6 +95,13 @@ const interactiveOptions: readonly OptionSpec[] = [
 		choices: ["on-request", "never", "granular"],
 		description: "审批策略",
 	},
+	{
+		name: "tui-mode",
+		value: "MODE",
+		choices: ["fullscreen", "regular"],
+		description:
+			"界面的渲染方式：fullscreen 占满终端、对话区自己滚动，regular 写在终端的主缓冲区里；不写时按配置，默认 fullscreen",
+	},
 ];
 
 /** 非交互模式的选项，`exec` 和 `exec resume` 共用。 */

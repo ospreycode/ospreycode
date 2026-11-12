@@ -410,6 +410,45 @@ describe.runIf(process.platform === "darwin")("审批", () => {
 		expect(shown.match(/→ 已拒绝/g)).toHaveLength(2);
 	});
 
+	test("全屏时终端比询问的面板矮：选项和按键提示留在屏幕上，裁掉的是面板的开头", async () => {
+		const curl = (host: string) =>
+			`curl -s -o /dev/null --max-time 20 'http://${host}:8080/'`;
+		await fixture.useModel((call) =>
+			call === 0
+				? shellCallReply(
+						`${curl("one.example.invalid")} & ${curl("two.example.invalid")} & wait`,
+					)
+				: textReply("两个都处理了"),
+		);
+		// 后面还排着一个询问时，面板连要做的具体内容一起显示，比 10 行的屏幕高
+		const { terminal } = await fixture.start({
+			sandboxMode: "workspace-write",
+			rows: 10,
+		});
+		expect(terminal.alternate).toBe(true);
+		await terminal.type("连两个域名");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("先按 ↑↓ 选择");
+
+		const rows = terminal.visible().split("\n");
+		expect(rows).toHaveLength(10);
+		expect(rows.slice(3, 9)).toEqual([
+			"  允许这一次",
+			"  本任务内允许这个域名",
+			"  允许，并保存为规则",
+			"  拒绝",
+			"  拒绝，并写一句话告诉模型",
+			"先按 ↑↓ 选择，再按 Enter 确认 · Esc 拒绝 · Ctrl+C 拒绝并取消任务",
+		]);
+		expect(rows[9]).toMatch(/^fake · 推理 \w+ · 沙盒 workspace-write · /);
+		expect(terminal.visible()).not.toContain("需要确认：访问网络");
+
+		await terminal.press(key.escape);
+		await terminal.waitForVisible("先按 ↑↓ 选择");
+		await terminal.press(key.escape);
+		await terminal.waitFor("两个都处理了");
+	});
+
 	test("询问显示着的时候按 Ctrl+C：取消任务，询问撤掉，命令不运行", async () => {
 		await fixture.useModel(() => escalatedTouch("cancelled.txt"));
 		const { terminal } = await start();

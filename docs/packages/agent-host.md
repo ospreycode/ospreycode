@@ -205,7 +205,7 @@ Host 的文件全部放在一个根目录 `~/.ospreycode/` 下。所有沙盒对
 | `proxy` | 访问模型服务和远程 MCP server 用的 HTTP 代理；不设时取 Host 启动环境里的 `HTTPS_PROXY`；由 CLI 入口应用（见 overview 的[语言和运行环境](../overview.md#语言和运行环境)） | 忽略 |
 | `session_retention_days` | session 记录的保存天数，默认 30，最小 1（P3，见 session-store 的[保存期限](session-store.md#保存期限)）；启动参数也不能改 | 忽略 |
 | `[tools]` | 可选工具的开关，写成 `<工具名> = true` 或 `false`。可选工具是 runtime 提供、默认不启用的工具（如 `grep`、`ls`）；写了默认启用的工具或不存在的工具名时报错：默认工具关掉后 agent 没法工作。打开的可选工具排在默认工具之后。`memory_*` 不在这里开关，随长期记忆启用，排在可选工具之后：长期记忆只有评测能关（见 memory 的[评测](memory.md#评测)） | 可以覆盖 |
-| `[ui]` | 显示设置：`show_reasoning` 是否显示模型的推理内容，默认 `true`。Host 只读取和合并，交给前端使用 | 可以覆盖 |
+| `[ui]` | 显示设置：`show_reasoning` 是否显示模型的推理内容，默认 `true`；`tui_mode` 是交互界面的渲染方式，`fullscreen`（默认）或 `regular`（见[交互界面](#交互界面)）。Host 只读取和合并，交给前端使用 | 可以覆盖 |
 | `[agents.<名字>]` | 子 agent 的定义（P5，见[子 agent 和多 worker](#子-agent-和多-worker)）：`description`（必填）、`instructions`、`model`、`reasoning_effort`、`sandbox_mode`（只能写 `read-only`）、`tools`、`workspace`（`shared` 或 `isolated`）。一个定义也没有时不启用子 agent 的工具 | 可以新增定义；和用户级同名的忽略，`model` 忽略 |
 | `[server_tools.<服务名>]` | 模型服务自带的服务端工具（P5，见 api 的[服务端工具](api.md#服务端工具)）：写成 `web_search = true`、`web_fetch = true`，默认都是 `false`，按模型条目的 `service` 分别打开。只对模型条目的 `server_tools` 里列出的工具起作用。没有对应的启动参数：评测和脚本里保持关闭。开关在打开 session 时定下，`/reload` 不改它，子 agent 的模型请求用同一份 | 只能写 `false` |
 
@@ -557,7 +557,7 @@ CLI 是单独的 `cli` 包，只依赖 `agent-host` 的 `sdk/` 入口和终端�
 
 | 命令 | 作用 | 阶段 |
 |---|---|---|
-| `ospreycode [PROMPT]` | 交互模式；`-C/--cd DIR`、`-m/--model`、`--sandbox MODE`、`--approval POLICY`、`--rules FILE`、`--credential-file ID=PATH`、`--credential-env ID=NAME` | P1 |
+| `ospreycode [PROMPT]` | 交互模式；`-C/--cd DIR`、`-m/--model`、`--sandbox MODE`、`--approval POLICY`、`--tui-mode MODE`（`fullscreen` 或 `regular`，覆盖 `[ui] tui_mode`）、`--rules FILE`、`--credential-file ID=PATH`、`--credential-env ID=NAME` | P1 |
 | `ospreycode exec [PROMPT\|-]` | 非交互模式，审批策略固定 `never`；接受交互模式除 `--approval` 外的全部参数，另有 `--json`、`-o/--output-last-message FILE`（写主任务的最后一条回复）、`--max-cost`、`--max-requests`、`--timeout`（整个运行的时限，从主任务开始时算起，包括等后台命令和处理通知的时间；到时取消，以 `budget_exceeded` 和退出码 3 结束。主任务的时限交给 Host 作为它的时间上限，`task.ended` 记的才是 `budget_exceeded`；打开 session 另有自己的超时，不算在内） | P1 |
 | `ospreycode resume [SESSION_ID\|--last]` | 恢复会话，无参数时弹出选择器 | P3 |
 | `ospreycode exec resume <SESSION_ID\|--last> [PROMPT]` | 恢复会话并非交互地继续 | P3 |
@@ -619,9 +619,14 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 
 交互界面用 pi 的终端界面库 `@earendil-works/pi-tui`，固定到确切版本 1.5.0，不自己实现。
 
-- 它是 MIT 许可，3 个依赖都写确切版本，没有安装脚本，带 provenance。功能覆盖本节的设计：差分渲染、多行编辑器和输入历史、括号粘贴、Kitty 键盘协议（区分 Enter 和 Alt+Enter，steering 和 follow-up 要靠它）、Markdown、浮层和选择列表、图片显示，剪贴板里的图片由随包的预编译模块读取。
+- 它是 MIT 许可，3 个依赖都写确切版本，没有安装脚本，带 provenance。功能覆盖本节的设计：差分渲染、主缓冲区和备用缓冲区两种渲染器、多行编辑器和输入历史、括号粘贴、Kitty 键盘协议（区分 Enter 和 Alt+Enter，steering 和 follow-up 要靠它）、Markdown、浮层和选择列表、图片显示，剪贴板里的图片由随包的预编译模块读取。
 - 没选 Ink：它的依赖写的是 `^` 范围，发布后无法固定间接依赖，也没有多行输入和 Markdown。
 - pi-tui 在 1.x 的次版本里也有破坏性改动，所以固定版本，升级时逐版核对它的 CHANGELOG；随包预编译的 `.node` 文件，引入时核对来源和许可证。
+- **全屏和主缓冲区**：默认全屏（照 pi 和 Codex），用界面库的 `TuiAltScreen`：进终端的备用缓冲区，屏幕只有终端那么高，对话区在自己的 `ScrollView` 里滚动，其余几项固定在屏幕底部，不会被变长的对话顶出去。`--tui-mode regular` 或 `[ui] tui_mode = "regular"` 退回主缓冲区（`TuiMainScreen`）：界面写在主缓冲区里，对话区随内容往下长，滚动交给终端；对备用缓冲区的滚动支持差的环境（如 Zellij）用它。启动参数优先于配置，渲染方式在启动时定下，会话中不换。
+  - 全屏时界面库接管鼠标和几个按键：滚轮和 PageUp、PageDown 滚动对话区，Ctrl+Home、Ctrl+End 到开头和末尾，Ctrl+Shift+F 在对话里搜索；拖动框选的文字复制到系统剪贴板（随包的剪贴板模块写不了时用终端的 OSC 52）。输入框的按键不变；选择列表（模型、后台命令、补全、表单里的选项）开着时翻页键归列表。
+  - 对话区停在末尾时跟着新内容走；滚上去之后停在原处，屏幕上出现"回到最新的内容"，点它、按 Ctrl+End 或滚回末尾接着跟。提交输入时回到末尾：刚提交的输入和对它的回应都显示在那里。
+  - 输入框的位置（询问的面板、列表）比留给它的屏幕高时显示末尾：选项和按键提示在那里，裁掉的开头用滚轮看。主缓冲区里不用处理，终端自己往上滚。
+  - 退出时回到主缓冲区，原来的终端内容还在，这次会话完整的对话写在它后面，和主缓冲区模式退出后留下的一样。布局里对话区的高度从 0 算起，照布局写回去只有一行，所以停下之前先撤掉布局，由界面库按从上到下的顺序写回。`resume` 的选择列表也按这个设置，全屏时退出不留痕迹。
 - **布局**：从上到下是对话区、排队的输入、一行按键提示、输入框和状态行（模型、推理强度、沙盒模式、审批策略、工作区）。有询问时输入框的位置换成询问的面板，打开模型、后台命令或排队输入的列表时换成列表：同一时刻只有一处接收按键。状态行取 SDK 的 `session.config()`，不由 CLI 重新解析配置：配置文件改了而还没有 `/reload` 时，重新解析会把没生效的沙盒模式和审批策略显示出来。`/model`、`/effort` 成功后状态行马上变，`model.changed` 等事件到了（用到新设置的第一次模型请求之前）再在对话区记一行。
 - **显示**：对话区显示用户输入、流式的 Markdown 回复、推理内容（按 `[ui] show_reasoning`）、工具调用（名字、参数的要点、输出的最后 8 行、结果和耗时）、模型服务一侧执行的工具（回复结束后各一行，如 `web_search: <关键词>`：它们没有流式事件，见 api 的[服务端工具](api.md#服务端工具)）、警告和错误、每个 task 的结果、用量和费用。对话区只留看得出进展的几行，完整的结果在 session 记录里。同一个原因只显示一行：agent 进程在 task 中途异常退出时，原因显示在这个 task 结束的那一行，随后那条错误只显示原因之后的内容（agent 进程输出的末尾），没有就不显示；session 被 Host 关闭时显示 Host 的那条错误，不另加一行。`edit`、`write` 的改动按工具参数画成增删行：事件只在越界的询问里带 diff。只用终端的 16 色，跟着终端的主题走，不探测终端的能力。
 - **子 agent**：每个子 agent 在对话区占一条，随进展原地更新：定义的名字、模型、工具调用的次数和最近一次调用的要点，结束后换成结果、用量和费用；worker 另写它自己的工作区。它的回复和工具调用不逐条显示：几个子 agent 同时运行时会和主 agent 的输出混在一起，交回的结果照常作为给模型的通知显示。子 agent 发起的询问在面板标题和对话区里写明是哪个子 agent 的。
@@ -664,6 +669,7 @@ CLI 的 `--json` 输出和 `sdk/` 发给前端的事件用同一套结构，和 
 - P1：在 Linux 上运行 `agent-host/test/restart.test.ts` 里"发现新仓库"的三个测试（只在 Linux 上运行，macOS 上跳过；Host 一侧的接线已经在 macOS 上把平台判断强制打开验证过，没验证的是 bubblewrap 沙盒里新建的仓库确实被扫描到并在重启后受保护）。
 - P1：用真实任务的请求次数和费用分布核对默认预算。
 - P1：检查 Terminal.app、iTerm2、Ghostty、VS Code 终端和 tmux 上 Enter 和 Alt+Enter 能否区分，中文输入法和宽字符是否正常。
+- P1：在同样几种终端和 Zellij 上检查全屏模式：滚轮和翻页键滚动对话区、拖动框选后剪贴板里有内容、退出后主缓冲区里是原来的内容加完整的对话；滚动不正常的环境写进 README，提示用 `--tui-mode regular`。
 - P2：在 Linux 上实测插件版本目录和 `PLUGIN_DATA` 的读写范围（启动 server 之前建好目录）。
 - P2：用常见的本地 MCP server 实测密钥的 mask。
 - P2：实测 Linux 上每个 hook 单独进沙盒的延迟。

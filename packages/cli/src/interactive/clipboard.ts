@@ -8,14 +8,22 @@ import type { ImageAttachment } from "./input.js";
 export interface Clipboard {
 	/** 剪贴板里图片的字节；没有图片，或者这个环境读不了剪贴板时为空。读取出错时抛出。 */
 	readImage(): Promise<Uint8Array | undefined>;
+	/** 把文字写进剪贴板，写入出错时抛出；这个环境写不了剪贴板时没有这一项。 */
+	writeText?(text: string): Promise<void>;
 }
 
 /** 界面库随包带的剪贴板模块。 */
 export function systemClipboard(): Clipboard {
+	const native = getNativeClipboard();
+	const setText = native?.setText;
 	return {
 		async readImage() {
-			return (await getNativeClipboard()?.getImage()) ?? undefined;
+			return (await native?.getImage()) ?? undefined;
 		},
+		// Linux 上随包的模块不写剪贴板：没有这一项时界面改用终端的 OSC 52
+		...(native === undefined || setText === undefined
+			? {}
+			: { writeText: (text: string) => setText.call(native, text) }),
 	};
 }
 

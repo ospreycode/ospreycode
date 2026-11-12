@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import {
 	type FakeModelServer,
@@ -80,6 +81,34 @@ test("命令行上的 PROMPT 直接提交；Ctrl+C 是按键不是信号：第�
 	await terminal.waitFor("再按一次 Ctrl+C 退出");
 	terminal.write("\x03");
 	expect(await terminal.exit).toBe(0);
+});
+
+test("默认占着终端的备用缓冲区，退出时回到主缓冲区、把对话写在后面；--tui-mode regular 不进备用缓冲区", async () => {
+	const enter = "\x1b[?1049h";
+	const leave = "\x1b[?1049l";
+	const fullscreen = start();
+	await fullscreen.waitFor("Enter 发送");
+	await fullscreen.type("你好");
+	fullscreen.write("\r");
+	await fullscreen.waitFor("这是真进程的回复");
+	await fullscreen.waitFor("完成");
+	await fullscreen.type("/quit");
+	fullscreen.write("\r");
+	expect(await fullscreen.exit).toBe(0);
+
+	const raw = fullscreen.raw();
+	expect(raw.split(enter)).toHaveLength(2);
+	expect(raw.split(leave)).toHaveLength(2);
+	expect(raw.indexOf(enter)).toBeLessThan(raw.indexOf(leave));
+	const restored = stripTerminalSequences(raw.slice(raw.indexOf(leave)));
+	expect(restored).toContain("› 你好");
+	expect(restored).toContain("这是真进程的回复");
+
+	const regular = start("--tui-mode", "regular");
+	await regular.waitFor("Enter 发送");
+	regular.write("\x04");
+	expect(await regular.exit).toBe(0);
+	expect(regular.raw()).not.toContain(enter);
 });
 
 test("空输入框上 Ctrl+D 退出，退出码 0", async () => {

@@ -12,6 +12,9 @@ export const key = {
 	down: "\x1b[B",
 	altUp: "\x1b[1;3A",
 	shiftUp: "\x1b[1;2A",
+	pageUp: "\x1b[5~",
+	pageDown: "\x1b[6~",
+	ctrlEnd: "\x1b[1;5F",
 	space: " ",
 	backspace: "\x7f",
 	ctrlC: "\x03",
@@ -26,11 +29,21 @@ const ignored =
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
 	/^\x1b(?:\[[0-9;?<>=]*[ -/]*[@-~]|[\]_][^\x07\x1b]*(?:\x07|\x1b\\))/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
-const cursorMove = /^\x1b\[(\d*)([ABGHJK])/;
+const cursorMove = /^\x1b\[(\d*)(?:;(\d*))?([ABGHJK])/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
+const alternateScreen = /^\x1b\[\?1049([hl])/;
+
+/** 一个缓冲区里的内容和光标的位置。 */
+interface Buffer {
+	lines: string[];
+	row: number;
+	column: number;
+}
 
 /**
- * 测试用的终端：固定的行列数，把界面写出来的内容还原成屏幕上的文字，把按键送进界面。
- * 只认界面库的主屏渲染用到的那几种控制序列；屏幕之上滚出去的行也留着，和真终端的滚动历史一样。
+ * 测试用的终端：固定的行列数，把界面写出来的内容还原成屏幕上的文字，把按键和鼠标送进界面。
+ * 只认界面库的两种渲染用到的那几种控制序列。主缓冲区里屏幕之上滚出去的行也留着，和真终端的滚动
+ * 历史一样；备用缓冲区只有屏幕那么高、没有滚动历史，退出时主缓冲区原来的内容和光标都还在。
  */
 export class TestTerminal implements Terminal {
 	readonly columns: number;
@@ -40,6 +53,8 @@ export class TestTerminal implements Terminal {
 	#lines: string[] = [""];
 	#row = 0;
 	#column = 0;
+	/** 在备用缓冲区里时，留着的主缓冲区。 */
+	#main: Buffer | undefined;
 
 	constructor(columns = 100, rows = 40) {
 		this.columns = columns;
@@ -88,9 +103,11 @@ export class TestTerminal implements Terminal {
 	write(data: string): void {
 		let rest = data;
 		while (rest !== "") {
+			const screen = alternateScreen.exec(rest);
 			const move = cursorMove.exec(rest);
-			const skipped = move ?? ignored.exec(rest);
-			if (move !== null) this.#control(move[2], move[1]);
+			const skipped = screen ?? move ?? ignored.exec(rest);
+			if (screen !== null) this.#alternate(screen[1] === "h");
+			else if (move !== null) this.#control(move[3], move[1], move[2]);
 			if (skipped !== null) {
 				rest = rest.slice(skipped[0].length);
 			} else if (rest.startsWith("\r")) {
@@ -133,7 +150,23 @@ export class TestTerminal implements Terminal {
 		while (this.#lines.length <= this.#row) this.#lines.push("");
 	}
 
-	#control(command: string, argument: string): void {
+	/** 进出备用缓冲区：进去时主缓冲区原样留着，出来时换回它。 */
+	#alternate(enter: boolean): void {
+		if (enter === (this.#main !== undefined)) return;
+		if (enter) {
+			this.#main = { lines: this.#lines, row: this.#row, column: this.#column };
+			this.clearScreen();
+		} else if (this.#main !== undefined) {
+			({
+				lines: this.#lines,
+				row: this.#row,
+				column: this.#column,
+			} = this.#main);
+			this.#main = undefined;
+		}
+	}
+
+	#control(command: string, argument: string, second = ""): void {
 		const count = argument === "" ? 1 : Number(argument);
 		switch (command) {
 			case "A":
@@ -146,8 +179,8 @@ export class TestTerminal implements Terminal {
 				this.#column = count - 1;
 				break;
 			case "H":
-				this.#row = 0;
-				this.#column = 0;
+				this.#moveTo(count - 1);
+				this.#column = second === "" ? 0 : Number(second) - 1;
 				break;
 			case "J":
 				// 界面库清屏时连滚动历史一起清：2J、H、3J 连着发
@@ -159,6 +192,11 @@ export class TestTerminal implements Terminal {
 				else this.#lines[this.#row] = this.#before();
 				break;
 		}
+	}
+
+	/** 界面现在是不是占着备用缓冲区。 */
+	get alternate(): boolean {
+		return this.#main !== undefined;
 	}
 
 	/** 终端上的全部文字，包括滚出屏幕的。 */
@@ -234,6 +272,17 @@ export class TestTerminal implements Terminal {
 			this.#onInput(data);
 		}
 		await delay(0);
+	}
+
+	/** 在屏幕的一个位置上滚动滚轮：`lines` 是格数，负数向上；坐标从 0 起，不给时在屏幕左上角。 */
+	async wheel(lines: number, at = { x: 0, y: 0 }): Promise<void> {
+		const button = lines < 0 ? 64 : 65;
+		await this.press(
+			...Array.from(
+				{ length: Math.abs(lines) },
+				() => `\x1b[<${button};${at.x + 1};${at.y + 1}M`,
+			),
+		);
 	}
 
 	/** 逐个字符地输入一段文字。 */

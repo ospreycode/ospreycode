@@ -1,5 +1,9 @@
 import { resolve } from "node:path";
-import type { CredentialSource, SessionOptions } from "@ospreycode/agent-host";
+import type {
+	CredentialSource,
+	SessionOptions,
+	TuiMode,
+} from "@ospreycode/agent-host";
 import { UsageError } from "../errors.js";
 import { type ParsedArgs, value, values } from "./parse.js";
 
@@ -84,4 +88,16 @@ export function approvalArg(args: ParsedArgs): ApprovalPolicy | undefined {
 		);
 	}
 	return policy;
+}
+
+/** `--tui-mode` 的取值。 */
+export function tuiModeArg(args: ParsedArgs): TuiMode | undefined {
+	const text = value(args, "tui-mode");
+	if (text === undefined) return undefined;
+	const modes: readonly TuiMode[] = ["fullscreen", "regular"];
+	const mode = modes.find((name) => name === text);
+	if (mode === undefined) {
+		throw new UsageError(`--tui-mode 要是 ${modes.join("、")} 之一：${text}`);
+	}
+	return mode;
 }

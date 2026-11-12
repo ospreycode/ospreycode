@@ -9,6 +9,8 @@ import { cliEntry } from "./harness.js";
 export interface PtyCli {
 	/** 到目前为止终端上收到的文字，去掉了控制序列。 */
 	output(): string;
+	/** 到目前为止终端上收到的原样内容，带着控制序列。 */
+	raw(): string;
 	/** 等终端上出现这段文字；等不到时报错并带上当时的输出。 */
 	waitFor(fragment: string, timeoutMs?: number): Promise<void>;
 	/** 送进终端的按键。 */
@@ -92,6 +94,7 @@ export function startInPty(
 	});
 	return {
 		output,
+		raw: () => raw,
 		async waitFor(fragment, timeoutMs = 30_000) {
 			const deadline = Date.now() + timeoutMs;
 			while (!output().includes(fragment)) {

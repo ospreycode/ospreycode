@@ -35,12 +35,16 @@ export interface InteractiveArgs {
 	prompt?: string;
 	/** `ospreycode resume`：恢复这个工作区的一个 session，不新建。 */
 	resume?: InteractiveOptions["resume"];
+	/** `--tui-mode`；不给时按配置，默认全屏。要看滚出屏幕的内容的测试写 `regular`。 */
+	tuiMode?: InteractiveOptions["tuiMode"];
 	/** Ctrl+V 读到的图片；不给时剪贴板里没有图片。 */
 	clipboardImage?: Uint8Array;
 	/** 除了 `fake` 之外也从测试的凭据文件取凭据的模型服务。 */
 	credentialServices?: readonly string[];
 	columns?: number;
 	rows?: number;
+	/** 启动之前终端上已经有的内容，比如 shell 里敲的那一行命令。 */
+	before?: string;
 	/** 换掉 agent 进程的入口文件；不给时是打包好的 agent。 */
 	agentEntry?: string;
 }
@@ -54,6 +58,7 @@ export function startInteractive(
 	args: InteractiveArgs,
 ): InteractiveRun {
 	const terminal = new TestTerminal(args.columns, args.rows);
+	if (args.before !== undefined) terminal.write(args.before);
 	const listeners = new Set<(signal: CliSignal) => void>();
 	const context: CliContext = {
 		argv: [],
@@ -95,6 +100,7 @@ export function startInteractive(
 				: { approvalPolicy: args.approvalPolicy }),
 			...(args.prompt === undefined ? {} : { prompt: args.prompt }),
 			...(args.resume === undefined ? {} : { resume: args.resume }),
+			...(args.tuiMode === undefined ? {} : { tuiMode: args.tuiMode }),
 			context,
 		},
 		terminal,

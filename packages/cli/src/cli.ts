@@ -7,7 +7,7 @@ import {
 	selectCommand,
 } from "./args/parse.js";
 import { resumeArgs } from "./args/resume.js";
-import { approvalArg, sessionArgs } from "./args/session.js";
+import { approvalArg, sessionArgs, tuiModeArg } from "./args/session.js";
 import { runCacheClear } from "./commands/cache.js";
 import { runCompletion } from "./commands/completion.js";
 import { runDoctor } from "./commands/doctor.js";
@@ -54,10 +54,12 @@ async function runRoot(args: ParsedArgs, context: CliContext): Promise<number> {
 		return 0;
 	}
 	const approvalPolicy = approvalArg(args);
+	const tuiMode = tuiModeArg(args);
 	const prompt = args.positionals.at(0);
 	return runInteractive({
 		session: sessionArgs(args, context.cwd),
 		...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+		...(tuiMode === undefined ? {} : { tuiMode }),
 		...(prompt === undefined ? {} : { prompt }),
 		context,
 	});
@@ -73,9 +75,11 @@ async function runResume(
 		throw new UsageError(`多余的参数：${rest.join(" ")}`);
 	}
 	const approvalPolicy = approvalArg(args);
+	const tuiMode = tuiModeArg(args);
 	return runInteractive({
 		session: sessionArgs(args, context.cwd),
 		...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+		...(tuiMode === undefined ? {} : { tuiMode }),
 		resume: target ?? { kind: "pick" },
 		context,
 	});

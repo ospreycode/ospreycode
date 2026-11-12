@@ -39,6 +39,7 @@ export {
 	type RunLimits,
 	type SessionConfig,
 	type SessionOptions,
+	type TuiMode,
 	type UiSettings,
 } from "./config/session-config.js";
 export {

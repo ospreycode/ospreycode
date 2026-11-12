@@ -38,11 +38,12 @@ import {
 	type ParsedLayer,
 	parseConfigTable,
 	repoConfigPath,
+	type TuiMode,
 	type UiLayer,
 } from "./layer.js";
 import { resolveSandboxMode } from "./sandbox-mode.js";
 
-export { ConfigError };
+export { ConfigError, type TuiMode };
 
 /** 每个 run 的上限，`null` 表示不设。 */
 export interface BudgetOptions {
@@ -95,6 +96,8 @@ export interface RunLimits {
 export interface UiSettings {
 	/** 是否显示模型的推理内容，默认显示。 */
 	showReasoning: boolean;
+	/** 交互界面的渲染方式，默认 `fullscreen`。 */
+	tuiMode: TuiMode;
 }
 
 /** 一个子 agent 的定义（`[agents.<名字>]`）：模型和工具都已核对。 */
@@ -582,7 +585,7 @@ export function resolveSessionConfig(
 		deny_write: [],
 		tools: {},
 		server_tools: {},
-		ui: { show_reasoning: true },
+		ui: { show_reasoning: true, tui_mode: "fullscreen" },
 		agents: {},
 	};
 	const merged = mergeLayers(
@@ -692,7 +695,10 @@ export function resolveSessionConfig(
 		),
 		...(memory === undefined ? {} : { memory }),
 		agents,
-		ui: { showReasoning: merged.ui.show_reasoning },
+		ui: {
+			showReasoning: merged.ui.show_reasoning,
+			tuiMode: merged.ui.tui_mode,
+		},
 		...(merged.proxy === undefined ? {} : { proxy: merged.proxy }),
 		warnings,
 	};

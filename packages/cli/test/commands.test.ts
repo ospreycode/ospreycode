@@ -151,6 +151,7 @@ describe("帮助、版本和参数错误", () => {
 			"--model",
 			"--sandbox",
 			"--approval",
+			"--tui-mode",
 			"--rules",
 			"--credential-file",
 			"--credential-env",
@@ -182,6 +183,7 @@ describe("帮助、版本和参数错误", () => {
 			expect(nonInteractive.stdout).toContain(option);
 		}
 		expect(nonInteractive.stdout).not.toContain("--approval");
+		expect(nonInteractive.stdout).not.toContain("--tui-mode");
 	});
 
 	test("--version 输出版本号", async () => {
@@ -198,6 +200,12 @@ describe("帮助、版本和参数错误", () => {
 		[["doctor", "--json=1"], "--json"],
 		[["sandbox"], "COMMAND"],
 		[["completion", "powershell"], "powershell"],
+		[
+			["--tui-mode", "windowed"],
+			"--tui-mode 要是 fullscreen、regular 之一：windowed",
+		],
+		[["resume", "--tui-mode", "windowed"], "--tui-mode"],
+		[["exec", "--tui-mode", "regular", "任务"], "--tui-mode"],
 	])("%j：错误写到 stderr，退出码 2", async (args, mentioned) => {
 		const result = await cli(...args);
 

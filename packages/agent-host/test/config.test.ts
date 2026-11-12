@@ -147,10 +147,10 @@ describe("可选工具和显示设置", () => {
 		(name) => !defaults.includes(name),
 	);
 
-	test("没有配置时只启用默认的工具，显示推理内容", () => {
+	test("没有配置时只启用默认的工具，显示推理内容，交互界面全屏", () => {
 		const config = resolve({ model: "scripted" });
 		expect(config.tools).toEqual(defaults);
-		expect(config.ui).toEqual({ showReasoning: true });
+		expect(config.ui).toEqual({ showReasoning: true, tuiMode: "fullscreen" });
 	});
 
 	test.runIf(optional.length > 0)(
@@ -199,12 +199,19 @@ describe("可选工具和显示设置", () => {
 	});
 
 	test("[ui] 仓库配置可以覆盖用户级配置，不认识的键报错", () => {
-		userConfig(`[ui]\nshow_reasoning = false`);
-		expect(resolve({ model: "scripted" }).ui).toEqual({ showReasoning: false });
+		userConfig(`[ui]\nshow_reasoning = false\ntui_mode = "regular"`);
+		expect(resolve({ model: "scripted" }).ui).toEqual({
+			showReasoning: false,
+			tuiMode: "regular",
+		});
 		repoConfig(`[ui]\nshow_reasoning = true`);
 		const config = resolve({ model: "scripted" });
-		expect(config.ui).toEqual({ showReasoning: true });
+		// 仓库配置没有写的键照用户级配置
+		expect(config.ui).toEqual({ showReasoning: true, tuiMode: "regular" });
 		expect(config.warnings).toEqual([]);
+		repoConfig(`[ui]\ntui_mode = "fullscreen"`);
+		expect(resolve({ model: "scripted" }).ui.tuiMode).toBe("fullscreen");
+		repoConfig("");
 		userConfig(`[ui]\ntheme = "dark"`);
 		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
 			/ui\.theme 不认识的键/,
@@ -212,6 +219,10 @@ describe("可选工具和显示设置", () => {
 		userConfig(`[ui]\nshow_reasoning = "no"`);
 		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
 			/ui\.show_reasoning 要是 true 或 false/,
+		);
+		userConfig(`[ui]\ntui_mode = "alternate"`);
+		expect(configError(() => resolve({ model: "scripted" }))).toMatch(
+			/ui\.tui_mode 要是 fullscreen、regular 之一/,
 		);
 	});
 });
