@@ -29,11 +29,14 @@ function linuxStartTime(stat: string): string {
 	return startTime;
 }
 
+/** `/proc/<pid>/stat` 的内容；进程不存在时为空。 */
 function readProcStat(pid: number): string | undefined {
 	try {
 		return readFileSync(`/proc/${pid}/stat`, "utf8");
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		const { code } = error as NodeJS.ErrnoException;
+		// 进程在文件打开之后、读出内容之前退出时，读到的是 ESRCH：和打开时就没有一样
+		if (code === "ENOENT" || code === "ESRCH") return undefined;
 		throw error;
 	}
 }
