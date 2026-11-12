@@ -55,10 +55,11 @@ ospreycode -C ~/code/app -m claude-haiku-5-5 --sandbox workspace-write --approva
 | Shift+Enter、Ctrl+J | 换行 |
 | Alt+↑ | 管理排队的输入：取回、删除、调整顺序、让暂停的列表继续 |
 | `@` | 提及工作区里的文件或目录，有路径补全；内容由 agent 在沙盒里读 |
-| Ctrl+V | 粘贴剪贴板里的图片；把图片文件拖进终端是提及它 |
+| Ctrl+V | 粘贴剪贴板里的图片；把图片文件拖进终端也行（一个或几个）。图片在输入框里是 `[图片 #N]` 这样的标签，删掉标签就不发送 |
+| Ctrl+O | 光标在图片标签上时预览这张图片；全屏时也可以直接点输入框或对话区里的标签。Esc、Ctrl+C 或点预览外面关闭 |
 | Ctrl+P、Shift+Ctrl+P | 在有凭据的模型之间向前、向后切换 |
 | Shift+Tab | 切换推理强度 |
-| Ctrl+C | 取消当前的动作（关掉列表、取消任务、清空输入框）；空闲时连按两次退出 |
+| Ctrl+C | 取消当前的动作（关掉图片的预览或列表、取消任务、清空输入框）；空闲时连按两次退出 |
 | Ctrl+D | 输入框为空时退出 |
 | 滚轮、PageUp、PageDown | 全屏时滚动对话区；Ctrl+Home、Ctrl+End 到开头和末尾 |
 | Ctrl+Shift+F | 全屏时在对话里搜索，Enter 和 Shift+Enter 到下一处、上一处，Esc 关闭 |

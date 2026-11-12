@@ -26,6 +26,8 @@ export const style = {
 	warning: paint({ fg: indexedColor(3) }),
 	error: paint({ fg: indexedColor(1) }),
 	selected: paint({ fg: indexedColor(6), bold: true }),
+	/** 图片标签：反白，在同样颜色的文字里也分得开。 */
+	chip: paint({ fg: indexedColor(6), inverse: true }),
 };
 
 /** 一组文字样式：上色的，或者原样不动的。 */

@@ -43,7 +43,7 @@
 | 切换模型和推理强度 | P1 | 已完成 | agent-runtime 的[工具集、系统指令和模型切换](packages/agent-runtime.md#工具集系统指令和模型切换) |
 | 后台命令和监视，后台通知的唤醒 | P1 | 已完成 | agent-runtime 的[后台命令](packages/agent-runtime.md#后台命令) |
 | steering 和 follow-up | P1 | 已完成 | agent-runtime 的[运行中的用户输入](packages/agent-runtime.md#运行中的用户输入) |
-| `@` 提及文件和粘贴图片，`read` 读图片 | P1 | 已完成 | agent-host 的[提及文件和附件](packages/agent-host.md#提及文件和附件) |
+| `@` 提及文件和粘贴图片，`read` 读图片；图片标签和终端里的预览 | P1 | 已完成 | agent-host 的[提及文件和附件](packages/agent-host.md#提及文件和附件) |
 | skills、MCP、插件的接入，`skill_load` 工具；插件的安装、更新和启用 | P2 | 进行中 | [skills](packages/skills.md)、[mcp](packages/mcp.md)、[agent-plugins](packages/agent-plugins.md)；agent-host 的[扩展的存放和安装来源](packages/agent-host.md#扩展的存放和安装来源) |
 | MCP 的 OAuth 授权、远程 server 的静态令牌、本地 server 密钥的 mask | P2 | 进行中 | mcp 的[授权](packages/mcp.md#授权)；agent-host 的[插件之外的 `mcp.json`](packages/agent-host.md#插件之外的-mcpjson) |
 | OAuth 客户端元数据文件在 `https://ospreycode.dev/oauth/client-metadata.json` 上线 | P2 | 进行中 | mcp 的[授权](packages/mcp.md#授权) |

@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import photon from "@silvia-odwyer/photon-node";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import {
 	type FakeModelServer,
@@ -109,6 +110,44 @@ test("默认占着终端的备用缓冲区，退出时回到主缓冲区、把�
 	regular.write("\x04");
 	expect(await regular.exit).toBe(0);
 	expect(regular.raw()).not.toContain(enter);
+});
+
+test("在支持 Kitty 图形协议的终端里预览拖进来的 JPEG：打包后的 CLI 把它转成 PNG 画出来，Esc 关掉时删掉图片", async () => {
+	const picture = join(dirs.home, "photo.jpg");
+	const image = new photon.PhotonImage(
+		new Uint8Array(8 * 4 * 4).fill(180),
+		8,
+		4,
+	);
+	writeFileSync(picture, image.get_bytes_jpeg(80));
+	image.free();
+	// 界面库按环境变量认终端
+	cli = startInPty(args(), {
+		cwd: dirs.workspace,
+		env: { ...dirs.env, TERM_PROGRAM: "ghostty" },
+	});
+	await cli.waitFor("Enter 发送");
+	// 终端把拖进来的文件当作一次粘贴送来
+	cli.write(`\x1b[200~${picture}\x1b[201~`);
+	await cli.waitFor("Ctrl+O 预览图片 #1");
+	expect(cli.output()).not.toContain(picture);
+	cli.write("\x0f");
+	await cli.waitFor("Esc 关闭");
+
+	expect(cli.output()).toContain("图片 #1 · JPEG · 8×4");
+	// f=100 是 PNG：Kitty 图形协议只收这一种
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
+	const placed = /\x1b_Ga=T,f=100,[^;]*\bi=(\d+)/.exec(cli.raw());
+	expect(placed).not.toBeNull();
+	cli.write("\x1b");
+	await vi.waitFor(() =>
+		expect(cli?.raw()).toContain(`\x1b_Ga=d,d=I,i=${placed?.[1]}`),
+	);
+	// 第一次 Ctrl+C 清空输入框，之后两次退出
+	await cli.type("\x03\x03");
+	await cli.waitFor("再按一次 Ctrl+C 退出");
+	cli.write("\x03");
+	expect(await cli.exit).toBe(0);
 });
 
 test("空输入框上 Ctrl+D 退出，退出码 0", async () => {

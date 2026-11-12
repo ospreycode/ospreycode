@@ -1,13 +1,14 @@
 import type { Component } from "@earendil-works/pi-tui";
 import type { QueuedInput } from "@ospreycode/agent-host";
 import { brief } from "../../format/text.js";
-import { displayInput } from "../input.js";
+import { type Attachments, displayInput } from "../input.js";
 import type { InteractiveState } from "../state.js";
+import { paintLabels } from "./image-label.js";
 import { clipped, style } from "./theme.js";
 
-/** 排队的一条输入压成的一行。 */
-export function queuedLine(item: QueuedInput): string {
-	return brief(displayInput(item.input));
+/** 排队的一条输入压成的一行：图片写成它的标签。 */
+export function queuedLine(item: QueuedInput, images: Attachments): string {
+	return brief(displayInput(item.input, images));
 }
 
 /**
@@ -16,9 +17,11 @@ export function queuedLine(item: QueuedInput): string {
  */
 export class QueueView implements Component {
 	readonly #state: InteractiveState;
+	readonly #images: Attachments;
 
-	constructor(state: InteractiveState) {
+	constructor(state: InteractiveState, images: Attachments) {
 		this.#state = state;
+		this.#images = images;
 	}
 
 	invalidate(): void {}
@@ -35,7 +38,10 @@ export class QueueView implements Component {
 				: [
 						clipped(title, width, style.dim),
 						...items.map((item, index) =>
-							clipped(`  ${index + 1}. ${queuedLine(item)}`, width),
+							clipped(
+								`  ${index + 1}. ${paintLabels(queuedLine(item, this.#images), this.#images)}`,
+								width,
+							),
 						),
 					];
 		return [

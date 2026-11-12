@@ -17,7 +17,7 @@ import { elapsedBetween } from "../format/result.js";
 import { type DetailLine, parseArguments } from "../format/text.js";
 import { exploreTools } from "../format/tools.js";
 import { beyondTaskFailure } from "../task-failure.js";
-import { displayInput } from "./input.js";
+import { type Attachments, displayInput } from "./input.js";
 import type { ApprovalEvent, ReasoningEffort, ToolResult } from "./types.js";
 
 /** 用户的一条输入：开始 task 的输入，或者插进当前 task 的 steering。 */
@@ -44,6 +44,8 @@ export interface ToolEntry {
 	output: OutputBuffer;
 	result?: ToolResult;
 	durationMs?: number;
+	/** 结果里的图片各自的标签（`read` 读到的图片），按在结果里的先后。 */
+	images?: string[];
 }
 
 /**
@@ -192,6 +194,8 @@ export class InteractiveState {
 	/** session 已经关闭时的原因。 */
 	ended: SessionEndReason | undefined;
 	#showReasoning: boolean;
+	/** 界面上的图片：输入和工具结果里的图片在这里登记，显示成标签。 */
+	readonly #images: Attachments;
 	readonly #changed = new Set<Entry>();
 	readonly #replies = new Map<string, AssistantEntry>();
 	readonly #tools = new Map<string, ToolEntry>();
@@ -211,7 +215,8 @@ export class InteractiveState {
 	/** 最近结束的 task 失败的原因，已经显示在它结束的那一行里；下一个 task 开始时清掉。 */
 	#failure: string | undefined;
 
-	constructor(config: SessionConfig) {
+	constructor(config: SessionConfig, images: Attachments) {
+		this.#images = images;
 		this.status = {
 			model: config.model.id,
 			reasoningEffort: config.reasoningEffort,
@@ -385,7 +390,7 @@ export class InteractiveState {
 					text:
 						event.source === "notification"
 							? "模型开始处理上面的通知"
-							: displayInput(event.input),
+							: displayInput(event.input, this.#images),
 				});
 				break;
 			case "task.ended": {
@@ -478,6 +483,10 @@ export class InteractiveState {
 				const call = this.#tool(event.tool_call_id);
 				call.result = event.result;
 				call.durationMs = event.duration_ms;
+				const images = event.result.content.flatMap((block) =>
+					block.type === "image" ? [this.#images.result(block)] : [],
+				);
+				if (images.length > 0) call.images = images;
 				const at = this.running.indexOf(call);
 				if (at !== -1) this.running.splice(at, 1);
 				this.#changed.add(this.#groups.get(call) ?? call);
@@ -519,7 +528,7 @@ export class InteractiveState {
 					this.#add({
 						kind: "user",
 						source: "steering",
-						text: displayInput(item.input),
+						text: displayInput(item.input, this.#images),
 					});
 				}
 				this.queue = event.queue;

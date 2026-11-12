@@ -1,7 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import photon from "@silvia-odwyer/photon-node";
 import { describe, expect, test, vi } from "vitest";
 import { errorReply, shellCallReply, textReply } from "./harness.js";
 import {
@@ -588,7 +595,7 @@ describe("@ 提及和图片", () => {
 		await terminal.press(key.enter);
 		await terminal.waitFor("图收到了");
 
-		expect(terminal.text()).toContain("› [图片] 这是什么");
+		expect(terminal.text()).toContain("› [图片 #1] 这是什么");
 		expect(lastUserMessage(server.requests[0])).toContain("这是什么");
 		expect(
 			lastUserParts(server.requests[0]).filter(
@@ -597,23 +604,73 @@ describe("@ 提及和图片", () => {
 		).toHaveLength(1);
 	});
 
-	test("拖进终端的图片路径换成提及，由 runtime 去读这个文件", async () => {
+	test("拖进终端的图片显示成图片标签，不铺开路径；提交时是提及，由 runtime 去读这个文件", async () => {
 		const picture = join(fixture.dirs.home, "pic.png");
 		writeFileSync(picture, pixel);
 		const server = await fixture.useModel(() => textReply("收到了"));
 		const { terminal } = await fixture.start();
 		// 终端把拖进来的文件当作一次粘贴送来
 		await terminal.paste(picture);
-		await terminal.waitForVisible(`@${picture}`);
+		await terminal.waitForVisible("[图片 #1]");
+		expect(terminal.visible()).not.toContain(picture);
 		await terminal.type("这是什么");
 		await terminal.press(key.enter);
 		await terminal.waitFor("收到了");
 
-		expect(terminal.text()).toContain(`› @${picture} 这是什么`);
-		// 模型收到的是展开后的提及，不是 @ 开头的一段文字
+		expect(terminal.visible()).toContain("› [图片 #1] 这是什么");
+		expect(terminal.visible()).not.toContain(picture);
+		// 模型收到的是展开后的提及，不是 @ 开头的一段文字，也不是标签
 		const sent = lastUserMessage(server.requests[0]);
 		expect(sent).toContain(`<file path="${picture}">`);
 		expect(sent).not.toContain(`@${picture}`);
+		expect(sent).not.toContain("[图片 #1]");
+	});
+
+	test("一次拖进几张图片：转义的空格、引号、~/ 和 file:// 的写法都认，各是一个标签", async () => {
+		const { home } = fixture.dirs;
+		const plain = join(home, "a.png");
+		const spaced = join(home, "b c.png");
+		const quoted = join(home, "d e.png");
+		const linked = join(home, "f.png");
+		for (const file of [plain, spaced, quoted, linked]) {
+			writeFileSync(file, pixel);
+		}
+		const server = await fixture.useModel(() => textReply("收到了"));
+		const { terminal } = await fixture.start();
+		await terminal.paste(
+			`${plain} ~/b\\ c.png '${quoted}' ${pathToFileURL(linked).href}`,
+		);
+		await terminal.waitForVisible("[图片 #1] [图片 #2] [图片 #3] [图片 #4]");
+		await terminal.press(key.enter);
+		await terminal.waitFor("收到了");
+
+		const sent = lastUserMessage(server.requests[0]);
+		for (const file of [plain, spaced, quoted, linked]) {
+			expect(sent).toContain(`<file path="${file}">`);
+		}
+	});
+
+	test("粘贴的内容里夹着说明的文字、别的文件，或者文件不是图片时，照常粘贴成文字", async () => {
+		const { home } = fixture.dirs;
+		const picture = join(home, "pic.png");
+		const notes = join(home, "notes.txt");
+		const fake = join(home, "fake.png");
+		writeFileSync(picture, pixel);
+		writeFileSync(notes, "不是图片\n");
+		writeFileSync(fake, "扩展名是图片，内容不是\n");
+		await fixture.useModel(() => textReply("好"));
+		const { terminal } = await fixture.start();
+		for (const pasted of [
+			`${picture} 这张图怎么了`,
+			`${picture} ${notes}`,
+			fake,
+		]) {
+			await terminal.paste(pasted);
+			await terminal.waitForVisible(pasted);
+			expect(terminal.visible()).not.toContain("图片 #");
+			await terminal.press(key.ctrlC);
+			await terminal.waitForGone(pasted);
+		}
 	});
 
 	test("粘贴的不是图片路径时照常粘贴成文字", async () => {
@@ -653,7 +710,230 @@ describe("@ 提及和图片", () => {
 	});
 });
 
+describe("图片的预览", () => {
+	/** 支持 Kitty 图形协议的终端。 */
+	const kitty = { images: "kitty", trueColor: true, hyperlinks: true } as const;
+
+	/** 界面往终端上放过几次图片。 */
+	function placed(terminal: { graphics: readonly string[] }): number {
+		return terminal.graphics.filter((command) => /\ba=T\b/.test(command))
+			.length;
+	}
+
+	/** 一张 JPEG：Kitty 图形协议不收，要转成 PNG 才能画。 */
+	function jpeg(width: number, height: number): Uint8Array {
+		const pixels = new Uint8Array(width * height * 4).fill(200);
+		const image = new photon.PhotonImage(pixels, width, height);
+		try {
+			return image.get_bytes_jpeg(80);
+		} finally {
+			image.free();
+		}
+	}
+
+	test("光标在图片标签上时 Ctrl+O 打开预览：画出图片，写着编号、格式、尺寸和大小；Esc 关掉、删掉图片，输入框照旧", async () => {
+		setCapabilities(kitty);
+		await fixture.useModel(() => textReply("好"));
+		const { terminal } = await fixture.start({ clipboardImage: pixel });
+		await terminal.type("看");
+		await terminal.press(key.ctrlV);
+		await terminal.waitForVisible("Ctrl+O 预览图片 #1");
+		expect(placed(terminal)).toBe(0);
+		await terminal.press(key.ctrlO);
+		await terminal.waitForVisible("Esc 关闭");
+
+		expect(terminal.visible()).toContain(
+			`图片 #1 · PNG · 1×1 · ${pixel.length} B`,
+		);
+		expect(placed(terminal)).toBeGreaterThan(0);
+		// 预览开着时按键不进输入框
+		await terminal.type("x");
+		await terminal.press(key.escape);
+		await terminal.waitForGone("Esc 关闭");
+		expect(terminal.graphics).toContainEqual(
+			expect.stringMatching(/^a=d,d=I,i=\d+/),
+		);
+		await terminal.type("完");
+		await terminal.waitForVisible("看[图片 #1]完");
+	});
+
+	test("点对话区里的图片标签打开预览；task 运行时 Ctrl+C 先关预览，不取消 task", async () => {
+		setCapabilities(kitty);
+		const server = await fixture.useModel(() => "hang", {
+			fields: "images = true",
+		});
+		const { terminal } = await fixture.start({ clipboardImage: pixel });
+		await terminal.press(key.ctrlV);
+		await terminal.type(" 这是什么");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("› [图片 #1] 这是什么");
+		await expect.poll(() => server.requests.length).toBe(1);
+		await terminal.click(terminal.locate("[图片 #1] 这是什么"));
+		await terminal.waitForVisible("Esc 关闭");
+		expect(terminal.visible()).toContain("图片 #1 · PNG · 1×1");
+
+		await terminal.press(key.ctrlC);
+		await terminal.waitForGone("Esc 关闭");
+		expect(terminal.graphics).toContainEqual(
+			expect.stringMatching(/^a=d,d=I,i=\d+/),
+		);
+		expect(terminal.visible()).toContain("Ctrl+C 取消");
+		expect(terminal.visible()).not.toContain("正在取消");
+	});
+
+	test("点输入框里的图片标签打开预览，点预览外面关掉", async () => {
+		setCapabilities(kitty);
+		await fixture.useModel(() => textReply("好"));
+		const { terminal } = await fixture.start({ clipboardImage: pixel });
+		await terminal.press(key.ctrlV);
+		await terminal.type(" 后面的字");
+		await terminal.waitForVisible("[图片 #1] 后面的字");
+		// 光标不在标签上：键盘打不开，鼠标能
+		expect(terminal.visible()).not.toContain("Ctrl+O 预览图片");
+		await terminal.click(terminal.locate("[图片 #1] 后面的字"));
+		await terminal.waitForVisible("Esc 关闭");
+
+		// 点在预览里面不关
+		await terminal.click(terminal.locate("图片 #1 · PNG"));
+		expect(terminal.visible()).toContain("Esc 关闭");
+		await terminal.click({ x: 0, y: 0 });
+		await terminal.waitForGone("Esc 关闭");
+		expect(terminal.visible()).toContain("[图片 #1] 后面的字");
+	});
+
+	test("粘贴的 JPEG 在只收 PNG 的终端上转成 PNG 画出来", async () => {
+		setCapabilities(kitty);
+		const picture = jpeg(4, 2);
+		await fixture.useModel(() => textReply("好"));
+		const { terminal } = await fixture.start({ clipboardImage: picture });
+		await terminal.press(key.ctrlV);
+		await terminal.waitForVisible("[图片 #1]");
+		await terminal.press(key.ctrlO);
+		await terminal.waitForVisible("Esc 关闭");
+
+		expect(terminal.visible()).toContain(
+			`图片 #1 · JPEG · 4×2 · ${picture.length} B`,
+		);
+		expect(placed(terminal)).toBeGreaterThan(0);
+	});
+
+	test("终端画不了图片时预览显示格式、尺寸、大小和路径，路径是能点开的链接", async () => {
+		setCapabilities({ images: null, trueColor: false, hyperlinks: true });
+		const picture = join(fixture.dirs.home, "pic.png");
+		writeFileSync(picture, pixel);
+		await fixture.useModel(() => textReply("好"));
+		// 写在主缓冲区里时没有鼠标，键盘照样能预览
+		const { terminal } = await fixture.start({ tuiMode: "regular" });
+		await terminal.paste(picture);
+		await terminal.waitForVisible("[图片 #1]");
+		// 标签自己就带着链接：终端支持的话直接点开文件
+		expect(terminal.links).toContain(pathToFileURL(picture).href);
+		await terminal.press(key.ctrlO);
+		await terminal.waitForVisible("Esc 关闭");
+
+		const shown = terminal.visible();
+		expect(shown).toContain("格式：PNG");
+		expect(shown).toContain("尺寸：1×1");
+		expect(shown).toContain(`大小：${pixel.length} B`);
+		expect(shown).toContain("路径：");
+		expect(shown).toContain("pic.png");
+		expect(shown).toContain("这个终端画不了图片");
+		expect(placed(terminal)).toBe(0);
+		await terminal.press(key.ctrlC);
+		await terminal.waitForGone("Esc 关闭");
+		// 关的是预览：输入框里的内容没有被清掉
+		expect(terminal.visible()).toContain("[图片 #1]");
+	});
+
+	test("全屏模式下 iTerm2 的图片协议用不了：预览显示图片的信息，说明换成 --tui-mode regular 能画", async () => {
+		setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+		await fixture.useModel(() => textReply("好"));
+		const { terminal } = await fixture.start({ clipboardImage: pixel });
+		await terminal.press(key.ctrlV);
+		await terminal.waitForVisible("[图片 #1]");
+		await terminal.press(key.ctrlO);
+		await terminal.waitForVisible("Esc 关闭");
+
+		expect(terminal.visible()).toContain("格式：PNG");
+		expect(terminal.visible()).toContain(
+			"iTerm2 的图片协议在全屏模式下用不了：用 --tui-mode regular 启动能画出来",
+		);
+	});
+
+	test("拖进来的图片文件之后被删掉：预览说明读不了，照样显示路径", async () => {
+		setCapabilities(kitty);
+		const picture = join(fixture.dirs.home, "gone.png");
+		writeFileSync(picture, pixel);
+		await fixture.useModel(() => textReply("好"));
+		const { terminal } = await fixture.start();
+		await terminal.paste(picture);
+		await terminal.waitForVisible("[图片 #1]");
+		rmSync(picture);
+		await terminal.press(key.ctrlO);
+		await terminal.waitForVisible("Esc 关闭");
+
+		expect(terminal.visible()).toContain("读不了这个文件：ENOENT");
+		expect(terminal.visible()).toContain("gone.png");
+		expect(placed(terminal)).toBe(0);
+	});
+
+	test("read 读到的图片在工具结果里是一个图片标签，点它能预览", async () => {
+		setCapabilities(kitty);
+		writeFileSync(join(fixture.dirs.workspace, "shot.png"), pixel);
+		await fixture.useModel(
+			(call) =>
+				call === 0
+					? toolCallsReply([{ name: "read", arguments: { path: "shot.png" } }])
+					: textReply("看过了"),
+			{ fields: "images = true" },
+		);
+		const { terminal } = await fixture.start();
+		await terminal.type("看看截图");
+		await terminal.press(key.enter);
+		await terminal.waitFor("看过了");
+		await terminal.waitForVisible("[图片 #1]");
+		await terminal.click(terminal.locate("[图片 #1]"));
+		await terminal.waitForVisible("Esc 关闭");
+
+		expect(terminal.visible()).toContain("图片 #1 · PNG · 1×1");
+		expect(placed(terminal)).toBeGreaterThan(0);
+	});
+});
+
 describe("运行中的输入", () => {
+	test("排队的输入里的图片显示成标签，取回到输入框时还是原来那个标签，再提交时图片照发", async () => {
+		const server = await fixture.useModel(
+			(call) => (call === 0 ? "hang" : textReply("图收到了")),
+			{ fields: "images = true" },
+		);
+		const { terminal } = await fixture.start({ clipboardImage: pixel });
+		await terminal.type("任务一");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("Ctrl+C 取消");
+		await expect.poll(() => server.requests.length).toBe(1);
+		await terminal.press(key.ctrlV);
+		await terminal.type(" 排着的图");
+		await terminal.press(key.altEnter);
+		await terminal.waitForVisible("1. [图片 #1] 排着的图");
+
+		await terminal.press(key.altUp);
+		await terminal.waitForVisible("排队的输入");
+		await terminal.press(key.enter);
+		await terminal.waitForVisible("Alt+Enter 排到之后");
+		expect(terminal.visible()).toMatch(/─+\n\[图片 #1\] 排着的图\s*\n─+/);
+		// 取消当前的任务，把取回的输入发出去
+		await terminal.press(key.ctrlC);
+		await terminal.waitForGone("Ctrl+C 取消");
+		await terminal.press(key.enter);
+		await terminal.waitFor("图收到了");
+
+		expect(
+			lastUserParts(server.requests[1]).filter(
+				(part) => part.type === "image_url",
+			),
+		).toHaveLength(1);
+	});
+
 	test("任务运行时 Enter 排成 steering、Alt+Enter 排成 follow-up，两个列表分开显示，可以取回到输入框", async () => {
 		const server = await fixture.useModel(() => "hang");
 		const { terminal } = await fixture.start();

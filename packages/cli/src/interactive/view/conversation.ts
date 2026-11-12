@@ -1,6 +1,8 @@
 import {
 	type Component,
 	Markdown,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
@@ -41,6 +43,7 @@ import {
 	decisionText,
 	describeApproval,
 } from "../approval.js";
+import type { Attachments } from "../input.js";
 import type {
 	ApprovalEntry,
 	Entry,
@@ -53,6 +56,7 @@ import type {
 	UserEntry,
 } from "../state.js";
 import type { ToolResult } from "../types.js";
+import { type LabelSpot, labelSpots, paintLabels } from "./image-label.js";
 import { markdownTheme, style, toneStyle, wrapped } from "./theme.js";
 
 /** 命令的输出留开头这么多行。 */
@@ -113,7 +117,11 @@ function children(
 	});
 }
 
-function userLines(entry: UserEntry, width: number): string[] {
+function userLines(
+	entry: UserEntry,
+	images: Attachments,
+	width: number,
+): string[] {
 	const label = {
 		user: "",
 		follow_up: "（follow-up）",
@@ -125,7 +133,7 @@ function userLines(entry: UserEntry, width: number): string[] {
 		...wrapped(
 			`${label}${sanitize(entry.text)}`,
 			width,
-			style.user,
+			(line) => paintLabels(line, images, style.user),
 			"  ",
 			"› ",
 		),
@@ -280,10 +288,11 @@ function editLines(
 	];
 }
 
-/** 结果里给人看的内容的开头几行；图片各占一行。 */
-function resultPreview(result: ToolResult): string[] {
+/** 结果里给人看的内容的开头几行；图片各占一行，写成它的标签。 */
+function resultPreview(entry: ToolEntry, result: ToolResult): string[] {
+	const labels = [...(entry.images ?? [])];
 	const text = result.content
-		.map((block) => (block.type === "text" ? block.text : "[图片]"))
+		.map((block) => (block.type === "text" ? block.text : labels.shift()))
 		.join("\n");
 	return previewRows(previewText(text, previewHead, 0));
 }
@@ -292,6 +301,7 @@ function callLines(
 	entry: ToolEntry,
 	action: ToolAction,
 	active: boolean,
+	images: Attachments,
 	width: number,
 ): string[] {
 	const { result, durationMs } = entry;
@@ -308,9 +318,9 @@ function callLines(
 				? [
 						...detail,
 						...(action.preview === true
-							? resultPreview(result).map((text) => ({
+							? resultPreview(entry, result).map((text) => ({
 									text,
-									paint: style.dim,
+									paint: (line: string) => paintLabels(line, images, style.dim),
 								}))
 							: []),
 					]
@@ -331,6 +341,7 @@ function toolLines(
 	entry: ToolEntry,
 	active: boolean,
 	paths: PathContext,
+	images: Attachments,
 	width: number,
 ): string[] {
 	const action = describeTool(entry.name, entry.arguments, paths);
@@ -341,7 +352,7 @@ function toolLines(
 			return editLines(entry, action, active, paths, width);
 		case "explore":
 		case "call":
-			return callLines(entry, action, active, width);
+			return callLines(entry, action, active, images, width);
 	}
 }
 
@@ -358,6 +369,7 @@ function exploreFailure(result: ToolResult, durationMs: number): string {
 function exploreLines(
 	entry: ExploreEntry,
 	paths: PathContext,
+	images: Attachments,
 	width: number,
 ): string[] {
 	const items: { verb: string; targets: string[]; failure?: string }[] = [];
@@ -368,6 +380,11 @@ function exploreLines(
 			result === undefined || result.status === "succeeded"
 				? undefined
 				: exploreFailure(result, durationMs ?? 0);
+		// 读到的是图片时路径后面跟着它的标签
+		const target = paintLabels(
+			[action.target, ...(call.images ?? [])].join(" "),
+			images,
+		);
 		const last = items.at(-1);
 		if (
 			action.read === true &&
@@ -375,14 +392,12 @@ function exploreLines(
 			last?.verb === action.base &&
 			last.failure === undefined
 		) {
-			if (!last.targets.includes(action.target)) {
-				last.targets.push(action.target);
-			}
+			if (!last.targets.includes(target)) last.targets.push(target);
 			continue;
 		}
 		items.push({
 			verb: action.base,
-			targets: [action.target],
+			targets: [target],
 			...(failure === undefined ? {} : { failure }),
 		});
 	}
@@ -529,15 +544,24 @@ class EntryView implements Component {
 	readonly #entry: Entry;
 	readonly #state: InteractiveState;
 	readonly #paths: PathContext;
+	readonly #images: Attachments;
 	/** 模型的回复按 Markdown 显示。 */
 	readonly #markdown = new Markdown("", 0, 0, markdownTheme);
 	#width = 0;
 	#lines: string[] | undefined;
+	/** 画好的行里的图片标签：在这一项的第几行、第几列。 */
+	#spots: (LabelSpot & { row: number })[] = [];
 
-	constructor(entry: Entry, state: InteractiveState, paths: PathContext) {
+	constructor(
+		entry: Entry,
+		state: InteractiveState,
+		paths: PathContext,
+		images: Attachments,
+	) {
 		this.#entry = entry;
 		this.#state = state;
 		this.#paths = paths;
+		this.#images = images;
 	}
 
 	invalidate(): void {
@@ -548,8 +572,21 @@ class EntryView implements Component {
 		if (this.#lines === undefined || this.#width !== width) {
 			this.#width = width;
 			this.#lines = this.#draw(width);
+			const { kind } = this.#entry;
+			// 只有用户的输入和工具的结果里有图片
+			this.#spots =
+				kind === "user" || kind === "tool" || kind === "explore"
+					? this.#lines.flatMap((line, row) =>
+							labelSpots(line, this.#images).map((spot) => ({ ...spot, row })),
+						)
+					: [];
 		}
 		return this.#lines;
+	}
+
+	/** 上一次画出来的行里的图片标签。 */
+	get spots(): readonly (LabelSpot & { row: number })[] {
+		return this.#spots;
 	}
 
 	/** 模型的回复：前面画圆点，和工具的块分得开；后面的行缩进对齐。 */
@@ -566,7 +603,7 @@ class EntryView implements Component {
 		const entry = this.#entry;
 		switch (entry.kind) {
 			case "user":
-				return userLines(entry, width);
+				return userLines(entry, this.#images, width);
 			case "assistant": {
 				const reasoning = sanitize(entry.reasoning).trim();
 				return [
@@ -582,10 +619,11 @@ class EntryView implements Component {
 					entry,
 					entry.result !== undefined || this.#state.running.includes(entry),
 					this.#paths,
+					this.#images,
 					width,
 				);
 			case "explore":
-				return exploreLines(entry, this.#paths, width);
+				return exploreLines(entry, this.#paths, this.#images, width);
 			case "approval":
 				return approvalLines(
 					entry,
@@ -614,11 +652,40 @@ class EntryView implements Component {
 export class ConversationView implements Component {
 	readonly #state: InteractiveState;
 	readonly #paths: PathContext;
+	readonly #images: Attachments;
+	/** 点了第几张图片的标签：预览它。 */
+	readonly #preview: (number: number) => void;
 	readonly #views = new Map<Entry, EntryView>();
+	/** 上一次画出来的各行里的图片标签，行号从对话区的第一行数起。 */
+	#spots: (LabelSpot & { row: number })[] = [];
 
-	constructor(state: InteractiveState, paths: PathContext) {
+	constructor(
+		state: InteractiveState,
+		paths: PathContext,
+		images: Attachments,
+		preview: (number: number) => void,
+	) {
 		this.#state = state;
 		this.#paths = paths;
+		this.#images = images;
+		this.#preview = preview;
+	}
+
+	/**
+	 * 全屏时界面库把鼠标的动作交来，坐标从对话区的左上角数起（滚上去的行也算）。按在图片标签上的
+	 * 这一下要接住：之后松开时才有"点击"。别处的不接，留给界面库框选文字。
+	 */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.button !== "left") return undefined;
+		const spot = this.#spots.find(
+			({ row, start, end }) =>
+				row === event.y && event.x >= start && event.x < end,
+		);
+		if (spot === undefined) return undefined;
+		if (event.type === "click") this.#preview(spot.number);
+		return event.type === "press" || event.type === "click"
+			? { handled: true }
+			: undefined;
 	}
 
 	/** 状态变了之后调用：内容变了的条目下次重画。 */
@@ -638,13 +705,21 @@ export class ConversationView implements Component {
 	}
 
 	render(width: number): string[] {
-		return this.#state.entries.flatMap((entry) => {
+		const lines: string[] = [];
+		const spots: (LabelSpot & { row: number })[] = [];
+		for (const entry of this.#state.entries) {
 			let view = this.#views.get(entry);
 			if (view === undefined) {
-				view = new EntryView(entry, this.#state, this.#paths);
+				view = new EntryView(entry, this.#state, this.#paths, this.#images);
 				this.#views.set(entry, view);
 			}
-			return view.render(width);
-		});
+			const drawn = view.render(width);
+			for (const spot of view.spots) {
+				spots.push({ ...spot, row: spot.row + lines.length });
+			}
+			lines.push(...drawn);
+		}
+		this.#spots = spots;
+		return lines;
 	}
 }

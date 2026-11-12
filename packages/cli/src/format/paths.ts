@@ -13,6 +13,21 @@ export function shortPath(path: string, home: string | undefined): string {
 	return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
+/** 放不下的路径留末尾：区分各个文件和工作区的是最后几级目录。`measure` 量一段文字占几列。 */
+export function tailPath(
+	path: string,
+	width: number,
+	measure: (text: string) => number,
+): string {
+	if (measure(path) <= width) return path;
+	let kept = "";
+	for (const character of [...path].reverse()) {
+		if (measure(`…${character}${kept}`) > width) break;
+		kept = `${character}${kept}`;
+	}
+	return `…${kept}`;
+}
+
 /**
  * 路径在界面上的写法：工作区里的写成相对工作区根的（工作区本身是 `.`），主目录下的写成 `~` 开头的，
  * 其余照原样。模型写的相对路径本来就相对工作区根，不动。

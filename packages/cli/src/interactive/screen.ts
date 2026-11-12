@@ -5,14 +5,33 @@ import {
 	type Terminal,
 	TuiAltScreen,
 	TuiMainScreen,
+	type TuiMouseEvent,
 	VStack,
 } from "@earendil-works/pi-tui";
 import type { TuiMode } from "@ospreycode/agent-host";
 import type { Clipboard } from "./clipboard.js";
 import { style } from "./view/theme.js";
 
+/**
+ * 全屏的渲染器。界面库只把落在浮层里的鼠标动作交给浮层，外面的照常交给下面的界面；这里多一件事：
+ * 设了 `clickOutside` 时，浮层外面的鼠标动作不再交给下面的界面，点一下就调用它。
+ */
+class FullScreen extends TuiAltScreen {
+	clickOutside: (() => void) | undefined;
+
+	protected override dispatchMouseToOverlay(
+		event: TuiMouseEvent,
+	): ReturnType<TuiAltScreen["dispatchMouseToOverlay"]> {
+		const dispatched = super.dispatchMouseToOverlay(event);
+		if (dispatched.hit || this.clickOutside === undefined) return dispatched;
+		if (event.type === "click") this.clickOutside();
+		// 算作落在浮层上、没有组件接：按下和松开不会碰到下面的列表和输入框，滚轮照常滚动对话区
+		return { hit: true };
+	}
+}
+
 /** 交互界面的渲染器：`regular` 写在终端的主缓冲区里，`fullscreen` 占着备用缓冲区。 */
-export type Screen = TuiMainScreen | TuiAltScreen;
+export type Screen = TuiMainScreen | FullScreen;
 
 /**
  * 按渲染方式建渲染器。全屏时界面库接管鼠标：滚轮滚动对话区，拖动框选的文字交给系统剪贴板；这个
@@ -25,7 +44,7 @@ export function createScreen(
 ): Screen {
 	if (mode === "regular") return new TuiMainScreen(terminal);
 	const { writeText } = clipboard;
-	return new TuiAltScreen(terminal, undefined, undefined, {
+	return new FullScreen(terminal, undefined, undefined, {
 		wheelScrollLines: "auto",
 		scrollToEndIndicator: () => style.selected(" ↓ 回到最新的内容 · Ctrl+End "),
 		...(writeText === undefined
@@ -97,6 +116,17 @@ export function mountScreen(screen: Screen, parts: ScreenParts): void {
 			{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
 		]),
 	);
+}
+
+/**
+ * 浮层（图片的预览）开着时，鼠标点在它外面要做的事；`action` 为空时撤掉。主缓冲区里界面库不接管
+ * 鼠标，没有这回事。
+ */
+export function onClickOutsideOverlay(
+	screen: Screen,
+	action: (() => void) | undefined,
+): void {
+	if (screen instanceof FullScreen) screen.clickOutside = action;
 }
 
 /**

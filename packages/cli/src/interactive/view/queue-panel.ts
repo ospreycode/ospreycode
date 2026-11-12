@@ -1,5 +1,6 @@
 import { type Component, matchesKey } from "@earendil-works/pi-tui";
 import type { QueuedInput } from "@ospreycode/agent-host";
+import type { Attachments } from "../input.js";
 import type { InteractiveState } from "../state.js";
 import { queuedLine } from "./queue.js";
 import { clipped, style } from "./theme.js";
@@ -22,13 +23,19 @@ export interface QueueActions {
  */
 export class QueuePanel implements Component {
 	readonly #state: InteractiveState;
+	readonly #images: Attachments;
 	readonly #actions: QueueActions;
 	/** 选中的那一条；它离开队列之后选中同一位置上的下一条。 */
 	#selectedId: string | undefined;
 	#index = 0;
 
-	constructor(state: InteractiveState, actions: QueueActions) {
+	constructor(
+		state: InteractiveState,
+		images: Attachments,
+		actions: QueueActions,
+	) {
 		this.#state = state;
+		this.#images = images;
 		this.#actions = actions;
 	}
 
@@ -84,7 +91,7 @@ export class QueuePanel implements Component {
 		const selected = this.#selected(items);
 		const row = (item: QueuedInput) => {
 			const label = item.kind === "steering" ? "steering " : "follow-up";
-			const text = `${item === selected ? "→ " : "  "}${label}  ${queuedLine(item)}`;
+			const text = `${item === selected ? "→ " : "  "}${label}  ${queuedLine(item, this.#images)}`;
 			return clipped(
 				text,
 				width,

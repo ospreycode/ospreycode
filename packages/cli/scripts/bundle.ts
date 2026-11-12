@@ -124,7 +124,7 @@ copyFileSync(
 for (const name of ["tree-sitter-bash.wasm", "tree-sitter-bash.LICENSE"]) {
 	copyFileSync(join(sandboxDir, "vendor", name), join(vendor, name));
 }
-// agent 进程缩放图片用的 photon 也在自己的文件旁边找 WASM
+// agent 进程缩放图片、CLI 预览图片用的 photon 也在自己的文件旁边找 WASM
 copyFileSync(
 	join(
 		dependencyDir("@silvia-odwyer/photon-node", manifestUrl(runtimeDir)),

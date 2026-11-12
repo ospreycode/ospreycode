@@ -40,6 +40,15 @@ export function formatDuration(ms: number): string {
 		: `${Math.floor(minutes / 60)}h${minutes % 60}m`;
 }
 
+/** 字节数：不到 1 KB 写字节，往上写 KB、MB，保留一位小数。 */
+export function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	const kilobytes = bytes / 1024;
+	return kilobytes < 1024
+		? `${kilobytes.toFixed(1)} KB`
+		: `${(kilobytes / 1024).toFixed(1)} MB`;
+}
+
 /** 费用（美元）：不到一美分的保留四位小数。 */
 export function formatUsd(amount: number): string {
 	return `$${amount.toFixed(amount < 0.01 ? 4 : 2)}`;

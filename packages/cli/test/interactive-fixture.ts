@@ -1,5 +1,9 @@
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
+import {
+	resetCapabilitiesCache,
+	setCapabilities,
+} from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, vi } from "vitest";
 import type { CliContext, CliSignal } from "../src/context.js";
 import { runInteractiveOn } from "../src/interactive/app.js";
@@ -158,6 +162,8 @@ export function interactiveFixture(): InteractiveFixture {
 	let run: InteractiveRun | undefined;
 
 	beforeEach(() => {
+		// 界面库按运行测试的终端猜它支持什么：定成不能显示图片、没有链接的终端，要别的由测试自己设
+		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 		dirs = testDirectories();
 		model = undefined;
 		run = undefined;
@@ -170,6 +176,7 @@ export function interactiveFixture(): InteractiveFixture {
 		}
 		await model?.close();
 		dirs.cleanup();
+		resetCapabilitiesCache();
 	});
 
 	function configure(options: ModelOptions): void {

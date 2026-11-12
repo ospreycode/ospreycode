@@ -2,8 +2,11 @@ import { resolve } from "node:path";
 import {
 	type Component,
 	Container,
+	deleteKittyImage,
+	getCapabilities,
 	isKeyRelease,
 	matchesKey,
+	type OverlayHandle,
 	type SelectItem,
 	type Terminal,
 } from "@earendil-works/pi-tui";
@@ -72,6 +75,7 @@ import {
 	type ListedExtension,
 	needsReview,
 } from "./extensions.js";
+import { loadPreview } from "./image-data.js";
 import type { InteractiveOptions } from "./index.js";
 import { Attachments, composeInput, editorText } from "./input.js";
 import { MemoryCommands } from "./memory.js";
@@ -86,6 +90,7 @@ import {
 import {
 	createScreen,
 	mountScreen,
+	onClickOutsideOverlay,
 	type Screen,
 	stopScreen,
 } from "./screen.js";
@@ -96,6 +101,7 @@ import { ApprovalPanel } from "./view/approval-panel.js";
 import { ConversationView } from "./view/conversation.js";
 import { PromptEditor } from "./view/editor.js";
 import { ElicitationPanel } from "./view/elicitation-panel.js";
+import { ImagePreview } from "./view/image-preview.js";
 import { Picker } from "./view/picker.js";
 import { QueueView } from "./view/queue.js";
 import { QueuePanel } from "./view/queue-panel.js";
@@ -178,7 +184,11 @@ class Interactive {
 	readonly #editor: PromptEditor;
 	/** 输入框的位置：有询问时换成询问的面板，打开列表时换成列表。 */
 	readonly #bottom = new Container();
-	readonly #attachments = new Attachments();
+	readonly #attachments: Attachments;
+	/** 终端画不了图片时预览里写的原因。 */
+	readonly #cannotDraw: string;
+	/** 开着的图片预览：盖在界面上面的浮层，开着时按键都归它。 */
+	#preview: { handle: OverlayHandle; component: ImagePreview } | undefined;
 	/** 交给 session、还在等 `UserPromptSubmit` hooks 检查的 steering 和 follow-up：被拦下时放回输入框。 */
 	readonly #checking = new Map<string, InputBlock[]>();
 	#memory: MemoryCommands;
@@ -223,6 +233,8 @@ class Interactive {
 		/** 界面的渲染方式：启动时定下，会话中不变。 */
 		mode: TuiMode;
 		state: InteractiveState;
+		/** 界面上的图片：和 `state` 用的是同一份，对话区和输入框里同一张图片是同一个编号。 */
+		images: Attachments;
 		options: SessionOptions;
 		config: SessionConfig;
 	}) {
@@ -232,6 +244,7 @@ class Interactive {
 		this.#clipboard = parts.clipboard;
 		this.#terminal = parts.terminal;
 		this.#state = parts.state;
+		this.#attachments = parts.images;
 		this.#options = parts.options;
 		this.#config = parts.config;
 		this.#memory = this.#memoryCommands(parts.session);
@@ -242,20 +255,37 @@ class Interactive {
 			notice: (text) => this.#state.notice(text),
 		});
 
+		// 全屏时界面库停用 iTerm2 的图片协议（它删不掉、裁不了放过的图片），之后查到的就是"不支持"：
+		// 趁界面还没启动先看一眼
+		this.#cannotDraw =
+			parts.mode === "fullscreen" && getCapabilities().images === "iterm2"
+				? "iTerm2 的图片协议在全屏模式下用不了：用 --tui-mode regular 启动能画出来"
+				: "这个终端画不了图片";
 		this.#tui = createScreen(parts.terminal, parts.mode, parts.clipboard);
 		this.#paths = {
 			workspace: parts.config.workspace,
 			home: parts.context.env.HOME,
 		};
-		this.#conversation = new ConversationView(this.#state, this.#paths);
-		this.#editor = new PromptEditor(this.#tui, {
-			followUp: (text) => this.#send(text, "follow_up"),
-			quit: () => this.#finish(0),
-			cycleModel: (step) => this.#cycleModel(step),
-			cycleEffort: () => this.#cycleEffort(),
-			pasteImage: () => this.#pasteImage(),
-			openQueue: () => this.#openQueue(),
-		});
+		this.#conversation = new ConversationView(
+			this.#state,
+			this.#paths,
+			this.#attachments,
+			(number) => this.#openPreview(number),
+		);
+		this.#editor = new PromptEditor(
+			this.#tui,
+			{
+				followUp: (text) => this.#send(text, "follow_up"),
+				quit: () => this.#finish(0),
+				cycleModel: (step) => this.#cycleModel(step),
+				cycleEffort: () => this.#cycleEffort(),
+				pasteImage: () => this.#pasteImage(),
+				openQueue: () => this.#openQueue(),
+				previewImage: (number) => this.#openPreview(number),
+			},
+			this.#attachments,
+			parts.context.env.HOME,
+		);
 		this.#editor.onSubmit = (text) => this.#send(text, "enter");
 		this.#editor.setAutocompleteProvider(
 			new PromptAutocomplete(
@@ -273,7 +303,7 @@ class Interactive {
 		);
 		mountScreen(this.#tui, {
 			conversation: this.#conversation,
-			queue: new QueueView(this.#state),
+			queue: new QueueView(this.#state, this.#attachments),
 			hint: new HintLine(() => this.#hint()),
 			bottom: this.#bottom,
 			status: new StatusLine(this.#state.status, parts.context.env.HOME),
@@ -400,6 +430,8 @@ class Interactive {
 		}
 		const shown = this.#panel?.component ?? this.#overlay ?? this.#editor;
 		if (this.#bottom.children[0] !== shown) {
+			// 输入框的位置换了内容（来了询问、打开了列表）：焦点要交给它，图片的预览不再盖着
+			this.#closePreview();
 			this.#bottom.clear();
 			this.#bottom.addChild(shown);
 			this.#tui.setFocus(shown);
@@ -482,12 +514,16 @@ class Interactive {
 		if (this.#exitArmed) {
 			return { text: "再按一次 Ctrl+C 退出", emphasis: true };
 		}
+		// 光标在图片标签上：先写怎样预览它
+		const labelled = this.#editor.labelAtCursor();
+		const preview =
+			labelled === undefined ? "" : `Ctrl+O 预览图片 #${labelled} · `;
 		const { task } = this.#state;
 		if (task !== undefined) {
 			return this.#cancelling
 				? { text: "正在取消…", emphasis: true }
 				: {
-						text: "Enter 插入当前任务 · Alt+Enter 排到之后 · Alt+↑ 管理排队的输入",
+						text: `${preview}Enter 插入当前任务 · Alt+Enter 排到之后 · Alt+↑ 管理排队的输入`,
 						emphasis: false,
 						activity: {
 							title: this.#activityTitle(),
@@ -498,12 +534,12 @@ class Interactive {
 		}
 		if (this.#state.queue.follow_up_paused) {
 			return {
-				text: "follow-up 列表暂停着 · Alt+Enter 排进列表 · Alt+↑ 管理列表，按 R 继续",
+				text: `${preview}follow-up 列表暂停着 · Alt+Enter 排进列表 · Alt+↑ 管理列表，按 R 继续`,
 				emphasis: false,
 			};
 		}
 		return {
-			text: "Enter 发送 · Shift+Enter 换行 · / 命令 · @ 文件 · Ctrl+V 粘贴图片 · Ctrl+C 两次退出",
+			text: `${preview}Enter 发送 · Shift+Enter 换行 · / 命令 · @ 文件 · Ctrl+V 粘贴图片 · Ctrl+C 两次退出`,
 			emphasis: false,
 		};
 	}
@@ -555,7 +591,9 @@ class Interactive {
 	async #interrupt(): Promise<void> {
 		const request = this.#state.approvals.at(0);
 		const question = this.#state.serverQuestions.at(0);
-		if (request === undefined && this.#overlay !== undefined) {
+		if (this.#preview !== undefined) {
+			this.#closePreview();
+		} else if (request === undefined && this.#overlay !== undefined) {
 			this.#overlay = undefined;
 		} else if (this.#state.taskId !== undefined) {
 			// 取消任务时 Host 把它挂起的询问都答为拒绝
@@ -590,6 +628,7 @@ class Interactive {
 	#finish(code: number): void {
 		if (this.#closing) return;
 		this.#closing = true;
+		this.#closePreview();
 		this.#guard(async () => {
 			this.#refresh();
 			await this.close();
@@ -1314,6 +1353,51 @@ class Interactive {
 		this.#refresh();
 	}
 
+	/**
+	 * 预览一张图片：在屏幕中间的浮层里画出来，画不了时显示它的信息。本地图片文件这时才读，读的是
+	 * 用户自己拖进来、提及的文件，只用来显示；交给模型的那一份照旧由 runtime 在沙盒里读。
+	 */
+	#openPreview(number: number): void {
+		const image = this.#attachments.get(number);
+		// 标签是按上一次画出来的位置点中的：这之间输入框清空了的话，它的图片已经不在
+		if (image === undefined) return;
+		this.#guard(async () => {
+			const preview = await loadPreview(image, this.#cannotDraw);
+			// 读图片的这一会儿界面可能已经开始退出
+			if (this.#closing) return;
+			this.#closePreview();
+			const { columns, rows } = this.#terminal;
+			const width = Math.max(1, Math.min(columns - 4, 100));
+			const close = () => {
+				this.#closePreview();
+				this.#refresh();
+			};
+			const component = new ImagePreview(preview, {
+				home: this.#paths.home,
+				maxColumns: width,
+				// 上下各一条边，再给界面留出几行
+				maxRows: Math.max(1, rows - 6),
+				close,
+			});
+			this.#preview = {
+				component,
+				handle: this.#tui.showOverlay(component, { width }),
+			};
+			onClickOutsideOverlay(this.#tui, close);
+		});
+	}
+
+	/** 关掉图片的预览，焦点回到原来的地方；Kitty 图形协议的终端上把放过的图片删掉，不留残影。 */
+	#closePreview(): void {
+		const preview = this.#preview;
+		if (preview === undefined) return;
+		this.#preview = undefined;
+		onClickOutsideOverlay(this.#tui, undefined);
+		preview.handle.hide();
+		const id = preview.component.kittyImageId;
+		if (id !== undefined) this.#terminal.write(deleteKittyImage(id));
+	}
+
 	#cycleModel(step: 1 | -1): void {
 		this.#guard(async () => {
 			this.#credentials ??= await this.#host.credentialStatus(
@@ -1382,7 +1466,7 @@ class Interactive {
 	}
 
 	#openQueue(): void {
-		const panel = new QueuePanel(this.#state, {
+		const panel = new QueuePanel(this.#state, this.#attachments, {
 			retrieve: (item) =>
 				this.#guard(() => {
 					this.#restore(this.#session.dequeue(item.input_id));
@@ -1511,7 +1595,8 @@ export async function runInteractiveOn(
 		if ("exitCode" in chosen) return chosen.exitCode;
 		sessionId = chosen.sessionId;
 	}
-	const state = new InteractiveState(config);
+	const images = new Attachments(config.workspace);
+	const state = new InteractiveState(config, images);
 	/** 界面出来之前 Host 已经发出的事件，界面出来后按顺序处理。 */
 	const early: HostEvent[] = [];
 	let ui: Interactive | undefined;
@@ -1543,6 +1628,7 @@ export async function runInteractiveOn(
 			terminal,
 			mode,
 			state,
+			images,
 			options: sessionOptions,
 			// 恢复的 session 的模型和推理强度按记录，不一定是启动参数解析出来的那一份
 			config: session.config(),

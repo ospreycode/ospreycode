@@ -19,6 +19,7 @@ export const key = {
 	backspace: "\x7f",
 	ctrlC: "\x03",
 	ctrlD: "\x04",
+	ctrlO: "\x0f",
 	ctrlP: "\x10",
 	shiftCtrlP: "\x1b[112;6u",
 	ctrlV: "\x16",
@@ -32,6 +33,12 @@ const ignored =
 const cursorMove = /^\x1b\[(\d*)(?:;(\d*))?([ABGHJK])/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
 const alternateScreen = /^\x1b\[\?1049([hl])/;
+// Kitty 图形协议的一条命令：分号之前是参数，之后是图片的数据
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
+const graphicsCommand = /^\x1b_G([^;\x1b]*)/;
+// OSC 8 链接的开头：两个分号之后是地址，地址是空的那一条是链接的结尾
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 要认的就是控制序列
+const linkStart = /^\x1b\]8;[^;]*;([^\x07\x1b]+)/;
 
 /** 一个缓冲区里的内容和光标的位置。 */
 interface Buffer {
@@ -55,6 +62,10 @@ export class TestTerminal implements Terminal {
 	#column = 0;
 	/** 在备用缓冲区里时，留着的主缓冲区。 */
 	#main: Buffer | undefined;
+	/** 界面发过的 Kitty 图形协议命令的参数，按先后：`a=T` 开头的是放一张图片，`a=d` 是删除。 */
+	readonly graphics: string[] = [];
+	/** 界面写过的 OSC 8 链接的地址，按先后。 */
+	readonly links: string[] = [];
 
 	constructor(columns = 100, rows = 40) {
 		this.columns = columns;
@@ -106,6 +117,10 @@ export class TestTerminal implements Terminal {
 			const screen = alternateScreen.exec(rest);
 			const move = cursorMove.exec(rest);
 			const skipped = screen ?? move ?? ignored.exec(rest);
+			const graphics = graphicsCommand.exec(rest);
+			if (graphics !== null) this.graphics.push(graphics[1] as string);
+			const link = linkStart.exec(rest);
+			if (link !== null) this.links.push(link[1] as string);
 			if (screen !== null) this.#alternate(screen[1] === "h");
 			else if (move !== null) this.#control(move[3], move[1], move[2]);
 			if (skipped !== null) {
@@ -283,6 +298,23 @@ export class TestTerminal implements Terminal {
 				() => `\x1b[<${button};${at.x + 1};${at.y + 1}M`,
 			),
 		);
+	}
+
+	/** 屏幕上现在看得到的这段文字第一个字符的位置，坐标从 0 起；只在全屏（备用缓冲区）里用。 */
+	locate(text: string): { x: number; y: number } {
+		const lines = this.#lines.slice(-this.rows);
+		const y = lines.findIndex((line) => line.includes(text));
+		if (y === -1) {
+			throw new Error(`屏幕上没有 ${text}：\n${this.visible()}`);
+		}
+		const line = lines[y] as string;
+		return { x: visibleWidth(line.slice(0, line.indexOf(text))), y };
+	}
+
+	/** 在屏幕的一个位置上点一下鼠标左键：按下再松开。 */
+	async click(at: { x: number; y: number }): Promise<void> {
+		const position = `${at.x + 1};${at.y + 1}`;
+		await this.press(`\x1b[<0;${position}M`, `\x1b[<0;${position}m`);
 	}
 
 	/** 逐个字符地输入一段文字。 */

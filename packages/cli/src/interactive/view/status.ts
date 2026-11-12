@@ -1,19 +1,8 @@
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
-import { shortPath } from "../../format/paths.js";
+import { shortPath, tailPath } from "../../format/paths.js";
 import { formatElapsed } from "../../format/result.js";
 import type { Status } from "../state.js";
 import { clipped, style } from "./theme.js";
-
-/** 放不下的路径留末尾：区分各个工作区的是最后几级目录。 */
-function tail(path: string, width: number): string {
-	if (visibleWidth(path) <= width) return path;
-	let kept = "";
-	for (const character of [...path].reverse()) {
-		if (visibleWidth(`…${character}${kept}`) > width) break;
-		kept = `${character}${kept}`;
-	}
-	return `…${kept}`;
-}
 
 /** 活动行上转动的指示符，一帧一个字符。 */
 const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -98,9 +87,10 @@ export class StatusLine implements Component {
 			`审批 ${status.approvalPolicy}`,
 			"",
 		].join(" · ");
-		const workspace = tail(
+		const workspace = tailPath(
 			shortPath(status.workspace, this.#home),
 			width - visibleWidth(settings),
+			visibleWidth,
 		);
 		return [clipped(`${settings}${workspace}`, width, style.dim)];
 	}
