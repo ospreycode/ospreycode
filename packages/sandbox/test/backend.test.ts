@@ -311,6 +311,8 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 		mkdirSync(repository, { recursive: true });
 		const inWorkspace = join(paths.workspace, "restored.txt");
 		const guarded = join(paths.workspace, ".envrc");
+		const inTmp = join(paths.tmp, "session.txt");
+		writeFileSync(inTmp, "session");
 		const exit = async (script: string, restore: boolean) =>
 			(await run(sandbox, script, { kind: "snapshot", repository, restore }))
 				.status;
@@ -326,16 +328,28 @@ describe.runIf(supported)("沙盒后端（真实沙盒）", { timeout: 20_000 },
 				expect(
 					await exit(`cat '${paths.root}/data/identity.json'`, restore),
 				).not.toBe(0);
+				expect(await exit(`cat '${inTmp}'`, restore)).not.toBe(0);
+				expect(
+					await exit(`cat '${paths.output}/result.txt'`, restore),
+				).not.toBe(0);
 				expect(await exit(`cat '${paths.credential}'`, restore)).not.toBe(0);
 				expect(
 					await exit(`echo x > '${paths.outside}/leak.txt'`, restore),
 				).not.toBe(0);
-				expect(
-					await exit(`echo x > '${paths.tmp}/leak.txt'`, restore),
-				).not.toBe(0);
+				expect(existsSync(join(paths.outside, "leak.txt"))).toBe(false);
+				const tmpWrite = await exit(
+					`echo x > '${paths.tmp}/leak.txt'`,
+					restore,
+				);
+				// Linux 上 Host 根目录是空的 tmpfs，辅助进程的桥接 socket 让其中的 tmp/session 目录存在：
+				// 写入落在 tmpfs 里不报错，宿主上没有这个文件
+				if (onMac) expect(tmpWrite).not.toBe(0);
+				expect(existsSync(join(paths.tmp, "leak.txt"))).toBe(false);
 			}
 		} finally {
-			for (const path of [inWorkspace, guarded]) rmSync(path, { force: true });
+			for (const path of [inWorkspace, guarded, inTmp]) {
+				rmSync(path, { force: true });
+			}
 			rmSync(join(paths.root, "snapshots"), { recursive: true, force: true });
 		}
 	});
